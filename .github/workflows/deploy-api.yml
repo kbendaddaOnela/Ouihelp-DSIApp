@@ -1,0 +1,49 @@
+name: Deploy API — Azure App Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/api/**'
+      - 'packages/shared/**'
+      - '.github/workflows/deploy-api.yml'
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    name: Build and Deploy API
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build API (tsup bundle)
+        run: pnpm --filter @dsi-app/api build
+
+      - name: Create deployment package
+        run: |
+          pnpm --filter @dsi-app/api deploy --prod /tmp/api-prod
+          cp -r apps/api/dist /tmp/api-prod/dist
+
+      - name: Zip deployment package
+        run: |
+          cd /tmp/api-prod
+          zip -r /tmp/api-deploy.zip .
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'ouihelp-dsi-app-api'
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: /tmp/api-deploy.zip
