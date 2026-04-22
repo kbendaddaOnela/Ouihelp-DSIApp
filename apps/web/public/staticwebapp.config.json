@@ -4,6 +4,9 @@
     "exclude": ["/assets/*", "/*.ico", "/*.png", "/*.svg"]
   },
   "mimeTypes": {
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    ".css": "text/css",
     ".json": "application/json"
   },
   "globalHeaders": {
