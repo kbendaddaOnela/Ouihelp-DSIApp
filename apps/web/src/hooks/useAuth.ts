@@ -8,7 +8,7 @@ import type { MeResponse } from '@dsi-app/shared'
 // Hook principal d'authentification — encapsule MSAL + état applicatif (rôle)
 export function useAuth() {
   const { instance, accounts } = useMsal()
-  const account = useAccount(accounts[0] ?? null)
+  const account = useAccount(accounts[0])
   const { user, role, isLoadingRole, setUser, setRole, setLoadingRole, reset } = useAuthStore()
 
   // Charge le rôle applicatif depuis l'API après la connexion MSAL
