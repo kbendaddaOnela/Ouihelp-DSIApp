@@ -24,4 +24,10 @@ async function bootstrap() {
   )
 }
 
-bootstrap().catch(console.error)
+bootstrap().catch((err: unknown) => {
+  console.error('[bootstrap]', err)
+  const msg = err instanceof Error ? err.message : String(err)
+  document.body.innerHTML = `<div style="padding:2rem;font-family:monospace;color:#b00">
+    <h2>Erreur de démarrage</h2><pre>${msg}</pre>
+  </div>`
+})
