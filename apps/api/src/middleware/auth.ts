@@ -45,8 +45,11 @@ export const authMiddleware = createMiddleware<{ Variables: AuthVariables }>(asy
 
   try {
     const { payload } = await jwtVerify(token, getJwks(), {
-      issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
-      audience: clientId,
+      issuer: [
+        `https://login.microsoftonline.com/${tenantId}/v2.0`,
+        `https://sts.windows.net/${tenantId}/`,
+      ],
+      audience: [clientId, `api://${clientId}`],
     })
 
     const jwtPayload = payload as unknown as EntraIdJwtPayload
