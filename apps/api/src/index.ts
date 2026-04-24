@@ -43,22 +43,24 @@ let dbReady = false
 let dbError: string | null = null
 
 async function start() {
-  if (process.env['NODE_ENV'] === 'production') {
-    try {
-      await runMigrations()
-      dbReady = true
-      console.log('[startup] DB migrations OK')
-    } catch (err) {
-      dbError = err instanceof Error ? err.message : String(err)
-      console.error('[startup] Migration failed (non-fatal):', dbError)
-    }
-  } else {
-    dbReady = true
-  }
-
+  // Start listening immediately so Azure health checks pass
   serve({ fetch: app.fetch, port }, () => {
     console.log(`API DSI App démarrée sur http://localhost:${port}`)
   })
+
+  if (process.env['NODE_ENV'] === 'production') {
+    runMigrations()
+      .then(() => {
+        dbReady = true
+        console.log('[startup] DB migrations OK')
+      })
+      .catch((err) => {
+        dbError = err instanceof Error ? err.message : String(err)
+        console.error('[startup] Migration failed (non-fatal):', dbError)
+      })
+  } else {
+    dbReady = true
+  }
 }
 
 // Expose DB status on health endpoint
