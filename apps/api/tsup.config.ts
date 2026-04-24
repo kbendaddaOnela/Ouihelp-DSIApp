@@ -5,7 +5,7 @@ export default defineConfig({
   format: ['esm'],
   platform: 'node',
   bundle: true,
-  noExternal: [/@dsi-app\/.*/],
+  noExternal: [/@dsi-app\/.*/, /^mysql2($|\/)/, /^drizzle-orm($|\/)/, /^sql-escaper($|\/)/],
   sourcemap: true,
   clean: true,
 })
