@@ -8,3 +8,8 @@ dist/
 .turbo/
 coverage/
 .cache/
+apps/web/tailwind.config.d.ts
+apps/web/tailwind.config.js
+apps/web/vite.config.d.ts
+apps/web/vite.config.js
+**/*.tsbuildinfo

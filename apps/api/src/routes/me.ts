@@ -6,20 +6,18 @@ import type { MeResponse } from '@dsi-app/shared'
 
 export const meRouter = new Hono<{ Variables: RbacVariables }>()
 
-// GET /api/me — retourne le profil et le rôle de l'utilisateur connecté
 meRouter.get('/', authMiddleware, loadUserRole, (c) => {
-  const jwtPayload = c.get('jwtPayload')
-  const role = c.get('userRole')
+  const user = c.get('dbUser')
 
   const response: MeResponse = {
     user: {
-      id: jwtPayload.oid,
-      email: jwtPayload.email ?? jwtPayload.preferred_username ?? '',
-      name: jwtPayload.name ?? '',
-      tenantId: jwtPayload.tid,
-      role,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenantId: user.tenantId,
+      role: user.role,
+      createdAt: user.createdAt.toISOString(),
+      updatedAt: user.updatedAt.toISOString(),
     },
   }
 

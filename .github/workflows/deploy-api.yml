@@ -35,6 +35,7 @@ jobs:
         run: |
           pnpm --filter @dsi-app/api deploy --prod /tmp/api-prod
           cp -r apps/api/dist /tmp/api-prod/dist
+          cp -r apps/api/drizzle /tmp/api-prod/drizzle
 
       - name: Zip deployment package
         run: |

@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { apiRouter } from './routes/index'
 import { requestLogger } from './middleware/logger'
+import { runMigrations } from './db/migrate'
 
 const app = new Hono()
 
@@ -38,8 +39,18 @@ app.onError((err, c) => {
 
 const port = Number(process.env['PORT'] ?? 3000)
 
-serve({ fetch: app.fetch, port }, () => {
-  console.log(`🚀 API DSI App démarrée sur http://localhost:${port}`)
+async function start() {
+  if (process.env['NODE_ENV'] === 'production') {
+    await runMigrations()
+  }
+  serve({ fetch: app.fetch, port }, () => {
+    console.log(`API DSI App démarrée sur http://localhost:${port}`)
+  })
+}
+
+start().catch((err) => {
+  console.error('[startup] Fatal error:', err)
+  process.exit(1)
 })
 
 export default app

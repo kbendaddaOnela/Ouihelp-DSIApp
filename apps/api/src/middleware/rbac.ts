@@ -1,53 +1,56 @@
 import { createMiddleware } from 'hono/factory'
+import { eq } from 'drizzle-orm'
 import { hasPermission, type Permission, type Role } from '@dsi-app/shared'
+import { db } from '../db/index'
+import { users, type User } from '../db/schema'
 import type { AuthVariables } from './auth'
 
-// Types pour le contexte RBAC (étend le contexte auth)
 export type RbacVariables = AuthVariables & {
   userRole: Role
+  dbUser: User
 }
 
-// Middleware RBAC — vérifie qu'un utilisateur possède une permission donnée
-// À utiliser après authMiddleware
 export function requirePermission(permission: Permission) {
   return createMiddleware<{ Variables: RbacVariables }>(async (c, next) => {
     const role = c.get('userRole')
 
     if (!role) {
-      return c.json(
-        { error: 'Forbidden', message: 'Rôle utilisateur non défini' },
-        403
-      )
+      return c.json({ error: 'Forbidden', message: 'Rôle utilisateur non défini' }, 403)
     }
 
     if (!hasPermission(role, permission)) {
-      return c.json(
-        {
-          error: 'Forbidden',
-          message: `Permission manquante : ${permission}`,
-        },
-        403
-      )
+      return c.json({ error: 'Forbidden', message: `Permission manquante : ${permission}` }, 403)
     }
 
     await next()
   })
 }
 
-// Middleware qui charge le rôle depuis la DB et l'injecte dans le contexte
-// À placer après authMiddleware, avant les routes protégées
-// Note : en Phase 1, retourne un rôle par défaut — remplacer par une vraie DB en Phase 2
+// Upsert l'utilisateur à chaque requête authentifiée :
+// - Premier login : crée le compte avec rôle collaborator
+// - Logins suivants : met à jour email/nom si changés dans Entra ID
+// - Injecte userRole et dbUser dans le contexte Hono
 export const loadUserRole = createMiddleware<{ Variables: RbacVariables }>(async (c, next) => {
   const userId = c.get('userId')
+  const jwtPayload = c.get('jwtPayload')
 
-  // TODO Phase 2 : charger depuis Supabase/Drizzle
-  // const user = await db.query.users.findFirst({ where: eq(users.id, userId) })
-  // c.set('userRole', user?.role ?? 'collaborator')
+  const email = jwtPayload.email ?? jwtPayload.preferred_username ?? ''
+  const name = jwtPayload.name ?? ''
+  const tenantId = jwtPayload.tid
 
-  // Phase 1 : rôle par défaut pour les tests
-  // À remplacer dès que la DB Supabase est configurée
-  void userId
-  c.set('userRole', 'it_team')
+  await db
+    .insert(users)
+    .values({ id: userId, email, name, tenantId, role: 'collaborator' })
+    .onDuplicateKeyUpdate({ set: { email, name, tenantId } })
+
+  const [user] = await db.select().from(users).where(eq(users.id, userId))
+
+  if (!user) {
+    return c.json({ error: 'Internal Server Error', message: 'Utilisateur introuvable après upsert' }, 500)
+  }
+
+  c.set('userRole', user.role)
+  c.set('dbUser', user)
 
   await next()
 })
