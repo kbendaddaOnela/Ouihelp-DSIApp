@@ -39,14 +39,30 @@ app.onError((err, c) => {
 
 const port = Number(process.env['PORT'] ?? 3000)
 
+let dbReady = false
+let dbError: string | null = null
+
 async function start() {
   if (process.env['NODE_ENV'] === 'production') {
-    await runMigrations()
+    try {
+      await runMigrations()
+      dbReady = true
+      console.log('[startup] DB migrations OK')
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : String(err)
+      console.error('[startup] Migration failed (non-fatal):', dbError)
+    }
+  } else {
+    dbReady = true
   }
+
   serve({ fetch: app.fetch, port }, () => {
     console.log(`API DSI App démarrée sur http://localhost:${port}`)
   })
 }
+
+// Expose DB status on health endpoint
+app.get('/db-status', (c) => c.json({ dbReady, dbError }))
 
 start().catch((err) => {
   console.error('[startup] Fatal error:', err)
