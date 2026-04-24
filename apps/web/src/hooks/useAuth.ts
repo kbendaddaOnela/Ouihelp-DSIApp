@@ -9,11 +9,21 @@ import type { MeResponse } from '@dsi-app/shared'
 export function useAuth() {
   const { instance, accounts } = useMsal()
   const account = useAccount(accounts[0])
-  const { user, role, isLoadingRole, setUser, setRole, setLoadingRole, reset } = useAuthStore()
+  const {
+    user,
+    role,
+    isLoadingRole,
+    authError,
+    setUser,
+    setRole,
+    setLoadingRole,
+    setAuthError,
+    reset,
+  } = useAuthStore()
 
   // Charge le rôle applicatif depuis l'API après la connexion MSAL
   useEffect(() => {
-    if (!account || role || isLoadingRole) return
+    if (!account || role || isLoadingRole || authError) return
 
     setLoadingRole(true)
     apiClient
@@ -21,14 +31,17 @@ export function useAuth() {
       .then((res) => {
         setUser(res.data.user)
         setRole(res.data.user.role)
+        setAuthError(null)
       })
       .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : 'Erreur inconnue'
         console.error('[useAuth] Impossible de charger le profil utilisateur :', err)
+        setAuthError(message)
       })
       .finally(() => {
         setLoadingRole(false)
       })
-  }, [account, role, isLoadingRole, setUser, setRole, setLoadingRole])
+  }, [account, role, isLoadingRole, authError, setUser, setRole, setLoadingRole, setAuthError])
 
   const login = useCallback(async () => {
     await instance.loginRedirect(apiLoginRequest)
@@ -46,6 +59,7 @@ export function useAuth() {
     user,
     role,
     isLoadingRole,
+    authError,
     isAuthenticated: !!account,
     login,
     logout,
