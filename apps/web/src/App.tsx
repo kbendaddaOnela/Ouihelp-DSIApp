@@ -1,11 +1,12 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthenticatedTemplate, UnauthenticatedTemplate, useMsalAuthentication } from '@azure/msal-react'
 import { InteractionType } from '@azure/msal-browser'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppShell } from '@/layouts/AppShell'
 import LoginPage from '@/pages/LoginPage'
 import NotFoundPage from '@/pages/NotFoundPage'
+import DashboardPage from '@/pages/DashboardPage'
 import { Spinner } from '@/components/ui/spinner'
 import { apiLoginRequest } from '@/lib/auth'
 
@@ -46,7 +47,7 @@ export function App() {
         <AuthenticatedTemplate>
           <Routes>
             <Route path="/" element={<AppShell />}>
-              <Route index element={<Navigate to="/tickets" replace />} />
+              <Route index element={<DashboardPage />} />
               <Route
                 path="tickets"
                 element={
