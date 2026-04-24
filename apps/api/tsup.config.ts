@@ -8,4 +8,7 @@ export default defineConfig({
   noExternal: [/@dsi-app\/.*/, /^mysql2($|\/)/, /^drizzle-orm($|\/)/, /^sql-escaper($|\/)/],
   sourcemap: true,
   clean: true,
+  banner: {
+    js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);",
+  },
 })
