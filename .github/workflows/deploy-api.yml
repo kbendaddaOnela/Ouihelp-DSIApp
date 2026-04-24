@@ -53,5 +53,4 @@ jobs:
             --name ouihelp-dsi-app-api \
             --resource-group Ouihelp-DSI-App-RG \
             --src-path /tmp/api-deploy.zip \
-            --type zip \
-            --async false
+            --type zip
