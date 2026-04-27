@@ -6,8 +6,13 @@ import path from 'path'
 export async function runMigrations() {
   const migrationsFolder = path.resolve(process.cwd(), 'drizzle')
   console.log('[migrate] Running migrations from', migrationsFolder)
-  await migrate(db, { migrationsFolder })
-  console.log('[migrate] Migrations done')
+  try {
+    await migrate(db, { migrationsFolder })
+    console.log('[migrate] Migrations done')
+  } catch (err) {
+    console.error('[migrate] Error:', err instanceof Error ? err.message : String(err))
+    throw err
+  }
 }
 
 // Permet d'exécuter ce fichier directement : node dist/migrate.js
