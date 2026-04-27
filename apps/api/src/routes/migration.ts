@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { eq, desc } from 'drizzle-orm'
-import { createId } from '@paralleldrive/cuid2'
+import { randomUUID } from 'crypto'
 import { authMiddleware } from '../middleware/auth'
 import { loadUserRole, requirePermission } from '../middleware/rbac'
 import type { RbacVariables } from '../middleware/rbac'
@@ -56,7 +56,7 @@ migrationRouter.post('/run', requirePermission('accounts:read'), async (c) => {
   const results = []
 
   for (const u of body.users) {
-    const migrationId = createId()
+    const migrationId = randomUUID()
 
     // Générer UPN GOH : prenom.nom@mig.onela.com
     const firstName = u.givenName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '')
