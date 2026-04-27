@@ -9,6 +9,8 @@ import { useAddGoogleAlias } from '../hooks/useMigration'
 export function MigrationCard({ m }: { m: MigrationRecord }) {
   const [expanded, setExpanded] = useState(false)
   const [aliasMessage, setAliasMessage] = useState<string | null>(null)
+  const defaultAlias = m.onelaUpn.replace('@onela.com', '@test-mig.onela.com')
+  const [aliasInput, setAliasInput] = useState(defaultAlias)
   const { mutate: addAlias, isPending: isAddingAlias } = useAddGoogleAlias()
 
   const hasError = m.stepCreateAccount === 'error'
@@ -16,14 +18,17 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
 
   const handleAddAlias = () => {
     setAliasMessage(null)
-    addAlias(m.id, {
-      onSuccess: () => setAliasMessage(null),
-      onError: (err: unknown) => {
-        const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-          ?? (err instanceof Error ? err.message : 'Erreur inconnue')
-        setAliasMessage(msg)
-      },
-    })
+    addAlias(
+      { id: m.id, alias: aliasInput.trim() || undefined },
+      {
+        onSuccess: () => setAliasMessage(null),
+        onError: (err: unknown) => {
+          const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+            ?? (err instanceof Error ? err.message : 'Erreur inconnue')
+          setAliasMessage(msg)
+        },
+      }
+    )
   }
 
   return (
@@ -57,18 +62,27 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
       )}
 
       {canAddAlias && (
-        <div className="mt-3">
-          <button
-            onClick={handleAddAlias}
-            disabled={isAddingAlias}
-            className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60"
-          >
-            <RefreshCw className={cn('h-3 w-3', isAddingAlias && 'animate-spin')} />
-            {isAddingAlias ? 'Vérification…' : `Ajouter alias Google (${m.onelaUpn})`}
-          </button>
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={aliasInput}
+              onChange={(e) => setAliasInput(e.target.value)}
+              placeholder="alias@domaine.com"
+              className="flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-mono focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <button
+              onClick={handleAddAlias}
+              disabled={isAddingAlias || !aliasInput.trim()}
+              className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+            >
+              <RefreshCw className={cn('h-3 w-3', isAddingAlias && 'animate-spin')} />
+              {isAddingAlias ? 'Vérification…' : 'Ajouter alias Google'}
+            </button>
+          </div>
           {aliasMessage && (
             <p className={cn(
-              'mt-1.5 rounded px-2 py-1 text-xs',
+              'rounded px-2 py-1 text-xs',
               aliasMessage.includes('pas encore') ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'
             )}>
               {aliasMessage}

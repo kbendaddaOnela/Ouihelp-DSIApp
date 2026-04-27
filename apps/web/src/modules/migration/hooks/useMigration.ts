@@ -34,7 +34,7 @@ export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => vo
 export function useAddGoogleAlias() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => migrationApi.addGoogleAlias(id),
+    mutationFn: ({ id, alias }: { id: string; alias?: string }) => migrationApi.addGoogleAlias(id, alias),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
     },

@@ -192,9 +192,16 @@ migrationRouter.post('/:id/google-alias', requirePermission('migration:read'), a
     return c.json({ error: 'not_provisioned', message: `Le compte ${row.gohUpn} n'est pas encore disponible dans Google Workspace. Le SCIM sync peut prendre 5 à 40 minutes — réessaie dans quelques minutes.` }, 202)
   }
 
-  // Ajouter l'alias = UPN ONELA
+  // Alias : par défaut l'UPN ONELA, sinon override via body { alias }
+  let aliasOverride: string | undefined
   try {
-    await addGoogleAlias(row.gohUpn, row.onelaUpn)
+    const body = await c.req.json<{ alias?: string }>().catch(() => ({}))
+    aliasOverride = body?.alias?.trim()
+  } catch { /* no body */ }
+  const alias = aliasOverride || row.onelaUpn
+
+  try {
+    await addGoogleAlias(row.gohUpn, alias)
     await db.update(migrations)
       .set({ stepGoogleAlias: 'success', googleAliasError: null })
       .where(eq(migrations.id, row.id))

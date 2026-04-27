@@ -19,6 +19,6 @@ export const migrationApi = {
   history: (page = 1) =>
     apiClient.get<MigrationHistoryResponse>(`/migration/history?page=${page}`).then((r) => r.data),
 
-  addGoogleAlias: (id: string) =>
-    apiClient.post<MigrationRecord>(`/migration/${id}/google-alias`).then((r) => r.data),
+  addGoogleAlias: (id: string, alias?: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/google-alias`, alias ? { alias } : {}).then((r) => r.data),
 }
