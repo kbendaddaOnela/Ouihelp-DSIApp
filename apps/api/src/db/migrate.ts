@@ -6,17 +6,38 @@ import path from 'path'
 
 // Hotfix : applique les changements de schéma critiques manquants au cas où Drizzle
 // les aurait marqués comme appliqués sans que le SQL soit réellement exécuté.
+async function columnExists(table: string, column: string): Promise<boolean> {
+  const [rows] = (await pool.query(
+    `SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+    [table, column]
+  )) as [Array<unknown>, unknown]
+  return rows.length > 0
+}
+
 async function ensureSchemaPatches() {
-  const patches = [
-    `ALTER TABLE \`migrations\` ADD COLUMN IF NOT EXISTS \`step_google_alias\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'`,
-    `ALTER TABLE \`migrations\` ADD COLUMN IF NOT EXISTS \`google_alias_error\` text`,
+  const patches: Array<{ table: string; column: string; ddl: string }> = [
+    {
+      table: 'migrations',
+      column: 'step_google_alias',
+      ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_google_alias\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'`,
+    },
+    {
+      table: 'migrations',
+      column: 'google_alias_error',
+      ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`google_alias_error\` text`,
+    },
   ]
-  for (const stmt of patches) {
+  for (const p of patches) {
     try {
-      await db.execute(sql.raw(stmt))
-      console.log('[migrate] Patch OK:', stmt.slice(0, 80))
+      const exists = await columnExists(p.table, p.column)
+      if (exists) {
+        console.log(`[migrate] Patch skipped (column exists): ${p.table}.${p.column}`)
+        continue
+      }
+      await db.execute(sql.raw(p.ddl))
+      console.log(`[migrate] Patch OK: ${p.table}.${p.column}`)
     } catch (err) {
-      console.error('[migrate] Patch failed:', stmt.slice(0, 80), '→', err instanceof Error ? err.message : String(err))
+      console.error(`[migrate] Patch failed: ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
     }
   }
 }
