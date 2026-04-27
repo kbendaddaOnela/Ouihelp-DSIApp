@@ -18,7 +18,7 @@ export default function MigrationPage() {
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
   }, [query])
 
-  const { data: searchData, isFetching } = useMigrationSearch(debouncedQuery)
+  const { data: searchData, isFetching, error: searchError } = useMigrationSearch(debouncedQuery)
   const { data: historyData } = useMigrationHistory()
   const { mutate: runMigration, isPending } = useRunMigration((migrations) => {
     setLastResults(migrations)
@@ -96,7 +96,10 @@ export default function MigrationPage() {
           </div>
         )}
 
-        {debouncedQuery.length >= 2 && !isFetching && foundUsers.length === 0 && (
+        {searchError && (
+          <p className="mt-3 text-sm text-red-600">Erreur : {(searchError as Error).message}</p>
+        )}
+        {debouncedQuery.length >= 2 && !isFetching && !searchError && foundUsers.length === 0 && (
           <p className="mt-3 text-sm text-gray-500">Aucun résultat pour « {debouncedQuery} ».</p>
         )}
 

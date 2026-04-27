@@ -30,7 +30,13 @@ migrationRouter.get('/search', requirePermission('migration:read'), async (c) =>
     return c.json<SearchOnelaUsersResponse>({ users: [] })
   }
 
-  const graphUsers = await searchOnelaUsers(q)
+  let graphUsers
+  try {
+    graphUsers = await searchOnelaUsers(q)
+  } catch (err) {
+    console.error('[migration/search] Graph error:', err instanceof Error ? err.message : String(err))
+    return c.json({ error: 'Graph error', message: err instanceof Error ? err.message : String(err) }, 502)
+  }
 
   const users = graphUsers.map((u) => ({
     id: u.id,
