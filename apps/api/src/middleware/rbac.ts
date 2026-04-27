@@ -45,7 +45,7 @@ export const loadUserRole = createMiddleware<{ Variables: RbacVariables }>(async
   await db
     .insert(users)
     .values({ id: userId, email, name, tenantId, role: autoRole })
-    .onDuplicateKeyUpdate({ set: { email, name, tenantId } })
+    .onDuplicateKeyUpdate({ set: { email, name, tenantId, role: autoRole } })
 
   const [user] = await db.select().from(users).where(eq(users.id, userId))
 
