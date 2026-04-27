@@ -1,17 +1,17 @@
 import { Hono } from 'hono'
 import { eq, desc } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
-import { authMiddleware } from '../middleware/auth'
-import { loadUserRole, requirePermission } from '../middleware/rbac'
-import type { RbacVariables } from '../middleware/rbac'
-import { getDb } from '../db/index'
-import { migrations } from '../db/schema'
+import { authMiddleware } from '../../middleware/auth'
+import { loadUserRole, requirePermission } from '../../middleware/rbac'
+import type { RbacVariables } from '../../middleware/rbac'
+import { getDb } from '../../db/index'
+import { migrations } from './schema'
 import {
   searchOnelaUsers,
   createGohUser,
   setGohUserAttributes,
   checkGohUserExists,
-} from '../services/graph'
+} from './service'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -24,7 +24,7 @@ export const migrationRouter = new Hono<{ Variables: RbacVariables }>()
 migrationRouter.use('*', authMiddleware, loadUserRole)
 
 // ── Recherche users ONELA ─────────────────────────────────────────────────────
-migrationRouter.get('/search', requirePermission('accounts:read'), async (c) => {
+migrationRouter.get('/search', requirePermission('migration:read'), async (c) => {
   const q = c.req.query('q')?.trim()
   if (!q || q.length < 2) {
     return c.json<SearchOnelaUsersResponse>({ users: [] })
@@ -48,7 +48,7 @@ migrationRouter.get('/search', requirePermission('accounts:read'), async (c) => 
 })
 
 // ── Lancer la migration ───────────────────────────────────────────────────────
-migrationRouter.post('/run', requirePermission('accounts:read'), async (c) => {
+migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
   const body = await c.req.json<MigrateUsersRequest>()
   const initiatedBy = c.get('dbUser').email
   const db = getDb()
@@ -154,7 +154,7 @@ migrationRouter.post('/run', requirePermission('accounts:read'), async (c) => {
 })
 
 // ── Historique des migrations ─────────────────────────────────────────────────
-migrationRouter.get('/history', requirePermission('accounts:read'), async (c) => {
+migrationRouter.get('/history', requirePermission('migration:read'), async (c) => {
   const db = getDb()
   const page = Number(c.req.query('page') ?? 1)
   const limit = 50
@@ -170,7 +170,7 @@ migrationRouter.get('/history', requirePermission('accounts:read'), async (c) =>
 })
 
 // ── Détail d'une migration ────────────────────────────────────────────────────
-migrationRouter.get('/:id', requirePermission('accounts:read'), async (c) => {
+migrationRouter.get('/:id', requirePermission('migration:read'), async (c) => {
   const db = getDb()
   const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
   if (!row) return c.json({ error: 'Not Found' }, 404)

@@ -28,7 +28,7 @@ const NAV_ITEMS: NavItem[] = [
     path: '/migration',
     label: 'Migration ONELA',
     icon: ArrowRightLeft,
-    requiredPermissions: ['accounts:read'],
+    requiredPermissions: ['migration:read'],
   },
   {
     path: '/tickets',

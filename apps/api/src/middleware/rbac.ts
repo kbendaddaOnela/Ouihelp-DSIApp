@@ -2,7 +2,7 @@ import { createMiddleware } from 'hono/factory'
 import { eq } from 'drizzle-orm'
 import { hasPermission, type Permission, type Role } from '@dsi-app/shared'
 import { db } from '../db/index'
-import { users, type User } from '../db/schema'
+import { users, type User } from '../modules/auth/schema'
 import type { AuthVariables } from './auth'
 
 export type RbacVariables = AuthVariables & {
@@ -38,9 +38,13 @@ export const loadUserRole = createMiddleware<{ Variables: RbacVariables }>(async
   const name = jwtPayload.name ?? ''
   const tenantId = jwtPayload.tid
 
+  // Auto-promote to admin if email is in the ADMIN_EMAILS env var (comma-separated)
+  const adminEmails = (process.env['ADMIN_EMAILS'] ?? '').split(',').map((e) => e.trim().toLowerCase())
+  const autoRole = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'collaborator'
+
   await db
     .insert(users)
-    .values({ id: userId, email, name, tenantId, role: 'collaborator' })
+    .values({ id: userId, email, name, tenantId, role: autoRole })
     .onDuplicateKeyUpdate({ set: { email, name, tenantId } })
 
   const [user] = await db.select().from(users).where(eq(users.id, userId))

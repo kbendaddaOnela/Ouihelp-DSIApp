@@ -1,8 +1,7 @@
 import { Hono } from 'hono'
 import { meRouter } from './me'
-import { migrationRouter } from './migration'
+import { migrationRouter } from '../modules/migration/routes'
 
-// Agrégation de toutes les routes API
 export const apiRouter = new Hono()
 
 apiRouter.route('/me', meRouter)
