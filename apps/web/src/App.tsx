@@ -17,6 +17,7 @@ const InventoryPage = lazy(() => import('@/modules/inventory/InventoryPage'))
 const AppsInventoryPage = lazy(() => import('@/modules/apps-inventory/AppsInventoryPage'))
 const LicensesPage = lazy(() => import('@/modules/licenses/LicensesPage'))
 const BudgetPage = lazy(() => import('@/modules/budget/BudgetPage'))
+const MigrationPage = lazy(() => import('@/modules/migration/MigrationPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -93,6 +94,14 @@ export function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <BudgetPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="migration"
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <MigrationPage />
                   </Suspense>
                 }
               />

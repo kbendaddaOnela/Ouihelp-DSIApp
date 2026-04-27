@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
 import { meRouter } from './me'
+import { migrationRouter } from './migration'
 
 // Agrégation de toutes les routes API
 export const apiRouter = new Hono()
 
 apiRouter.route('/me', meRouter)
+apiRouter.route('/migration', migrationRouter)
 
 // Route de santé — accessible sans authentification
 apiRouter.get('/health', (c) => {

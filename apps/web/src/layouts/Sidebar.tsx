@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Building2,
+  ArrowRightLeft,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAnyPermission } from '@/hooks/usePermission'
@@ -23,6 +24,12 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  {
+    path: '/migration',
+    label: 'Migration ONELA',
+    icon: ArrowRightLeft,
+    requiredPermissions: ['accounts:read'],
+  },
   {
     path: '/tickets',
     label: 'Ticketing',

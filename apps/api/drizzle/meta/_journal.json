@@ -8,6 +8,13 @@
       "when": 1777046345111,
       "tag": "0000_boring_meggan",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1777292342648,
+      "tag": "0001_easy_skaar",
+      "breakpoints": true
     }
   ]
 }

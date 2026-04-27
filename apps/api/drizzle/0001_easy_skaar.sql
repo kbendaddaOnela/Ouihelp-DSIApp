@@ -1,0 +1,22 @@
+CREATE TABLE `migrations` (
+	`id` varchar(36) NOT NULL,
+	`onela_user_id` varchar(255) NOT NULL,
+	`onela_upn` varchar(255) NOT NULL,
+	`onela_display_name` varchar(255) NOT NULL,
+	`onela_email` varchar(255) NOT NULL,
+	`onela_department` varchar(255),
+	`onela_job_title` varchar(255),
+	`goh_user_id` varchar(255),
+	`goh_upn` varchar(255),
+	`temp_password` varchar(255),
+	`step_create_account` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+	`step_set_attributes` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+	`step_group_membership` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+	`step_mail_migration` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'skipped',
+	`initiated_by` varchar(255) NOT NULL,
+	`error_details` text,
+	`exchange_ps_script` text,
+	`created_at` timestamp NOT NULL DEFAULT (now()),
+	`updated_at` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `migrations_id` PRIMARY KEY(`id`)
+);
