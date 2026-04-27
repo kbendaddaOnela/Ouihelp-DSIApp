@@ -20,6 +20,8 @@ export const migrations = mysqlTable('migrations', {
   stepSetAttributes: mysqlEnum('step_set_attributes', stepStatus).default('pending').notNull(),
   stepGroupMembership: mysqlEnum('step_group_membership', stepStatus).default('pending').notNull(),
   stepMailMigration: mysqlEnum('step_mail_migration', stepStatus).default('skipped').notNull(),
+  stepGoogleAlias: mysqlEnum('step_google_alias', stepStatus).default('pending').notNull(),
+  googleAliasError: text('google_alias_error'),
   // Metadata
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
   errorDetails: text('error_details'),

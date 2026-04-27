@@ -1,13 +1,30 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
 import { CopyButton } from './CopyButton'
+import { useAddGoogleAlias } from '../hooks/useMigration'
 
 export function MigrationCard({ m }: { m: MigrationRecord }) {
   const [expanded, setExpanded] = useState(false)
+  const [aliasMessage, setAliasMessage] = useState<string | null>(null)
+  const { mutate: addAlias, isPending: isAddingAlias } = useAddGoogleAlias()
+
   const hasError = m.stepCreateAccount === 'error'
+  const canAddAlias = m.stepCreateAccount === 'success' && m.stepGoogleAlias !== 'success'
+
+  const handleAddAlias = () => {
+    setAliasMessage(null)
+    addAlias(m.id, {
+      onSuccess: () => setAliasMessage(null),
+      onError: (err: unknown) => {
+        const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+          ?? (err instanceof Error ? err.message : 'Erreur inconnue')
+        setAliasMessage(msg)
+      },
+    })
+  }
 
   return (
     <div className={cn('rounded-xl border bg-white p-4', hasError ? 'border-red-200' : 'border-gray-200')}>
@@ -21,6 +38,7 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
           <StepBadge status={m.stepCreateAccount} label="Compte GOH" />
           <StepBadge status={m.stepSetAttributes} label="Attributs SCIM" />
           <StepBadge status={m.stepGroupMembership} label="Groupe dyn." />
+          <StepBadge status={m.stepGoogleAlias} label="Alias Google" />
         </div>
       </div>
 
@@ -36,6 +54,31 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
           </div>
           <CopyButton text={m.tempPassword} />
         </div>
+      )}
+
+      {canAddAlias && (
+        <div className="mt-3">
+          <button
+            onClick={handleAddAlias}
+            disabled={isAddingAlias}
+            className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+          >
+            <RefreshCw className={cn('h-3 w-3', isAddingAlias && 'animate-spin')} />
+            {isAddingAlias ? 'Vérification…' : `Ajouter alias Google (${m.onelaUpn})`}
+          </button>
+          {aliasMessage && (
+            <p className={cn(
+              'mt-1.5 rounded px-2 py-1 text-xs',
+              aliasMessage.includes('pas encore') ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'
+            )}>
+              {aliasMessage}
+            </p>
+          )}
+        </div>
+      )}
+
+      {m.stepGoogleAlias === 'success' && (
+        <p className="mt-2 text-xs text-green-600">✓ Alias <strong>{m.onelaUpn}</strong> ajouté sur {m.gohUpn}</p>
       )}
 
       {m.exchangePsScript && (

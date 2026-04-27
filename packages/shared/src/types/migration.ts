@@ -27,6 +27,8 @@ export interface MigrationRecord {
   stepSetAttributes: StepStatus
   stepGroupMembership: StepStatus
   stepMailMigration: StepStatus
+  stepGoogleAlias: StepStatus
+  googleAliasError: string | null
   initiatedBy: string
   errorDetails: string | null
   exchangePsScript: string | null

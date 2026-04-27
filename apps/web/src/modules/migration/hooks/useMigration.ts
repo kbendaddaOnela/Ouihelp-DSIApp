@@ -31,6 +31,16 @@ export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => vo
   })
 }
 
+export function useAddGoogleAlias() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.addGoogleAlias(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    },
+  })
+}
+
 export function useDebounce(value: string, delay = 400) {
   const [debounced, setDebounced] = useState(value)
   useState(() => {

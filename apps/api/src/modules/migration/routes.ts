@@ -12,6 +12,7 @@ import {
   setGohUserAttributes,
   checkGohUserExists,
 } from './service'
+import { googleUserExists, addGoogleAlias } from './googleService'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -154,7 +155,7 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
   }
 
   const response: MigrateUsersResponse = {
-    migrations: results.map(serializeMigration),
+    migrations: results.filter((r): r is NonNullable<typeof r> => r != null).map(serializeMigration),
   }
   return c.json(response, 201)
 })
@@ -173,6 +174,40 @@ migrationRouter.get('/history', requirePermission('migration:read'), async (c) =
     total: rows.length,
   }
   return c.json(response)
+})
+
+// ── Ajouter l'alias Google (manuel, après SCIM sync) ─────────────────────────
+migrationRouter.post('/:id/google-alias', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+
+  if (row.stepCreateAccount !== 'success' || !row.gohUpn) {
+    return c.json({ error: 'Migration non réussie, impossible d\'ajouter l\'alias' }, 400)
+  }
+
+  // Vérifier que le compte Google existe (SCIM provisionné)
+  const exists = await googleUserExists(row.gohUpn)
+  if (!exists) {
+    return c.json({ error: 'not_provisioned', message: `Le compte ${row.gohUpn} n'est pas encore disponible dans Google Workspace. Le SCIM sync peut prendre 5 à 40 minutes — réessaie dans quelques minutes.` }, 202)
+  }
+
+  // Ajouter l'alias = UPN ONELA
+  try {
+    await addGoogleAlias(row.gohUpn, row.onelaUpn)
+    await db.update(migrations)
+      .set({ stepGoogleAlias: 'success', googleAliasError: null })
+      .where(eq(migrations.id, row.id))
+    const [updated] = await db.select().from(migrations).where(eq(migrations.id, row.id))
+    if (!updated) return c.json({ error: 'Not Found' }, 404)
+    return c.json(serializeMigration(updated))
+  } catch (err) {
+    const errorDetails = err instanceof Error ? err.message : String(err)
+    await db.update(migrations)
+      .set({ stepGoogleAlias: 'error', googleAliasError: errorDetails })
+      .where(eq(migrations.id, row.id))
+    return c.json({ error: 'Google alias error', message: errorDetails }, 502)
+  }
 })
 
 // ── Détail d'une migration ────────────────────────────────────────────────────

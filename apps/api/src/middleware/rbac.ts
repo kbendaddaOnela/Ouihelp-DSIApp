@@ -34,7 +34,8 @@ export const loadUserRole = createMiddleware<{ Variables: RbacVariables }>(async
   const userId = c.get('userId')
   const jwtPayload = c.get('jwtPayload')
 
-  const email = jwtPayload.email ?? jwtPayload.preferred_username ?? (jwtPayload as Record<string, string>)['unique_name'] ?? (jwtPayload as Record<string, string>)['upn'] ?? ''
+  const p = jwtPayload as unknown as Record<string, string>
+  const email = jwtPayload.email ?? jwtPayload.preferred_username ?? p['unique_name'] ?? p['upn'] ?? ''
   const name = jwtPayload.name ?? ''
   const tenantId = jwtPayload.tid
 

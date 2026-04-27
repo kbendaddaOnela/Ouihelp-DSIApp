@@ -4,6 +4,7 @@ import type {
   MigrateUsersRequest,
   MigrateUsersResponse,
   MigrationHistoryResponse,
+  MigrationRecord,
 } from '@dsi-app/shared'
 
 export const migrationApi = {
@@ -17,4 +18,7 @@ export const migrationApi = {
 
   history: (page = 1) =>
     apiClient.get<MigrationHistoryResponse>(`/migration/history?page=${page}`).then((r) => r.data),
+
+  addGoogleAlias: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/google-alias`).then((r) => r.data),
 }
