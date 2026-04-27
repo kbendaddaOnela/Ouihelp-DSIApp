@@ -5,7 +5,8 @@ export default defineConfig({
   format: ['esm'],
   platform: 'node',
   bundle: true,
-  noExternal: [/@dsi-app\/.*/, /^mysql2($|\/)/, /^drizzle-orm($|\/)/, /^sql-escaper($|\/)/],
+  // Bundle ALL npm deps — Oryx reuses a stale node_modules.tar.gz and misses new packages
+  noExternal: [/^(?!node:)/],
   sourcemap: true,
   clean: true,
   banner: {
