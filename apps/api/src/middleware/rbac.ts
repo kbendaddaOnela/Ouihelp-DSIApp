@@ -34,14 +34,14 @@ export const loadUserRole = createMiddleware<{ Variables: RbacVariables }>(async
   const userId = c.get('userId')
   const jwtPayload = c.get('jwtPayload')
 
-  const email = jwtPayload.email ?? jwtPayload.preferred_username ?? ''
+  const email = jwtPayload.email ?? jwtPayload.preferred_username ?? (jwtPayload as Record<string, string>)['unique_name'] ?? (jwtPayload as Record<string, string>)['upn'] ?? ''
   const name = jwtPayload.name ?? ''
   const tenantId = jwtPayload.tid
 
   // Auto-promote to admin if email is in the ADMIN_EMAILS env var (comma-separated)
   const adminEmails = (process.env['ADMIN_EMAILS'] ?? '').split(',').map((e) => e.trim().toLowerCase())
   const autoRole = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'collaborator'
-  console.log(`[rbac] email="${email}" preferred_username="${jwtPayload.preferred_username}" autoRole="${autoRole}" adminEmails=${JSON.stringify(adminEmails)}`)
+  console.log(`[rbac] email="${email}" autoRole="${autoRole}" claims=${JSON.stringify(Object.keys(jwtPayload))}`)
 
   await db
     .insert(users)
