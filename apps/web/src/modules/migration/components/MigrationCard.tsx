@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronUp, RefreshCw, Mail } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
 import { CopyButton } from './CopyButton'
-import { useAddGoogleAlias } from '../hooks/useMigration'
+import { useAddGoogleAlias, useMigrateMail } from '../hooks/useMigration'
 
 export function MigrationCard({ m }: { m: MigrationRecord }) {
   const [expanded, setExpanded] = useState(false)
@@ -12,8 +12,12 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
   const defaultAlias = m.onelaUpn.replace('@onela.com', '@test-mig.onela.com')
   const [aliasInput, setAliasInput] = useState(defaultAlias)
   const { mutate: addAlias, isPending: isAddingAlias } = useAddGoogleAlias()
+  const { mutate: migrateMail, isPending: isStartingMail } = useMigrateMail()
 
   const hasError = m.stepCreateAccount === 'error'
+  const mailRunning = m.stepMailMigration === 'running' || m.stepMailMigration === 'pending'
+  const canStartMail = m.stepCreateAccount === 'success' && !mailRunning
+  const mailPct = m.mailTotal > 0 ? Math.round(((m.mailMigrated + m.mailFailed) / m.mailTotal) * 100) : 0
   const canAddAlias = m.stepCreateAccount === 'success' && m.stepGoogleAlias !== 'success'
 
   const handleAddAlias = () => {
@@ -44,6 +48,7 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
           <StepBadge status={m.stepSetAttributes} label="Attributs SCIM" />
           <StepBadge status={m.stepGroupMembership} label="Groupe dyn." />
           <StepBadge status={m.stepGoogleAlias} label="Alias Google" />
+          <StepBadge status={m.stepMailMigration} label="Mail" />
         </div>
       </div>
 
@@ -93,6 +98,52 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
 
       {m.stepGoogleAlias === 'success' && (
         <p className="mt-2 text-xs text-green-600">✓ Alias <strong>{m.onelaUpn}</strong> ajouté sur {m.gohUpn}</p>
+      )}
+
+      {/* Migration mail */}
+      {canStartMail && m.stepMailMigration !== 'success' && (
+        <div className="mt-3">
+          <button
+            onClick={() => migrateMail(m.id)}
+            disabled={isStartingMail}
+            className="flex items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-100 disabled:opacity-60"
+          >
+            <Mail className="h-3 w-3" />
+            {isStartingMail
+              ? 'Démarrage…'
+              : m.stepMailMigration === 'error'
+                ? 'Reprendre la migration mail'
+                : 'Lancer la migration mail (Exchange → Gmail)'}
+          </button>
+        </div>
+      )}
+
+      {(mailRunning || m.mailTotal > 0) && (
+        <div className="mt-3 rounded-lg bg-gray-50 px-3 py-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-medium text-gray-700">
+              {mailRunning ? 'Migration mail en cours…' : 'Migration mail'}
+            </span>
+            <span className="font-mono text-gray-600">
+              {m.mailMigrated + m.mailFailed} / {m.mailTotal} ({mailPct}%)
+            </span>
+          </div>
+          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+            <div
+              className={cn(
+                'h-full transition-all duration-500',
+                m.stepMailMigration === 'error' ? 'bg-red-500' : 'bg-purple-500'
+              )}
+              style={{ width: `${mailPct}%` }}
+            />
+          </div>
+          {m.mailFailed > 0 && (
+            <p className="mt-1 text-xs text-red-600">{m.mailFailed} message(s) en erreur</p>
+          )}
+          {m.mailError && (
+            <p className="mt-1 text-xs text-red-600">{m.mailError}</p>
+          )}
+        </div>
       )}
 
       {m.exchangePsScript && (

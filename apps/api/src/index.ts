@@ -5,6 +5,7 @@ import { cors } from 'hono/cors'
 import { apiRouter } from './routes/index'
 import { requestLogger } from './middleware/logger'
 import { runMigrations } from './db/migrate'
+import { startMailWorker } from './modules/migration/mailWorker'
 
 const app = new Hono()
 
@@ -53,6 +54,7 @@ async function start() {
       .then(() => {
         dbReady = true
         console.log('[startup] DB migrations OK')
+        startMailWorker()
       })
       .catch((err) => {
         dbError = err instanceof Error ? err.message : String(err)

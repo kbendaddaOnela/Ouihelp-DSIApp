@@ -16,7 +16,14 @@ export function useMigrationHistory() {
   return useQuery({
     queryKey: ['migration-history'],
     queryFn: () => migrationApi.history(),
-    staleTime: 30_000,
+    staleTime: 5_000,
+    refetchInterval: (q) => {
+      // Refresh actif quand au moins une migration mail est en cours
+      const anyRunning = q.state.data?.migrations.some(
+        (m) => m.stepMailMigration === 'pending' || m.stepMailMigration === 'running'
+      )
+      return anyRunning ? 5_000 : false
+    },
   })
 }
 
@@ -35,6 +42,16 @@ export function useAddGoogleAlias() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({ id, alias }: { id: string; alias?: string }) => migrationApi.addGoogleAlias(id, alias),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    },
+  })
+}
+
+export function useMigrateMail() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.migrateMail(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
     },

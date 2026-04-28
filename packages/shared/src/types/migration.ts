@@ -29,6 +29,12 @@ export interface MigrationRecord {
   stepMailMigration: StepStatus
   stepGoogleAlias: StepStatus
   googleAliasError: string | null
+  mailTotal: number
+  mailMigrated: number
+  mailFailed: number
+  mailError: string | null
+  mailStartedAt: string | null
+  mailFinishedAt: string | null
   initiatedBy: string
   errorDetails: string | null
   exchangePsScript: string | null

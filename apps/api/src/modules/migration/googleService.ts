@@ -5,31 +5,24 @@ interface TokenCache {
   expiresAt: number
 }
 
-let googleTokenCache: TokenCache | null = null
+const googleTokenCache = new Map<string, TokenCache>()
 
-async function getGoogleAccessToken(): Promise<string> {
-  if (googleTokenCache && Date.now() < googleTokenCache.expiresAt - 60_000) {
-    return googleTokenCache.token
-  }
+// Récupère un access_token Google en impersonant un user, pour un scope donné.
+// La même SA private key sert pour tous les scopes/users (DwD).
+export async function getGoogleAccessTokenForUser(impersonate: string, scope: string): Promise<string> {
+  const cacheKey = `${impersonate}|${scope}`
+  const cached = googleTokenCache.get(cacheKey)
+  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token
 
   const saEmail = process.env['GOOGLE_SA_EMAIL']
   const saPrivateKeyRaw = process.env['GOOGLE_SA_PRIVATE_KEY']
-  const adminEmail = process.env['GOOGLE_ADMIN_EMAIL']
+  if (!saEmail || !saPrivateKeyRaw) throw new Error('GOOGLE_SA_EMAIL ou GOOGLE_SA_PRIVATE_KEY manquant')
 
-  if (!saEmail || !saPrivateKeyRaw || !adminEmail) {
-    throw new Error('GOOGLE_SA_EMAIL, GOOGLE_SA_PRIVATE_KEY ou GOOGLE_ADMIN_EMAIL manquant')
-  }
-
-  // Azure env vars stockent les \n comme littéraux — on les convertit en vrais sauts de ligne
   const saPrivateKey = saPrivateKeyRaw.replace(/\\n/g, '\n')
-
   const privateKey = await importPKCS8(saPrivateKey, 'RS256')
 
   const now = Math.floor(Date.now() / 1000)
-  const assertion = await new SignJWT({
-    scope: 'https://www.googleapis.com/auth/admin.directory.user',
-    sub: adminEmail,
-  })
+  const assertion = await new SignJWT({ scope, sub: impersonate })
     .setProtectedHeader({ alg: 'RS256' })
     .setIssuer(saEmail)
     .setAudience('https://oauth2.googleapis.com/token')
@@ -52,8 +45,14 @@ async function getGoogleAccessToken(): Promise<string> {
   }
 
   const data = (await res.json()) as { access_token: string; expires_in: number }
-  googleTokenCache = { token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 }
+  googleTokenCache.set(cacheKey, { token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 })
   return data.access_token
+}
+
+async function getGoogleAccessToken(): Promise<string> {
+  const adminEmail = process.env['GOOGLE_ADMIN_EMAIL']
+  if (!adminEmail) throw new Error('GOOGLE_ADMIN_EMAIL manquant')
+  return getGoogleAccessTokenForUser(adminEmail, 'https://www.googleapis.com/auth/admin.directory.user')
 }
 
 export async function googleUserExists(email: string): Promise<boolean> {

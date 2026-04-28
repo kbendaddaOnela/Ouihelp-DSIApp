@@ -1,6 +1,7 @@
-import { mysqlTable, varchar, mysqlEnum, timestamp, text } from 'drizzle-orm/mysql-core'
+import { mysqlTable, varchar, mysqlEnum, timestamp, text, int, uniqueIndex } from 'drizzle-orm/mysql-core'
 
 const stepStatus = ['pending', 'running', 'success', 'error', 'skipped'] as const
+const messageStatus = ['success', 'error', 'skipped'] as const
 
 export const migrations = mysqlTable('migrations', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -22,6 +23,13 @@ export const migrations = mysqlTable('migrations', {
   stepMailMigration: mysqlEnum('step_mail_migration', stepStatus).default('skipped').notNull(),
   stepGoogleAlias: mysqlEnum('step_google_alias', stepStatus).default('pending').notNull(),
   googleAliasError: text('google_alias_error'),
+  // Mail migration progress (Phase B)
+  mailTotal: int('mail_total').default(0).notNull(),
+  mailMigrated: int('mail_migrated').default(0).notNull(),
+  mailFailed: int('mail_failed').default(0).notNull(),
+  mailError: text('mail_error'),
+  mailStartedAt: timestamp('mail_started_at'),
+  mailFinishedAt: timestamp('mail_finished_at'),
   // Metadata
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
   errorDetails: text('error_details'),
@@ -32,3 +40,23 @@ export const migrations = mysqlTable('migrations', {
 
 export type Migration = typeof migrations.$inferSelect
 export type NewMigration = typeof migrations.$inferInsert
+
+// ── Suivi des messages migrés (idempotence + reprise) ─────────────────────────
+export const migratedMessages = mysqlTable(
+  'migrated_messages',
+  {
+    id: int('id').autoincrement().primaryKey(),
+    migrationId: varchar('migration_id', { length: 36 }).notNull(),
+    graphMessageId: varchar('graph_message_id', { length: 255 }).notNull(),
+    internetMessageId: varchar('internet_message_id', { length: 1000 }),
+    gmailMessageId: varchar('gmail_message_id', { length: 255 }),
+    status: mysqlEnum('status', messageStatus).notNull(),
+    errorDetails: text('error_details'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (t) => ({
+    uniq: uniqueIndex('migrated_messages_unique').on(t.migrationId, t.graphMessageId),
+  })
+)
+
+export type MigratedMessage = typeof migratedMessages.$inferSelect

@@ -14,23 +14,29 @@ async function columnExists(table: string, column: string): Promise<boolean> {
   return rows.length > 0
 }
 
+async function tableExists(table: string): Promise<boolean> {
+  const [rows] = (await pool.query(
+    `SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
+    [table]
+  )) as [Array<unknown>, unknown]
+  return rows.length > 0
+}
+
 async function ensureSchemaPatches() {
-  const patches: Array<{ table: string; column: string; ddl: string }> = [
-    {
-      table: 'migrations',
-      column: 'step_google_alias',
-      ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_google_alias\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'`,
-    },
-    {
-      table: 'migrations',
-      column: 'google_alias_error',
-      ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`google_alias_error\` text`,
-    },
+  // Colonnes à ajouter sur la table migrations
+  const columnPatches: Array<{ table: string; column: string; ddl: string }> = [
+    { table: 'migrations', column: 'step_google_alias', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_google_alias\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'migrations', column: 'google_alias_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`google_alias_error\` text` },
+    { table: 'migrations', column: 'mail_total', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_total\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'mail_migrated', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_migrated\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'mail_failed', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_failed\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'mail_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_error\` text` },
+    { table: 'migrations', column: 'mail_started_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_started_at\` timestamp NULL` },
+    { table: 'migrations', column: 'mail_finished_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_finished_at\` timestamp NULL` },
   ]
-  for (const p of patches) {
+  for (const p of columnPatches) {
     try {
-      const exists = await columnExists(p.table, p.column)
-      if (exists) {
+      if (await columnExists(p.table, p.column)) {
         console.log(`[migrate] Patch skipped (column exists): ${p.table}.${p.column}`)
         continue
       }
@@ -38,6 +44,38 @@ async function ensureSchemaPatches() {
       console.log(`[migrate] Patch OK: ${p.table}.${p.column}`)
     } catch (err) {
       console.error(`[migrate] Patch failed: ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Tables à créer
+  const tablePatches: Array<{ table: string; ddl: string }> = [
+    {
+      table: 'migrated_messages',
+      ddl: `CREATE TABLE \`migrated_messages\` (
+        \`id\` int NOT NULL AUTO_INCREMENT,
+        \`migration_id\` varchar(36) NOT NULL,
+        \`graph_message_id\` varchar(255) NOT NULL,
+        \`internet_message_id\` varchar(1000),
+        \`gmail_message_id\` varchar(255),
+        \`status\` enum('success','error','skipped') NOT NULL,
+        \`error_details\` text,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`migrated_messages_unique\` (\`migration_id\`, \`graph_message_id\`),
+        KEY \`idx_migration_id\` (\`migration_id\`)
+      )`,
+    },
+  ]
+  for (const p of tablePatches) {
+    try {
+      if (await tableExists(p.table)) {
+        console.log(`[migrate] Patch skipped (table exists): ${p.table}`)
+        continue
+      }
+      await db.execute(sql.raw(p.ddl))
+      console.log(`[migrate] Patch OK: table ${p.table}`)
+    } catch (err) {
+      console.error(`[migrate] Patch failed: table ${p.table} →`, err instanceof Error ? err.message : String(err))
     }
   }
 }
