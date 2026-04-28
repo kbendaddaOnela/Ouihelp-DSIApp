@@ -18,9 +18,11 @@ export function useMigrationHistory() {
     queryFn: () => migrationApi.history(),
     staleTime: 5_000,
     refetchInterval: (q) => {
-      // Refresh actif quand au moins une migration mail est en cours
-      const anyRunning = q.state.data?.migrations.some(
-        (m) => m.stepMailMigration === 'pending' || m.stepMailMigration === 'running'
+      // Refresh actif quand au moins une migration (mail/cal/contacts) est en cours
+      const anyRunning = q.state.data?.migrations.some((m) =>
+        ['pending', 'running'].includes(m.stepMailMigration) ||
+        ['pending', 'running'].includes(m.stepCalendarMigration) ||
+        ['pending', 'running'].includes(m.stepContactsMigration)
       )
       return anyRunning ? 5_000 : false
     },
@@ -52,6 +54,26 @@ export function useMigrateMail() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => migrationApi.migrateMail(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    },
+  })
+}
+
+export function useMigrateCalendar() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.migrateCalendar(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    },
+  })
+}
+
+export function useMigrateContacts() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.migrateContacts(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
     },

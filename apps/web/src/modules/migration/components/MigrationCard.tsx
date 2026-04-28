@@ -1,24 +1,31 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, RefreshCw, Mail } from 'lucide-react'
+import { ChevronDown, ChevronUp, RefreshCw, Mail, Calendar, Users } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
 import { CopyButton } from './CopyButton'
-import { useAddGoogleAlias, useMigrateMail } from '../hooks/useMigration'
+import { DataMigrationSection } from './DataMigrationSection'
+import {
+  useAddGoogleAlias,
+  useMigrateMail,
+  useMigrateCalendar,
+  useMigrateContacts,
+} from '../hooks/useMigration'
 
 export function MigrationCard({ m }: { m: MigrationRecord }) {
   const [expanded, setExpanded] = useState(false)
   const [aliasMessage, setAliasMessage] = useState<string | null>(null)
   const defaultAlias = m.onelaUpn.replace('@onela.com', '@test-mig.onela.com')
   const [aliasInput, setAliasInput] = useState(defaultAlias)
+
   const { mutate: addAlias, isPending: isAddingAlias } = useAddGoogleAlias()
   const { mutate: migrateMail, isPending: isStartingMail } = useMigrateMail()
+  const { mutate: migrateCalendar, isPending: isStartingCalendar } = useMigrateCalendar()
+  const { mutate: migrateContacts, isPending: isStartingContacts } = useMigrateContacts()
 
   const hasError = m.stepCreateAccount === 'error'
-  const mailRunning = m.stepMailMigration === 'running' || m.stepMailMigration === 'pending'
-  const canStartMail = m.stepCreateAccount === 'success' && !mailRunning
-  const mailPct = m.mailTotal > 0 ? Math.round(((m.mailMigrated + m.mailFailed) / m.mailTotal) * 100) : 0
-  const canAddAlias = m.stepCreateAccount === 'success' && m.stepGoogleAlias !== 'success'
+  const accountReady = m.stepCreateAccount === 'success'
+  const canAddAlias = accountReady && m.stepGoogleAlias !== 'success'
 
   const handleAddAlias = () => {
     setAliasMessage(null)
@@ -49,6 +56,8 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
           <StepBadge status={m.stepGroupMembership} label="Groupe dyn." />
           <StepBadge status={m.stepGoogleAlias} label="Alias Google" />
           <StepBadge status={m.stepMailMigration} label="Mail" />
+          <StepBadge status={m.stepCalendarMigration} label="Calendrier" />
+          <StepBadge status={m.stepContactsMigration} label="Contacts" />
         </div>
       </div>
 
@@ -100,49 +109,53 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
         <p className="mt-2 text-xs text-green-600">✓ Alias <strong>{m.onelaUpn}</strong> ajouté sur {m.gohUpn}</p>
       )}
 
-      {/* Migration mail */}
-      {canStartMail && m.stepMailMigration !== 'success' && (
-        <div className="mt-3">
-          <button
-            onClick={() => migrateMail(m.id)}
-            disabled={isStartingMail}
-            className="flex items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-100 disabled:opacity-60"
-          >
-            <Mail className="h-3 w-3" />
-            {isStartingMail
-              ? 'Démarrage…'
-              : m.stepMailMigration === 'error'
-                ? 'Reprendre la migration mail'
-                : 'Lancer la migration mail (Exchange → Gmail)'}
-          </button>
-        </div>
-      )}
-
-      {(mailRunning || m.mailTotal > 0) && (
-        <div className="mt-3 rounded-lg bg-gray-50 px-3 py-2">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-medium text-gray-700">
-              {mailRunning ? 'Migration mail en cours…' : 'Migration mail'}
-            </span>
-            <span className="font-mono text-gray-600">
-              {m.mailMigrated + m.mailFailed} / {m.mailTotal} ({mailPct}%)
-            </span>
-          </div>
-          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
-            <div
-              className={cn(
-                'h-full transition-all duration-500',
-                m.stepMailMigration === 'error' ? 'bg-red-500' : 'bg-purple-500'
-              )}
-              style={{ width: `${mailPct}%` }}
-            />
-          </div>
-          {m.mailFailed > 0 && (
-            <p className="mt-1 text-xs text-red-600">{m.mailFailed} message(s) en erreur</p>
-          )}
-          {m.mailError && (
-            <p className="mt-1 text-xs text-red-600">{m.mailError}</p>
-          )}
+      {accountReady && (
+        <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
+          <DataMigrationSection
+            label="mail"
+            icon={Mail}
+            status={m.stepMailMigration}
+            total={m.mailTotal}
+            migrated={m.mailMigrated}
+            failed={m.mailFailed}
+            errorMessage={m.mailError}
+            itemUnit="message"
+            onStart={() => migrateMail(m.id)}
+            isStarting={isStartingMail}
+            startedAt={m.mailStartedAt}
+            finishedAt={m.mailFinishedAt}
+            color="purple"
+          />
+          <DataMigrationSection
+            label="calendrier"
+            icon={Calendar}
+            status={m.stepCalendarMigration}
+            total={m.calTotal}
+            migrated={m.calMigrated}
+            failed={m.calFailed}
+            errorMessage={m.calError}
+            itemUnit="événement"
+            onStart={() => migrateCalendar(m.id)}
+            isStarting={isStartingCalendar}
+            startedAt={m.calStartedAt}
+            finishedAt={m.calFinishedAt}
+            color="blue"
+          />
+          <DataMigrationSection
+            label="contacts"
+            icon={Users}
+            status={m.stepContactsMigration}
+            total={m.contactsTotal}
+            migrated={m.contactsMigrated}
+            failed={m.contactsFailed}
+            errorMessage={m.contactsError}
+            itemUnit="contact"
+            onStart={() => migrateContacts(m.id)}
+            isStarting={isStartingContacts}
+            startedAt={m.contactsStartedAt}
+            finishedAt={m.contactsFinishedAt}
+            color="emerald"
+          />
         </div>
       )}
 

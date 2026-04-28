@@ -33,6 +33,22 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'mail_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_error\` text` },
     { table: 'migrations', column: 'mail_started_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_started_at\` timestamp NULL` },
     { table: 'migrations', column: 'mail_finished_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_finished_at\` timestamp NULL` },
+    // Calendar
+    { table: 'migrations', column: 'step_calendar_migration', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_calendar_migration\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'migrations', column: 'cal_total', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`cal_total\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'cal_migrated', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`cal_migrated\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'cal_failed', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`cal_failed\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'cal_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`cal_error\` text` },
+    { table: 'migrations', column: 'cal_started_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`cal_started_at\` timestamp NULL` },
+    { table: 'migrations', column: 'cal_finished_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`cal_finished_at\` timestamp NULL` },
+    // Contacts
+    { table: 'migrations', column: 'step_contacts_migration', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_contacts_migration\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'migrations', column: 'contacts_total', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_total\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'contacts_migrated', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_migrated\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'contacts_failed', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_failed\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'contacts_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_error\` text` },
+    { table: 'migrations', column: 'contacts_started_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_started_at\` timestamp NULL` },
+    { table: 'migrations', column: 'contacts_finished_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_finished_at\` timestamp NULL` },
   ]
   for (const p of columnPatches) {
     try {
@@ -63,6 +79,37 @@ async function ensureSchemaPatches() {
         PRIMARY KEY (\`id\`),
         UNIQUE KEY \`migrated_messages_unique\` (\`migration_id\`, \`graph_message_id\`),
         KEY \`idx_migration_id\` (\`migration_id\`)
+      )`,
+    },
+    {
+      table: 'migrated_events',
+      ddl: `CREATE TABLE \`migrated_events\` (
+        \`id\` int NOT NULL AUTO_INCREMENT,
+        \`migration_id\` varchar(36) NOT NULL,
+        \`graph_event_id\` varchar(255) NOT NULL,
+        \`ical_uid\` varchar(1000),
+        \`google_event_id\` varchar(1024),
+        \`status\` enum('success','error','skipped') NOT NULL,
+        \`error_details\` text,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`migrated_events_unique\` (\`migration_id\`, \`graph_event_id\`),
+        KEY \`idx_event_migration_id\` (\`migration_id\`)
+      )`,
+    },
+    {
+      table: 'migrated_contacts',
+      ddl: `CREATE TABLE \`migrated_contacts\` (
+        \`id\` int NOT NULL AUTO_INCREMENT,
+        \`migration_id\` varchar(36) NOT NULL,
+        \`graph_contact_id\` varchar(255) NOT NULL,
+        \`google_resource_name\` varchar(255),
+        \`status\` enum('success','error','skipped') NOT NULL,
+        \`error_details\` text,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`migrated_contacts_unique\` (\`migration_id\`, \`graph_contact_id\`),
+        KEY \`idx_contact_migration_id\` (\`migration_id\`)
       )`,
     },
   ]

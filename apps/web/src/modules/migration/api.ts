@@ -24,4 +24,10 @@ export const migrationApi = {
 
   migrateMail: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-mail`).then((r) => r.data),
+
+  migrateCalendar: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/migrate-calendar`).then((r) => r.data),
+
+  migrateContacts: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/migrate-contacts`).then((r) => r.data),
 }

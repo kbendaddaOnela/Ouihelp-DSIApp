@@ -35,6 +35,20 @@ export interface MigrationRecord {
   mailError: string | null
   mailStartedAt: string | null
   mailFinishedAt: string | null
+  stepCalendarMigration: StepStatus
+  calTotal: number
+  calMigrated: number
+  calFailed: number
+  calError: string | null
+  calStartedAt: string | null
+  calFinishedAt: string | null
+  stepContactsMigration: StepStatus
+  contactsTotal: number
+  contactsMigrated: number
+  contactsFailed: number
+  contactsError: string | null
+  contactsStartedAt: string | null
+  contactsFinishedAt: string | null
   initiatedBy: string
   errorDetails: string | null
   exchangePsScript: string | null

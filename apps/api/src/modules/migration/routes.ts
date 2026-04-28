@@ -13,7 +13,7 @@ import {
   checkGohUserExists,
 } from './service'
 import { googleUserExists, addGoogleAlias } from './googleService'
-import { enqueueMailMigration } from './mailWorker'
+import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration } from './mailWorker'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -237,6 +237,42 @@ migrationRouter.post('/:id/migrate-mail', requirePermission('migration:write'), 
   return c.json(serializeMigration(updated), 202)
 })
 
+// ── Lancer migration calendrier ──────────────────────────────────────────────
+migrationRouter.post('/:id/migrate-calendar', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (row.stepCreateAccount !== 'success' || !row.gohUpn) {
+    return c.json({ error: 'Migration de compte non réussie' }, 400)
+  }
+  if (row.stepCalendarMigration === 'running' || row.stepCalendarMigration === 'pending') {
+    return c.json({ error: 'Migration calendrier déjà en cours' }, 409)
+  }
+  await enqueueCalendarMigration(id)
+  const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!updated) return c.json({ error: 'Not Found' }, 404)
+  return c.json(serializeMigration(updated), 202)
+})
+
+// ── Lancer migration contacts ────────────────────────────────────────────────
+migrationRouter.post('/:id/migrate-contacts', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (row.stepCreateAccount !== 'success' || !row.gohUpn) {
+    return c.json({ error: 'Migration de compte non réussie' }, 400)
+  }
+  if (row.stepContactsMigration === 'running' || row.stepContactsMigration === 'pending') {
+    return c.json({ error: 'Migration contacts déjà en cours' }, 409)
+  }
+  await enqueueContactsMigration(id)
+  const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!updated) return c.json({ error: 'Not Found' }, 404)
+  return c.json(serializeMigration(updated), 202)
+})
+
 // ── Détail d'une migration ────────────────────────────────────────────────────
 migrationRouter.get('/:id', requirePermission('migration:read'), async (c) => {
   const db = getDb()
@@ -253,5 +289,9 @@ function serializeMigration(m: typeof migrations.$inferSelect) {
     tempPassword: m.tempPassword ?? null,
     mailStartedAt: m.mailStartedAt ? m.mailStartedAt.toISOString() : null,
     mailFinishedAt: m.mailFinishedAt ? m.mailFinishedAt.toISOString() : null,
+    calStartedAt: m.calStartedAt ? m.calStartedAt.toISOString() : null,
+    calFinishedAt: m.calFinishedAt ? m.calFinishedAt.toISOString() : null,
+    contactsStartedAt: m.contactsStartedAt ? m.contactsStartedAt.toISOString() : null,
+    contactsFinishedAt: m.contactsFinishedAt ? m.contactsFinishedAt.toISOString() : null,
   }
 }

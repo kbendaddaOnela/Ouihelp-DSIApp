@@ -1,11 +1,10 @@
-// Worker in-process pour migrer les mails Exchange → Gmail
-// - Polling toutes les 5s sur step_mail_migration='pending'
-// - Max 3 users en parallèle (throttling Graph + Gmail)
-// - Reprise automatique : skip les graph_message_id déjà présents en DB
+// Worker in-process pour migrer mail + calendrier + contacts (Exchange → Google)
+// - Polling 5s sur step_*_migration='pending'
+// - Max 3 jobs simultanés (toutes phases confondues)
 
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../db/index'
-import { migrations, migratedMessages, type Migration } from './schema'
+import { migrations, migratedMessages, migratedEvents, migratedContacts, type Migration } from './schema'
 import {
   iterateOnelaMessages,
   fetchOnelaMessageMime,
@@ -14,77 +13,87 @@ import {
   gmailImportMime,
   type GraphFolder,
 } from './mailService'
+import { iterateOnelaEvents, googleCalendarImportEvent } from './calendarService'
+import { iterateOnelaContacts, googlePeopleCreateContact } from './contactsService'
 
 const MAX_CONCURRENT = 3
 const POLL_INTERVAL_MS = 5000
-const RUNNING = new Set<string>()
+const RUNNING = new Map<string, 'mail' | 'calendar' | 'contacts'>()
 
 let workerStarted = false
 
 export function startMailWorker() {
   if (workerStarted) return
   workerStarted = true
-  console.log('[mail-worker] started')
+  console.log('[migration-worker] started')
   setInterval(() => {
-    pollAndProcess().catch((err) => console.error('[mail-worker] tick error:', err))
+    pollAndProcess().catch((err) => console.error('[migration-worker] tick error:', err))
   }, POLL_INTERVAL_MS)
-  // Premier tick immédiat
-  pollAndProcess().catch((err) => console.error('[mail-worker] initial tick error:', err))
+  pollAndProcess().catch((err) => console.error('[migration-worker] initial tick error:', err))
 }
 
 async function pollAndProcess() {
   if (RUNNING.size >= MAX_CONCURRENT) return
-
   const slots = MAX_CONCURRENT - RUNNING.size
-  const candidates = await db
-    .select()
-    .from(migrations)
-    .where(eq(migrations.stepMailMigration, 'pending'))
-    .limit(slots)
+
+  // On cherche tous les jobs pending sur n'importe laquelle des 3 phases
+  const candidates = await db.select().from(migrations)
+  const pending: Array<{ job: Migration; phase: 'mail' | 'calendar' | 'contacts' }> = []
 
   for (const job of candidates) {
-    if (RUNNING.has(job.id)) continue
-    if (RUNNING.size >= MAX_CONCURRENT) break
-    RUNNING.add(job.id)
-    // fire-and-forget : le worker continue à tourner
-    processUserMail(job)
-      .catch((err) => console.error(`[mail-worker] job ${job.id} fatal:`, err))
-      .finally(() => RUNNING.delete(job.id))
+    const key = `${job.id}-mail`
+    if (job.stepMailMigration === 'pending' && !RUNNING.has(key)) {
+      pending.push({ job, phase: 'mail' })
+    }
+    const keyC = `${job.id}-calendar`
+    if (job.stepCalendarMigration === 'pending' && !RUNNING.has(keyC)) {
+      pending.push({ job, phase: 'calendar' })
+    }
+    const keyK = `${job.id}-contacts`
+    if (job.stepContactsMigration === 'pending' && !RUNNING.has(keyK)) {
+      pending.push({ job, phase: 'contacts' })
+    }
+    if (pending.length >= slots) break
+  }
+
+  for (const { job, phase } of pending.slice(0, slots)) {
+    const key = `${job.id}-${phase}`
+    RUNNING.set(key, phase)
+    const fn =
+      phase === 'mail' ? processUserMail
+      : phase === 'calendar' ? processUserCalendar
+      : processUserContacts
+    fn(job)
+      .catch((err) => console.error(`[migration-worker] ${key} fatal:`, err))
+      .finally(() => RUNNING.delete(key))
   }
 }
 
-async function processUserMail(job: Migration) {
-  const startedAt = new Date()
-  console.log(`[mail-worker] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
+// ── Phase mail ────────────────────────────────────────────────────────────────
 
-  if (!job.gohUpn) {
-    await markError(job.id, 'gohUpn manquant')
-    return
-  }
+async function processUserMail(job: Migration) {
+  console.log(`[mail] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
+  if (!job.gohUpn) return markStepError(job.id, 'mail', 'gohUpn manquant')
 
   try {
-    await db
-      .update(migrations)
-      .set({ stepMailMigration: 'running', mailStartedAt: startedAt, mailError: null })
+    await db.update(migrations)
+      .set({ stepMailMigration: 'running', mailStartedAt: new Date(), mailError: null })
       .where(eq(migrations.id, job.id))
 
-    // 1. Lister les folders ONELA + construire le mapping label Gmail
     const folders = await listOnelaFolders(job.onelaUserId)
     const folderById = new Map<string, GraphFolder>(folders.map((f) => [f.id, f]))
     const resolver = await buildLabelResolver(job.gohUpn, folders)
 
-    // 2. Charger les message IDs déjà migrés (reprise idempotente)
-    const alreadyMigratedRows = await db
+    const already = await db
       .select({ graphMessageId: migratedMessages.graphMessageId })
       .from(migratedMessages)
       .where(eq(migratedMessages.migrationId, job.id))
-    const skipSet = new Set(alreadyMigratedRows.map((r) => r.graphMessageId))
+    const skipSet = new Set(already.map((r) => r.graphMessageId))
 
     let migrated = job.mailMigrated
     let failed = job.mailFailed
     let total = job.mailTotal
 
-    // 3. Itérer tous les messages
     for await (const msg of iterateOnelaMessages(job.onelaUserId)) {
       total++
       if (skipSet.has(msg.id)) continue
@@ -92,11 +101,7 @@ async function processUserMail(job: Migration) {
       try {
         const rawMime = await fetchOnelaMessageMime(job.onelaUserId, msg.id)
         const folder = msg.parentFolderId ? folderById.get(msg.parentFolderId) : undefined
-        const labelIds = folder
-          ? await resolver.resolve(folder)
-          : ['INBOX']
-
-        // Brouillons → DRAFT label uniquement
+        const labelIds = folder ? await resolver.resolve(folder) : ['INBOX']
         const finalLabels = msg.isDraft ? ['DRAFT'] : labelIds
 
         const result = await gmailImportMime({
@@ -125,60 +130,218 @@ async function processUserMail(job: Migration) {
             status: 'error',
             errorDetails,
           })
-        } catch { /* unique violation = déjà loggé */ }
+        } catch { /* dup */ }
         failed++
-        console.warn(`[mail-worker] msg ${msg.id} error:`, errorDetails.slice(0, 200))
+        console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
       }
 
-      // Update progress toutes les 25 messages
       if ((migrated + failed) % 25 === 0) {
-        await db
-          .update(migrations)
+        await db.update(migrations)
           .set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed })
           .where(eq(migrations.id, job.id))
       }
     }
 
-    // 4. Final update
-    await db
-      .update(migrations)
+    await db.update(migrations)
       .set({
         stepMailMigration: failed === 0 ? 'success' : 'error',
-        mailTotal: total,
-        mailMigrated: migrated,
-        mailFailed: failed,
+        mailTotal: total, mailMigrated: migrated, mailFailed: failed,
         mailFinishedAt: new Date(),
         mailError: failed > 0 ? `${failed} message(s) en erreur` : null,
       })
       .where(eq(migrations.id, job.id))
 
-    console.log(`[mail-worker] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
+    console.log(`[mail] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
   } catch (err) {
-    await markError(job.id, err instanceof Error ? err.message : String(err))
+    await markStepError(job.id, 'mail', err instanceof Error ? err.message : String(err))
   }
 }
 
-async function markError(id: string, message: string) {
-  console.error(`[mail-worker] ${id} fatal: ${message}`)
-  await db
-    .update(migrations)
-    .set({
-      stepMailMigration: 'error',
-      mailError: message,
-      mailFinishedAt: new Date(),
-    })
-    .where(eq(migrations.id, id))
+// ── Phase calendrier ──────────────────────────────────────────────────────────
+
+async function processUserCalendar(job: Migration) {
+  console.log(`[calendar] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
+  if (!job.gohUpn) return markStepError(job.id, 'calendar', 'gohUpn manquant')
+
+  try {
+    await db.update(migrations)
+      .set({ stepCalendarMigration: 'running', calStartedAt: new Date(), calError: null })
+      .where(eq(migrations.id, job.id))
+
+    const already = await db
+      .select({ graphEventId: migratedEvents.graphEventId })
+      .from(migratedEvents)
+      .where(eq(migratedEvents.migrationId, job.id))
+    const skipSet = new Set(already.map((r) => r.graphEventId))
+
+    let migrated = job.calMigrated
+    let failed = job.calFailed
+    let total = job.calTotal
+
+    for await (const ev of iterateOnelaEvents(job.onelaUserId)) {
+      total++
+      if (skipSet.has(ev.id)) continue
+
+      try {
+        const result = await googleCalendarImportEvent(job.gohUpn, ev)
+        if (!result) {
+          await db.insert(migratedEvents).values({
+            migrationId: job.id,
+            graphEventId: ev.id,
+            iCalUid: ev.iCalUId ?? null,
+            status: 'skipped',
+            errorDetails: 'event sans start/end',
+          })
+          continue
+        }
+        await db.insert(migratedEvents).values({
+          migrationId: job.id,
+          graphEventId: ev.id,
+          iCalUid: ev.iCalUId ?? null,
+          googleEventId: result.id,
+          status: 'success',
+        })
+        migrated++
+      } catch (err) {
+        const errorDetails = err instanceof Error ? err.message : String(err)
+        try {
+          await db.insert(migratedEvents).values({
+            migrationId: job.id,
+            graphEventId: ev.id,
+            iCalUid: ev.iCalUId ?? null,
+            status: 'error',
+            errorDetails,
+          })
+        } catch { /* dup */ }
+        failed++
+        console.warn(`[calendar] event ${ev.id} error:`, errorDetails.slice(0, 200))
+      }
+
+      if ((migrated + failed) % 25 === 0) {
+        await db.update(migrations)
+          .set({ calTotal: total, calMigrated: migrated, calFailed: failed })
+          .where(eq(migrations.id, job.id))
+      }
+    }
+
+    await db.update(migrations)
+      .set({
+        stepCalendarMigration: failed === 0 ? 'success' : 'error',
+        calTotal: total, calMigrated: migrated, calFailed: failed,
+        calFinishedAt: new Date(),
+        calError: failed > 0 ? `${failed} événement(s) en erreur` : null,
+      })
+      .where(eq(migrations.id, job.id))
+
+    console.log(`[calendar] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
+  } catch (err) {
+    await markStepError(job.id, 'calendar', err instanceof Error ? err.message : String(err))
+  }
+}
+
+// ── Phase contacts ────────────────────────────────────────────────────────────
+
+async function processUserContacts(job: Migration) {
+  console.log(`[contacts] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
+  if (!job.gohUpn) return markStepError(job.id, 'contacts', 'gohUpn manquant')
+
+  try {
+    await db.update(migrations)
+      .set({ stepContactsMigration: 'running', contactsStartedAt: new Date(), contactsError: null })
+      .where(eq(migrations.id, job.id))
+
+    const already = await db
+      .select({ graphContactId: migratedContacts.graphContactId })
+      .from(migratedContacts)
+      .where(eq(migratedContacts.migrationId, job.id))
+    const skipSet = new Set(already.map((r) => r.graphContactId))
+
+    let migrated = job.contactsMigrated
+    let failed = job.contactsFailed
+    let total = job.contactsTotal
+
+    for await (const ct of iterateOnelaContacts(job.onelaUserId)) {
+      total++
+      if (skipSet.has(ct.id)) continue
+
+      try {
+        const result = await googlePeopleCreateContact(job.gohUpn, ct)
+        await db.insert(migratedContacts).values({
+          migrationId: job.id,
+          graphContactId: ct.id,
+          googleResourceName: result.resourceName,
+          status: 'success',
+        })
+        migrated++
+      } catch (err) {
+        const errorDetails = err instanceof Error ? err.message : String(err)
+        try {
+          await db.insert(migratedContacts).values({
+            migrationId: job.id,
+            graphContactId: ct.id,
+            status: 'error',
+            errorDetails,
+          })
+        } catch { /* dup */ }
+        failed++
+        console.warn(`[contacts] ct ${ct.id} error:`, errorDetails.slice(0, 200))
+      }
+
+      if ((migrated + failed) % 25 === 0) {
+        await db.update(migrations)
+          .set({ contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed })
+          .where(eq(migrations.id, job.id))
+      }
+    }
+
+    await db.update(migrations)
+      .set({
+        stepContactsMigration: failed === 0 ? 'success' : 'error',
+        contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed,
+        contactsFinishedAt: new Date(),
+        contactsError: failed > 0 ? `${failed} contact(s) en erreur` : null,
+      })
+      .where(eq(migrations.id, job.id))
+
+    console.log(`[contacts] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
+  } catch (err) {
+    await markStepError(job.id, 'contacts', err instanceof Error ? err.message : String(err))
+  }
+}
+
+// ── Helpers communs ──────────────────────────────────────────────────────────
+
+async function markStepError(id: string, phase: 'mail' | 'calendar' | 'contacts', message: string) {
+  console.error(`[migration-worker] ${id} ${phase} fatal: ${message}`)
+  if (phase === 'mail') {
+    await db.update(migrations)
+      .set({ stepMailMigration: 'error', mailError: message, mailFinishedAt: new Date() })
+      .where(eq(migrations.id, id))
+  } else if (phase === 'calendar') {
+    await db.update(migrations)
+      .set({ stepCalendarMigration: 'error', calError: message, calFinishedAt: new Date() })
+      .where(eq(migrations.id, id))
+  } else {
+    await db.update(migrations)
+      .set({ stepContactsMigration: 'error', contactsError: message, contactsFinishedAt: new Date() })
+      .where(eq(migrations.id, id))
+  }
 }
 
 export async function enqueueMailMigration(migrationId: string): Promise<void> {
-  await db
-    .update(migrations)
-    .set({
-      stepMailMigration: 'pending',
-      mailError: null,
-      mailStartedAt: null,
-      mailFinishedAt: null,
-      // On ne reset PAS mailTotal/mailMigrated/mailFailed pour conserver les compteurs cumulés sur reprise
-    })
+  await db.update(migrations)
+    .set({ stepMailMigration: 'pending', mailError: null, mailStartedAt: null, mailFinishedAt: null })
+    .where(and(eq(migrations.id, migrationId)))
+}
+
+export async function enqueueCalendarMigration(migrationId: string): Promise<void> {
+  await db.update(migrations)
+    .set({ stepCalendarMigration: 'pending', calError: null, calStartedAt: null, calFinishedAt: null })
+    .where(and(eq(migrations.id, migrationId)))
+}
+
+export async function enqueueContactsMigration(migrationId: string): Promise<void> {
+  await db.update(migrations)
+    .set({ stepContactsMigration: 'pending', contactsError: null, contactsStartedAt: null, contactsFinishedAt: null })
     .where(and(eq(migrations.id, migrationId)))
 }
