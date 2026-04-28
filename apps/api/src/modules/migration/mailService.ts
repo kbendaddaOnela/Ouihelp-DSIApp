@@ -43,19 +43,60 @@ interface GraphMessageMeta {
   isDraft?: boolean
 }
 
+// Liste les folders en utilisant les alias well-known (pour identifier inbox/sent/...) +
+// l'API /v1.0 standard pour les folders custom. wellKnownName n'est pas exposé sur /v1.0.
+const WELL_KNOWN_ALIASES = ['inbox', 'sentitems', 'drafts', 'deleteditems', 'junkemail', 'archive'] as const
+
 export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   const token = await onelaToken()
-  const folders: GraphFolder[] = []
+  const folderById = new Map<string, GraphFolder>()
+
+  // 1. Récupérer les folders well-known via leur alias pour récupérer leur ID réel
+  for (const alias of WELL_KNOWN_ALIASES) {
+    try {
+      const res = await fetch(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      if (res.ok) {
+        const f = (await res.json()) as { id: string; displayName: string }
+        folderById.set(f.id, { id: f.id, displayName: f.displayName, wellKnownName: alias })
+      }
+    } catch { /* alias absent (ex: Archive non créée) — on ignore */ }
+  }
+
+  // 2. Lister tous les folders du user (sans wellKnownName)
   let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName,wellKnownName&includeHiddenFolders=false`
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName`
   while (url) {
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph folders error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphFolder[]; '@odata.nextLink'?: string }
-    folders.push(...data.value)
+    for (const f of data.value) {
+      if (!folderById.has(f.id)) folderById.set(f.id, { id: f.id, displayName: f.displayName })
+    }
     url = data['@odata.nextLink'] ?? null
   }
-  return folders
+
+  // 3. Lister récursivement les sous-folders (1 niveau de profondeur suffit pour la v1)
+  const topFolders = [...folderById.values()]
+  for (const parent of topFolders) {
+    let childUrl: string | null =
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parent.id}/childFolders?$top=100&$select=id,displayName`
+    while (childUrl) {
+      try {
+        const res: Response = await fetch(childUrl, { headers: { Authorization: `Bearer ${token}` } })
+        if (!res.ok) break
+        const data = (await res.json()) as { value: GraphFolder[]; '@odata.nextLink'?: string }
+        for (const f of data.value) {
+          if (!folderById.has(f.id)) folderById.set(f.id, { id: f.id, displayName: f.displayName })
+        }
+        childUrl = data['@odata.nextLink'] ?? null
+      } catch { break }
+    }
+  }
+
+  return [...folderById.values()]
 }
 
 export async function* iterateOnelaMessages(
