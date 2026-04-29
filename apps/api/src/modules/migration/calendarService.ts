@@ -77,6 +77,19 @@ interface GraphEvent {
   type?: 'singleInstance' | 'occurrence' | 'exception' | 'seriesMaster'
 }
 
+export async function countOnelaEvents(userId: string, since?: Date | null): Promise<number> {
+  const token = await onelaToken()
+  let filter = `(type eq 'singleInstance' or type eq 'seriesMaster')`
+  if (since) filter += ` and lastModifiedDateTime gt ${since.toISOString()}`
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$count=true&$top=1&$filter=${encodeURIComponent(filter)}`
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual', Prefer: 'outlook.timezone="UTC"' },
+  })
+  if (!res.ok) throw new Error(`Graph events count error (${res.status}): ${await res.text()}`)
+  const data = (await res.json()) as { '@odata.count'?: number }
+  return data['@odata.count'] ?? 0
+}
+
 export async function* iterateOnelaEvents(
   userId: string,
   since?: Date | null

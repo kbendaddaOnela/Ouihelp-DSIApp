@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm'
 import { db } from '../../db/index'
 import { migrations, migratedMessages, migratedEvents, migratedContacts, type Migration } from './schema'
 import {
+  countOnelaMessages,
   iterateOnelaMessages,
   fetchOnelaMessageMime,
   listOnelaFolders,
@@ -13,8 +14,8 @@ import {
   gmailImportMime,
   type GraphFolder,
 } from './mailService'
-import { iterateOnelaEvents, googleCalendarImportEvent } from './calendarService'
-import { iterateOnelaContacts, googlePeopleCreateContact } from './contactsService'
+import { countOnelaEvents, iterateOnelaEvents, googleCalendarImportEvent } from './calendarService'
+import { countOnelaContacts, iterateOnelaContacts, googlePeopleCreateContact } from './contactsService'
 
 const MAX_CONCURRENT = 3
 const POLL_INTERVAL_MS = 5000
@@ -99,10 +100,18 @@ async function processUserMail(job: Migration) {
     let migrated = 0
     let failed = 0
     let total = 0
+    let preCountSet = false
+    try {
+      total = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
+      preCountSet = true
+      await db.update(migrations).set({ mailTotal: total }).where(eq(migrations.id, job.id))
+    } catch (countErr) {
+      console.warn('[mail] pre-count failed, will count during iteration:', countErr instanceof Error ? countErr.message : countErr)
+    }
 
     const syncStartedAt = new Date()
     for await (const msg of iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)) {
-      total++
+      if (!preCountSet) total++
       if (skipSet.has(msg.id)) continue
 
       try {
@@ -191,10 +200,18 @@ async function processUserCalendar(job: Migration) {
     let migrated = 0
     let failed = 0
     let total = 0
+    let preCountSet = false
+    try {
+      total = await countOnelaEvents(job.onelaUserId, job.calLastSyncAt)
+      preCountSet = true
+      await db.update(migrations).set({ calTotal: total }).where(eq(migrations.id, job.id))
+    } catch (countErr) {
+      console.warn('[calendar] pre-count failed, will count during iteration:', countErr instanceof Error ? countErr.message : countErr)
+    }
 
     const calSyncStart = new Date()
     for await (const ev of iterateOnelaEvents(job.onelaUserId, job.calLastSyncAt)) {
-      total++
+      if (!preCountSet) total++
       if (skipSet.has(ev.id)) continue
 
       try {
@@ -279,10 +296,18 @@ async function processUserContacts(job: Migration) {
     let migrated = 0
     let failed = 0
     let total = 0
+    let preCountSet = false
+    try {
+      total = await countOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)
+      preCountSet = true
+      await db.update(migrations).set({ contactsTotal: total }).where(eq(migrations.id, job.id))
+    } catch (countErr) {
+      console.warn('[contacts] pre-count failed, will count during iteration:', countErr instanceof Error ? countErr.message : countErr)
+    }
 
     const ctSyncStart = new Date()
     for await (const ct of iterateOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)) {
-      total++
+      if (!preCountSet) total++
       if (skipSet.has(ct.id)) continue
 
       try {

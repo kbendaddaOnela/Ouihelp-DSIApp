@@ -46,6 +46,18 @@ interface GraphContact {
   personalNotes?: string
 }
 
+export async function countOnelaContacts(userId: string, since?: Date | null): Promise<number> {
+  const token = await onelaToken()
+  const filter = since ? `&$filter=lastModifiedDateTime gt ${since.toISOString()}` : ''
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$count=true&$top=1${filter}`
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
+  })
+  if (!res.ok) throw new Error(`Graph contacts count error (${res.status}): ${await res.text()}`)
+  const data = (await res.json()) as { '@odata.count'?: number }
+  return data['@odata.count'] ?? 0
+}
+
 export async function* iterateOnelaContacts(
   userId: string,
   since?: Date | null
