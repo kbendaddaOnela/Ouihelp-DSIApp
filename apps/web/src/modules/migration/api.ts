@@ -36,4 +36,16 @@ export const migrationApi = {
       phase: string
       errors: Array<{ id: number; graphId: string; internetMessageId?: string | null; iCalUid?: string | null; errorDetails: string | null; createdAt: string }>
     }>(`/migration/${id}/errors/${phase}`).then((r) => r.data),
+
+  archive: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/archive`).then((r) => r.data),
+
+  unarchive: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/unarchive`).then((r) => r.data),
+
+  remove: (id: string) =>
+    apiClient.delete(`/migration/${id}`).then((r) => r.data),
+
+  reset: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/reset/${phase}`).then((r) => r.data),
 }

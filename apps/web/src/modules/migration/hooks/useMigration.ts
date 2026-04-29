@@ -89,6 +89,42 @@ export function useMigrationErrors(id: string, phase: 'mail' | 'calendar' | 'con
   })
 }
 
+export function useArchiveMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.archive(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
+export function useUnarchiveMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.unarchive(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
+export function useDeleteMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
+export function useResetPhase() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, phase }: { id: string; phase: 'mail' | 'calendar' | 'contacts' }) =>
+      migrationApi.reset(id, phase),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['migration-history'] })
+      qc.invalidateQueries({ queryKey: ['migration-errors'] })
+    },
+  })
+}
+
 export function useDebounce(value: string, delay = 400) {
   const [debounced, setDebounced] = useState(value)
   useState(() => {

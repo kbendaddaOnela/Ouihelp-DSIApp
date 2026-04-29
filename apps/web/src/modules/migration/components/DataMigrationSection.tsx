@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { RefreshCcw, ChevronDown, ChevronUp } from 'lucide-react'
+import { RefreshCcw, ChevronDown, ChevronUp, Eraser } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
-import { useMigrationErrors } from '../hooks/useMigration'
+import { useMigrationErrors, useResetPhase } from '../hooks/useMigration'
 
 interface Props {
   migrationId: string
@@ -38,6 +38,17 @@ export function DataMigrationSection({
   const { data: errorsData, isFetching: isFetchingErrors } = useMigrationErrors(
     migrationId, phase, showErrors && failed > 0
   )
+  const { mutate: resetPhase, isPending: isResetting } = useResetPhase()
+
+  const handleReset = () => {
+    if (window.confirm(
+      `Réinitialiser la migration ${label} ?\n` +
+      `Cela vide le tracking en DB et permet de tout re-migrer (utile si tu as supprimé les données côté Google).\n` +
+      `Les données déjà dans Google ne sont pas touchées.`
+    )) {
+      resetPhase({ id: migrationId, phase })
+    }
+  }
 
   const running = status === 'running' || status === 'pending'
   const showActionButton = !running
@@ -59,17 +70,30 @@ export function DataMigrationSection({
   return (
     <div className="space-y-2">
       {showActionButton && (
-        <button
-          onClick={onStart}
-          disabled={isStarting}
-          className={cn(
-            'flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-60',
-            c.btnBorder, c.btnBg, c.btnText, c.btnHover
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={onStart}
+            disabled={isStarting || isResetting}
+            className={cn(
+              'flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-60',
+              c.btnBorder, c.btnBg, c.btnText, c.btnHover
+            )}
+          >
+            <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
+            {buttonLabel}
+          </button>
+          {(lastSyncAt || total > 0) && (
+            <button
+              onClick={handleReset}
+              disabled={isResetting || isStarting}
+              title="Vide le tracking et permet de tout re-migrer (cas où tu as supprimé les données côté Google)"
+              className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            >
+              <Eraser className={cn('h-3 w-3', isResetting && 'animate-spin')} />
+              Réinitialiser
+            </button>
           )}
-        >
-          <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
-          {buttonLabel}
-        </button>
+        </div>
       )}
 
       {showBar && (
@@ -89,7 +113,7 @@ export function DataMigrationSection({
             />
           </div>
 
-          {failed > 0 && (
+          {failed > 0 ? (
             <button
               onClick={() => setShowErrors((v) => !v)}
               className="mt-1 flex items-center gap-1 text-xs text-red-600 hover:text-red-700"
@@ -97,10 +121,9 @@ export function DataMigrationSection({
               {showErrors ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
               {failed} {itemUnit}(s) en erreur — voir détail
             </button>
-          )}
-          {errorMessage && !showErrors && (
+          ) : errorMessage ? (
             <p className="mt-1 text-xs text-red-600">{errorMessage}</p>
-          )}
+          ) : null}
 
           {showErrors && (
             <div className="mt-2 max-h-48 overflow-y-auto rounded border border-red-100 bg-white">

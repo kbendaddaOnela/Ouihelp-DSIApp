@@ -52,6 +52,8 @@ export interface MigrationRecord {
   contactsStartedAt: string | null
   contactsFinishedAt: string | null
   contactsLastSyncAt: string | null
+  archived: boolean
+  archivedAt: string | null
   initiatedBy: string
   errorDetails: string | null
   exchangePsScript: string | null

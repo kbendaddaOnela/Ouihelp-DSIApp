@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, RefreshCw, Mail, Calendar, Users } from 'lucide-react'
+import { ChevronDown, ChevronUp, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
@@ -10,6 +10,9 @@ import {
   useMigrateMail,
   useMigrateCalendar,
   useMigrateContacts,
+  useArchiveMigration,
+  useUnarchiveMigration,
+  useDeleteMigration,
 } from '../hooks/useMigration'
 
 export function MigrationCard({ m }: { m: MigrationRecord }) {
@@ -22,6 +25,15 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
   const { mutate: migrateMail, isPending: isStartingMail } = useMigrateMail()
   const { mutate: migrateCalendar, isPending: isStartingCalendar } = useMigrateCalendar()
   const { mutate: migrateContacts, isPending: isStartingContacts } = useMigrateContacts()
+  const { mutate: archive, isPending: isArchiving } = useArchiveMigration()
+  const { mutate: unarchive, isPending: isUnarchiving } = useUnarchiveMigration()
+  const { mutate: removeMigration, isPending: isDeleting } = useDeleteMigration()
+
+  const handleDelete = () => {
+    if (window.confirm(`Supprimer définitivement la migration de ${m.onelaDisplayName} ?\nCela ne supprime pas les données déjà migrées dans Google.`)) {
+      removeMigration(m.id)
+    }
+  }
 
   const hasError = m.stepCreateAccount === 'error'
   const accountReady = m.stepCreateAccount === 'success'
@@ -59,6 +71,42 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
           <StepBadge status={m.stepCalendarMigration} label="Calendrier" />
           <StepBadge status={m.stepContactsMigration} label="Contacts" />
         </div>
+      </div>
+
+      {/* Actions de gestion (archive / delete) */}
+      <div className="mt-2 flex flex-wrap gap-2 border-b border-gray-100 pb-2">
+        {m.archived ? (
+          <button
+            onClick={() => unarchive(m.id)}
+            disabled={isUnarchiving}
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100"
+          >
+            <ArchiveRestore className="h-3 w-3" />
+            Désarchiver
+          </button>
+        ) : (
+          <button
+            onClick={() => archive(m.id)}
+            disabled={isArchiving}
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100"
+          >
+            <Archive className="h-3 w-3" />
+            Archiver (déplacer dans Historique)
+          </button>
+        )}
+        <button
+          onClick={handleDelete}
+          disabled={isDeleting}
+          className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-red-600 hover:bg-red-50"
+        >
+          <Trash2 className="h-3 w-3" />
+          Supprimer
+        </button>
+        {m.archivedAt && (
+          <span className="ml-auto self-center text-[11px] text-gray-400">
+            Archivé le {new Date(m.archivedAt).toLocaleString('fr-FR')}
+          </span>
+        )}
       </div>
 
       {hasError && m.errorDetails && (

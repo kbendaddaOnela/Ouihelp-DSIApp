@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Search, UserPlus, X } from 'lucide-react'
+import { Search, UserPlus, X, ChevronDown, ChevronRight } from 'lucide-react'
 import type { MigrationRecord, MigrateUsersRequest, OnelaUser } from '@dsi-app/shared'
 import { useMigrationSearch, useMigrationHistory, useRunMigration } from './hooks/useMigration'
 import { MigrationCard } from './components/MigrationCard'
@@ -25,9 +25,14 @@ export default function MigrationPage() {
     setSelectedUsers([])
   })
 
+  const [archivedExpanded, setArchivedExpanded] = useState(false)
+
   const foundUsers = searchData?.users ?? []
+  const allMigrations = historyData?.migrations ?? []
+  const activeMigrations = allMigrations.filter((m) => !m.archived)
+  const archivedMigrations = allMigrations.filter((m) => m.archived)
   const migratedUpns = new Set(
-    historyData?.migrations.filter((m) => m.stepCreateAccount === 'success').map((m) => m.onelaUpn) ?? []
+    allMigrations.filter((m) => m.stepCreateAccount === 'success').map((m) => m.onelaUpn)
   )
   const selectedIds = new Set(selectedUsers.map((u) => u.id))
 
@@ -109,7 +114,7 @@ export default function MigrationPage() {
           )}
         </div>
 
-        {/* Résultats de la dernière migration */}
+        {/* Résultats de la dernière migration (juste après le clic, indépendant de l'archivage) */}
         {lastResults.length > 0 && (
           <section>
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">Résultats</h2>
@@ -119,15 +124,33 @@ export default function MigrationPage() {
           </section>
         )}
 
-        {/* Historique */}
-        {(historyData?.migrations.length ?? 0) > 0 && (
+        {/* Migrations actives */}
+        {activeMigrations.length > 0 && (
           <section>
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
-              Historique ({historyData!.migrations.length})
+              Migrations actives ({activeMigrations.length})
             </h2>
             <div className="flex flex-col gap-3">
-              {historyData!.migrations.map((m) => <MigrationCard key={m.id} m={m} />)}
+              {activeMigrations.map((m) => <MigrationCard key={m.id} m={m} />)}
             </div>
+          </section>
+        )}
+
+        {/* Historique (collapsable) */}
+        {archivedMigrations.length > 0 && (
+          <section>
+            <button
+              onClick={() => setArchivedExpanded((v) => !v)}
+              className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
+            >
+              {archivedExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              Historique ({archivedMigrations.length})
+            </button>
+            {archivedExpanded && (
+              <div className="flex flex-col gap-3">
+                {archivedMigrations.map((m) => <MigrationCard key={m.id} m={m} />)}
+              </div>
+            )}
           </section>
         )}
       </div>

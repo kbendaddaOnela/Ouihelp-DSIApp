@@ -49,6 +49,9 @@ export const migrations = mysqlTable('migrations', {
   contactsStartedAt: timestamp('contacts_started_at'),
   contactsFinishedAt: timestamp('contacts_finished_at'),
   contactsLastSyncAt: timestamp('contacts_last_sync_at'),
+  // Archivage
+  archived: int('archived').default(0).notNull(), // 0 = actif, 1 = archivé (boolean)
+  archivedAt: timestamp('archived_at'),
   // Metadata
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
   errorDetails: text('error_details'),
