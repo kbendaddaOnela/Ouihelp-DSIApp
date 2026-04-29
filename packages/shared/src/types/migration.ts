@@ -35,6 +35,7 @@ export interface MigrationRecord {
   mailError: string | null
   mailStartedAt: string | null
   mailFinishedAt: string | null
+  mailLastSyncAt: string | null
   stepCalendarMigration: StepStatus
   calTotal: number
   calMigrated: number
@@ -42,6 +43,7 @@ export interface MigrationRecord {
   calError: string | null
   calStartedAt: string | null
   calFinishedAt: string | null
+  calLastSyncAt: string | null
   stepContactsMigration: StepStatus
   contactsTotal: number
   contactsMigrated: number
@@ -49,6 +51,7 @@ export interface MigrationRecord {
   contactsError: string | null
   contactsStartedAt: string | null
   contactsFinishedAt: string | null
+  contactsLastSyncAt: string | null
   initiatedBy: string
   errorDetails: string | null
   exchangePsScript: string | null

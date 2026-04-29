@@ -124,6 +124,7 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
             isStarting={isStartingMail}
             startedAt={m.mailStartedAt}
             finishedAt={m.mailFinishedAt}
+            lastSyncAt={m.mailLastSyncAt}
             color="purple"
           />
           <DataMigrationSection
@@ -139,6 +140,7 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
             isStarting={isStartingCalendar}
             startedAt={m.calStartedAt}
             finishedAt={m.calFinishedAt}
+            lastSyncAt={m.calLastSyncAt}
             color="blue"
           />
           <DataMigrationSection
@@ -154,6 +156,7 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
             isStarting={isStartingContacts}
             startedAt={m.contactsStartedAt}
             finishedAt={m.contactsFinishedAt}
+            lastSyncAt={m.contactsLastSyncAt}
             color="emerald"
           />
         </div>

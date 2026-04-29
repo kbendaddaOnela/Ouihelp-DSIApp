@@ -289,9 +289,12 @@ function serializeMigration(m: typeof migrations.$inferSelect) {
     tempPassword: m.tempPassword ?? null,
     mailStartedAt: m.mailStartedAt ? m.mailStartedAt.toISOString() : null,
     mailFinishedAt: m.mailFinishedAt ? m.mailFinishedAt.toISOString() : null,
+    mailLastSyncAt: m.mailLastSyncAt ? m.mailLastSyncAt.toISOString() : null,
     calStartedAt: m.calStartedAt ? m.calStartedAt.toISOString() : null,
     calFinishedAt: m.calFinishedAt ? m.calFinishedAt.toISOString() : null,
+    calLastSyncAt: m.calLastSyncAt ? m.calLastSyncAt.toISOString() : null,
     contactsStartedAt: m.contactsStartedAt ? m.contactsStartedAt.toISOString() : null,
     contactsFinishedAt: m.contactsFinishedAt ? m.contactsFinishedAt.toISOString() : null,
+    contactsLastSyncAt: m.contactsLastSyncAt ? m.contactsLastSyncAt.toISOString() : null,
   }
 }

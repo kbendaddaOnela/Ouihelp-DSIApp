@@ -100,11 +100,14 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
 }
 
 export async function* iterateOnelaMessages(
-  userId: string
+  userId: string,
+  since?: Date | null
 ): AsyncGenerator<GraphMessageMeta> {
   const token = await onelaToken()
-  let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft`
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft`
+  // Delta sync : on filtre sur receivedDateTime > since (les mails ne changent pas après réception)
+  const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
+  let url: string | null = base + filter
   while (url) {
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph messages error (${res.status}): ${await res.text()}`)

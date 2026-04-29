@@ -77,11 +77,16 @@ interface GraphEvent {
   type?: 'singleInstance' | 'occurrence' | 'exception' | 'seriesMaster'
 }
 
-export async function* iterateOnelaEvents(userId: string): AsyncGenerator<GraphEvent> {
+export async function* iterateOnelaEvents(
+  userId: string,
+  since?: Date | null
+): AsyncGenerator<GraphEvent> {
   const token = await onelaToken()
   // On lit la série maîtresse + les single instances. Pas les occurrences (déjà couvertes par la série maîtresse).
+  let filter = `(type eq 'singleInstance' or type eq 'seriesMaster')`
+  if (since) filter += ` and lastModifiedDateTime gt ${since.toISOString()}`
   let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$top=100&$filter=type eq 'singleInstance' or type eq 'seriesMaster'`
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$top=100&$filter=${encodeURIComponent(filter)}`
   while (url) {
     const res: Response = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="UTC"' },

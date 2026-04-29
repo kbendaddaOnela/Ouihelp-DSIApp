@@ -46,10 +46,14 @@ interface GraphContact {
   personalNotes?: string
 }
 
-export async function* iterateOnelaContacts(userId: string): AsyncGenerator<GraphContact> {
+export async function* iterateOnelaContacts(
+  userId: string,
+  since?: Date | null
+): AsyncGenerator<GraphContact> {
   const token = await onelaToken()
+  const filter = since ? `&$filter=lastModifiedDateTime gt ${since.toISOString()}` : ''
   let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$top=100`
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$top=100${filter}`
   while (url) {
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph contacts error (${res.status}): ${await res.text()}`)

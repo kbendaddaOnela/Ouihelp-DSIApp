@@ -1,3 +1,4 @@
+import { RefreshCcw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
@@ -15,6 +16,7 @@ interface Props {
   isStarting: boolean
   startedAt: string | null
   finishedAt: string | null
+  lastSyncAt: string | null
   /** Couleur tailwind (purple, blue, emerald) */
   color: 'purple' | 'blue' | 'emerald'
 }
@@ -27,17 +29,27 @@ const COLOR_CLASSES = {
 
 export function DataMigrationSection({
   label, icon: Icon, status, total, migrated, failed, errorMessage,
-  itemUnit, onStart, isStarting, startedAt, finishedAt, color,
+  itemUnit, onStart, isStarting, startedAt, finishedAt, lastSyncAt, color,
 }: Props) {
   const running = status === 'running' || status === 'pending'
-  const showButton = status !== 'success' && !running
+  const showActionButton = !running
   const showBar = running || total > 0
   const pct = total > 0 ? Math.round(((migrated + failed) / total) * 100) : 0
   const c = COLOR_CLASSES[color]
 
+  const buttonLabel = isStarting
+    ? 'Démarrage…'
+    : status === 'success'
+      ? `Synchroniser ${label.toLowerCase()} (delta)`
+      : status === 'error'
+        ? `Reprendre la migration ${label.toLowerCase()}`
+        : `Lancer la migration ${label.toLowerCase()}`
+
+  const ButtonIcon = status === 'success' ? RefreshCcw : Icon
+
   return (
     <div className="space-y-2">
-      {showButton && (
+      {showActionButton && (
         <button
           onClick={onStart}
           disabled={isStarting}
@@ -46,12 +58,8 @@ export function DataMigrationSection({
             c.btnBorder, c.btnBg, c.btnText, c.btnHover
           )}
         >
-          <Icon className="h-3 w-3" />
-          {isStarting
-            ? 'Démarrage…'
-            : status === 'error'
-              ? `Reprendre la migration ${label.toLowerCase()}`
-              : `Lancer la migration ${label.toLowerCase()}`}
+          <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
+          {buttonLabel}
         </button>
       )}
 
@@ -78,10 +86,23 @@ export function DataMigrationSection({
               ✓ Terminé{startedAt ? ` en ${formatDuration(startedAt, finishedAt)}` : ''}
             </p>
           )}
+          {lastSyncAt && status === 'success' && (
+            <p className="mt-0.5 text-[11px] text-gray-500">
+              Dernière synchro : {formatRelative(lastSyncAt)}
+            </p>
+          )}
         </div>
       )}
     </div>
   )
+}
+
+function formatRelative(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  if (ms < 60_000) return 'à l\'instant'
+  if (ms < 3_600_000) return `il y a ${Math.round(ms / 60_000)} min`
+  if (ms < 86_400_000) return `il y a ${Math.round(ms / 3_600_000)}h`
+  return `il y a ${Math.round(ms / 86_400_000)}j`
 }
 
 function formatDuration(start: string, end: string): string {

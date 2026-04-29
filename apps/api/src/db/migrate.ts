@@ -49,6 +49,10 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'contacts_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_error\` text` },
     { table: 'migrations', column: 'contacts_started_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_started_at\` timestamp NULL` },
     { table: 'migrations', column: 'contacts_finished_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_finished_at\` timestamp NULL` },
+    // Delta sync timestamps
+    { table: 'migrations', column: 'mail_last_sync_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_last_sync_at\` timestamp NULL` },
+    { table: 'migrations', column: 'cal_last_sync_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`cal_last_sync_at\` timestamp NULL` },
+    { table: 'migrations', column: 'contacts_last_sync_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_last_sync_at\` timestamp NULL` },
   ]
   for (const p of columnPatches) {
     try {

@@ -30,6 +30,7 @@ export const migrations = mysqlTable('migrations', {
   mailError: text('mail_error'),
   mailStartedAt: timestamp('mail_started_at'),
   mailFinishedAt: timestamp('mail_finished_at'),
+  mailLastSyncAt: timestamp('mail_last_sync_at'),
   // Calendar migration progress
   stepCalendarMigration: mysqlEnum('step_calendar_migration', stepStatus).default('pending').notNull(),
   calTotal: int('cal_total').default(0).notNull(),
@@ -38,6 +39,7 @@ export const migrations = mysqlTable('migrations', {
   calError: text('cal_error'),
   calStartedAt: timestamp('cal_started_at'),
   calFinishedAt: timestamp('cal_finished_at'),
+  calLastSyncAt: timestamp('cal_last_sync_at'),
   // Contacts migration progress
   stepContactsMigration: mysqlEnum('step_contacts_migration', stepStatus).default('pending').notNull(),
   contactsTotal: int('contacts_total').default(0).notNull(),
@@ -46,6 +48,7 @@ export const migrations = mysqlTable('migrations', {
   contactsError: text('contacts_error'),
   contactsStartedAt: timestamp('contacts_started_at'),
   contactsFinishedAt: timestamp('contacts_finished_at'),
+  contactsLastSyncAt: timestamp('contacts_last_sync_at'),
   // Metadata
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
   errorDetails: text('error_details'),
