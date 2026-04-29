@@ -80,9 +80,9 @@ export function useMigrateContacts() {
   })
 }
 
-export function useMigrationErrors(id: string, phase: 'mail' | 'calendar' | 'contacts', enabled: boolean) {
+export function useMigrationErrors(id: string, phase: 'mail' | 'calendar' | 'contacts', enabled: boolean, failedCount?: number) {
   return useQuery({
-    queryKey: ['migration-errors', id, phase],
+    queryKey: ['migration-errors', id, phase, failedCount],
     queryFn: () => migrationApi.fetchErrors(id, phase),
     enabled,
     staleTime: 30_000,

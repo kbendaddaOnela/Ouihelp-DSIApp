@@ -36,7 +36,7 @@ export function DataMigrationSection({
 }: Props) {
   const [showErrors, setShowErrors] = useState(false)
   const { data: errorsData, isFetching: isFetchingErrors } = useMigrationErrors(
-    migrationId, phase, showErrors && failed > 0
+    migrationId, phase, showErrors && failed > 0, failed
   )
   const { mutate: resetPhase, isPending: isResetting } = useResetPhase()
 
