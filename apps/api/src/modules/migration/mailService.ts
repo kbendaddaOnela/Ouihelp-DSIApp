@@ -131,14 +131,29 @@ export async function* iterateOnelaMessages(
 }
 
 // Récupère le MIME brut RFC 822 d'un message — beaucoup plus simple que reconstruire depuis le JSON
+// Retry sur 429/503/504 (transitoires côté Graph) avec backoff exponentiel
 export async function fetchOnelaMessageMime(userId: string, messageId: string): Promise<string> {
-  const token = await onelaToken()
-  const res = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/$value`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  if (!res.ok) throw new Error(`Graph $value error (${res.status}): ${await res.text()}`)
-  return await res.text()
+  const RETRYABLE = new Set([429, 503, 504])
+  const MAX_ATTEMPTS = 4
+  let delay = 2000
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const token = await onelaToken()
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/$value`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    if (res.ok) return await res.text()
+
+    const body = await res.text()
+    if (!RETRYABLE.has(res.status) || attempt === MAX_ATTEMPTS) {
+      throw new Error(`Graph $value error (${res.status}): ${body}`)
+    }
+    console.warn(`[mail] $value ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${delay / 1000}s`)
+    await new Promise((r) => setTimeout(r, delay))
+    delay *= 2
+  }
+  throw new Error('fetchOnelaMessageMime: unreachable')
 }
 
 // ── Gmail (écriture côté GOH) ─────────────────────────────────────────────────
