@@ -112,6 +112,8 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
       {accountReady && (
         <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
           <DataMigrationSection
+            migrationId={m.id}
+            phase="mail"
             label="mail"
             icon={Mail}
             status={m.stepMailMigration}
@@ -128,6 +130,8 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
             color="purple"
           />
           <DataMigrationSection
+            migrationId={m.id}
+            phase="calendar"
             label="calendrier"
             icon={Calendar}
             status={m.stepCalendarMigration}
@@ -144,6 +148,8 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
             color="blue"
           />
           <DataMigrationSection
+            migrationId={m.id}
+            phase="contacts"
             label="contacts"
             icon={Users}
             status={m.stepContactsMigration}

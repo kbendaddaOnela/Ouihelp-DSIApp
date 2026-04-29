@@ -77,7 +77,13 @@ async function processUserMail(job: Migration) {
 
   try {
     await db.update(migrations)
-      .set({ stepMailMigration: 'running', mailStartedAt: new Date(), mailError: null })
+      .set({
+        stepMailMigration: 'running',
+        mailStartedAt: new Date(),
+        mailError: null,
+        // Reset counters : ils reflètent uniquement cette synchro
+        mailTotal: 0, mailMigrated: 0, mailFailed: 0,
+      })
       .where(eq(migrations.id, job.id))
 
     const folders = await listOnelaFolders(job.onelaUserId)
@@ -90,9 +96,9 @@ async function processUserMail(job: Migration) {
       .where(eq(migratedMessages.migrationId, job.id))
     const skipSet = new Set(already.map((r) => r.graphMessageId))
 
-    let migrated = job.mailMigrated
-    let failed = job.mailFailed
-    let total = job.mailTotal
+    let migrated = 0
+    let failed = 0
+    let total = 0
 
     const syncStartedAt = new Date()
     for await (const msg of iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)) {
@@ -144,12 +150,14 @@ async function processUserMail(job: Migration) {
     }
 
     const success = failed === 0
+    // L'itération a terminé normalement → lastSyncAt avance toujours, même si des messages
+    // individuels ont échoué (ils sont en DB avec status='error', skippés au prochain run).
     await db.update(migrations)
       .set({
         stepMailMigration: success ? 'success' : 'error',
         mailTotal: total, mailMigrated: migrated, mailFailed: failed,
         mailFinishedAt: new Date(),
-        mailLastSyncAt: success ? syncStartedAt : job.mailLastSyncAt,
+        mailLastSyncAt: syncStartedAt,
         mailError: failed > 0 ? `${failed} message(s) en erreur` : null,
       })
       .where(eq(migrations.id, job.id))
@@ -168,7 +176,10 @@ async function processUserCalendar(job: Migration) {
 
   try {
     await db.update(migrations)
-      .set({ stepCalendarMigration: 'running', calStartedAt: new Date(), calError: null })
+      .set({
+        stepCalendarMigration: 'running', calStartedAt: new Date(), calError: null,
+        calTotal: 0, calMigrated: 0, calFailed: 0,
+      })
       .where(eq(migrations.id, job.id))
 
     const already = await db
@@ -177,9 +188,9 @@ async function processUserCalendar(job: Migration) {
       .where(eq(migratedEvents.migrationId, job.id))
     const skipSet = new Set(already.map((r) => r.graphEventId))
 
-    let migrated = job.calMigrated
-    let failed = job.calFailed
-    let total = job.calTotal
+    let migrated = 0
+    let failed = 0
+    let total = 0
 
     const calSyncStart = new Date()
     for await (const ev of iterateOnelaEvents(job.onelaUserId, job.calLastSyncAt)) {
@@ -234,7 +245,7 @@ async function processUserCalendar(job: Migration) {
         stepCalendarMigration: calSuccess ? 'success' : 'error',
         calTotal: total, calMigrated: migrated, calFailed: failed,
         calFinishedAt: new Date(),
-        calLastSyncAt: calSuccess ? calSyncStart : job.calLastSyncAt,
+        calLastSyncAt: calSyncStart,
         calError: failed > 0 ? `${failed} événement(s) en erreur` : null,
       })
       .where(eq(migrations.id, job.id))
@@ -253,7 +264,10 @@ async function processUserContacts(job: Migration) {
 
   try {
     await db.update(migrations)
-      .set({ stepContactsMigration: 'running', contactsStartedAt: new Date(), contactsError: null })
+      .set({
+        stepContactsMigration: 'running', contactsStartedAt: new Date(), contactsError: null,
+        contactsTotal: 0, contactsMigrated: 0, contactsFailed: 0,
+      })
       .where(eq(migrations.id, job.id))
 
     const already = await db
@@ -262,9 +276,9 @@ async function processUserContacts(job: Migration) {
       .where(eq(migratedContacts.migrationId, job.id))
     const skipSet = new Set(already.map((r) => r.graphContactId))
 
-    let migrated = job.contactsMigrated
-    let failed = job.contactsFailed
-    let total = job.contactsTotal
+    let migrated = 0
+    let failed = 0
+    let total = 0
 
     const ctSyncStart = new Date()
     for await (const ct of iterateOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)) {
@@ -307,7 +321,7 @@ async function processUserContacts(job: Migration) {
         stepContactsMigration: ctSuccess ? 'success' : 'error',
         contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed,
         contactsFinishedAt: new Date(),
-        contactsLastSyncAt: ctSuccess ? ctSyncStart : job.contactsLastSyncAt,
+        contactsLastSyncAt: ctSyncStart,
         contactsError: failed > 0 ? `${failed} contact(s) en erreur` : null,
       })
       .where(eq(migrations.id, job.id))

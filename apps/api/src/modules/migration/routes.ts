@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, and } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
 import type { RbacVariables } from '../../middleware/rbac'
 import { getDb } from '../../db/index'
-import { migrations } from './schema'
+import { migrations, migratedMessages, migratedEvents, migratedContacts } from './schema'
 import {
   searchOnelaUsers,
   createGohUser,
@@ -271,6 +271,61 @@ migrationRouter.post('/:id/migrate-contacts', requirePermission('migration:write
   const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!updated) return c.json({ error: 'Not Found' }, 404)
   return c.json(serializeMigration(updated), 202)
+})
+
+// ── Erreurs détaillées par phase ─────────────────────────────────────────────
+migrationRouter.get('/:id/errors/:phase', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const phase = c.req.param('phase')
+
+  const limit = Math.min(Number(c.req.query('limit') ?? 50), 200)
+
+  if (phase === 'mail') {
+    const rows = await db.select({
+      id: migratedMessages.id,
+      graphId: migratedMessages.graphMessageId,
+      internetMessageId: migratedMessages.internetMessageId,
+      errorDetails: migratedMessages.errorDetails,
+      createdAt: migratedMessages.createdAt,
+    })
+      .from(migratedMessages)
+      .where(and(eq(migratedMessages.migrationId, id), eq(migratedMessages.status, 'error')))
+      .orderBy(desc(migratedMessages.createdAt))
+      .limit(limit)
+    return c.json({ phase, errors: rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })) })
+  }
+
+  if (phase === 'calendar') {
+    const rows = await db.select({
+      id: migratedEvents.id,
+      graphId: migratedEvents.graphEventId,
+      iCalUid: migratedEvents.iCalUid,
+      errorDetails: migratedEvents.errorDetails,
+      createdAt: migratedEvents.createdAt,
+    })
+      .from(migratedEvents)
+      .where(and(eq(migratedEvents.migrationId, id), eq(migratedEvents.status, 'error')))
+      .orderBy(desc(migratedEvents.createdAt))
+      .limit(limit)
+    return c.json({ phase, errors: rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })) })
+  }
+
+  if (phase === 'contacts') {
+    const rows = await db.select({
+      id: migratedContacts.id,
+      graphId: migratedContacts.graphContactId,
+      errorDetails: migratedContacts.errorDetails,
+      createdAt: migratedContacts.createdAt,
+    })
+      .from(migratedContacts)
+      .where(and(eq(migratedContacts.migrationId, id), eq(migratedContacts.status, 'error')))
+      .orderBy(desc(migratedContacts.createdAt))
+      .limit(limit)
+    return c.json({ phase, errors: rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })) })
+  }
+
+  return c.json({ error: 'Phase invalide (mail, calendar, contacts)' }, 400)
 })
 
 // ── Détail d'une migration ────────────────────────────────────────────────────

@@ -80,6 +80,15 @@ export function useMigrateContacts() {
   })
 }
 
+export function useMigrationErrors(id: string, phase: 'mail' | 'calendar' | 'contacts', enabled: boolean) {
+  return useQuery({
+    queryKey: ['migration-errors', id, phase],
+    queryFn: () => migrationApi.fetchErrors(id, phase),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
 export function useDebounce(value: string, delay = 400) {
   const [debounced, setDebounced] = useState(value)
   useState(() => {
