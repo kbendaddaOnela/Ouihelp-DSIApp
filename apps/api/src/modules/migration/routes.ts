@@ -71,7 +71,7 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
     const lastName = u.surname.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '')
     const gohUpn = `${firstName}.${lastName}@mig.onela.com`
     const onelaDomain = u.onelaEmail.split('@')[1] ?? 'onela.com'
-    const ext10 = gohUpn
+    const ext10 = `${firstName}.${lastName}@onela.fr`
     const ext11 = `${firstName}.${lastName}@${onelaDomain}`
     const tempPassword = `Tmp-${Math.random().toString(36).slice(2, 8)}#Az1`
 

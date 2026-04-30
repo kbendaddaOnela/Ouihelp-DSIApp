@@ -1,7 +1,6 @@
 import { useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, Link } from 'react-router-dom'
 import {
-  Ticket,
   UserPlus,
   Monitor,
   AppWindow,
@@ -29,12 +28,6 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Migration ONELA',
     icon: ArrowRightLeft,
     requiredPermissions: ['migration:read'],
-  },
-  {
-    path: '/tickets',
-    label: 'Ticketing',
-    icon: Ticket,
-    requiredPermissions: ['tickets:create'],
   },
   {
     path: '/accounts',
@@ -106,7 +99,7 @@ export const Sidebar = () => {
       )}
     >
       {/* Logo / App name */}
-      <div className={cn('flex items-center gap-3 border-b border-gray-200 px-4 py-5', collapsed && 'justify-center px-2')}>
+      <Link to="/" className={cn('flex items-center gap-3 border-b border-gray-200 px-4 py-5 hover:bg-gray-50 transition-colors', collapsed && 'justify-center px-2')}>
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary-600">
           <Building2 className="h-5 w-5 text-white" />
         </div>
@@ -116,7 +109,7 @@ export const Sidebar = () => {
             <p className="truncate text-xs text-gray-500">ONELA</p>
           </div>
         )}
-      </div>
+      </Link>
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 overflow-y-auto p-3">

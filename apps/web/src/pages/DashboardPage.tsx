@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom'
 import {
-  Ticket,
   UserPlus,
   Monitor,
   AppWindow,
@@ -31,13 +30,6 @@ const MODULES: ModuleCard[] = [
     description: 'Provisionner un nouveau collaborateur sur Entra ID (SCIM vers Google & Slack).',
     icon: UserPlus,
     requiredPermissions: ['accounts:read'],
-  },
-  {
-    path: '/tickets',
-    label: 'Ticketing',
-    description: 'Suivre les demandes IT entrantes et leur résolution.',
-    icon: Ticket,
-    requiredPermissions: ['tickets:create'],
   },
   {
     path: '/inventory',
