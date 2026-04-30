@@ -49,3 +49,17 @@ export const migrationApi = {
   reset: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
     apiClient.post<MigrationRecord>(`/migration/${id}/reset/${phase}`).then((r) => r.data),
 }
+
+export interface MigrationStats {
+  totals: { total: number; pending: number; in_progress: number; done: number }
+  byDept: Array<{ department: string; total: number; done: number; in_progress: number }>
+  byOffice: Array<{ office: string; total: number; done: number; in_progress: number }>
+}
+
+export const migrationTargetsApi = {
+  importCSV: (csv: string) =>
+    apiClient.post<{ imported: number; inserted: number; updated: number }>('/migration-targets/import', { csv }).then((r) => r.data),
+
+  stats: () =>
+    apiClient.get<MigrationStats>('/migration-targets/stats').then((r) => r.data),
+}

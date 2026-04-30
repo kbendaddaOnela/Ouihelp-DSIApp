@@ -119,3 +119,26 @@ export const migratedContacts = mysqlTable(
   })
 )
 export type MigratedContact = typeof migratedContacts.$inferSelect
+
+// ── Liste cible de migration (importée depuis CSV) ───────────────────────────
+const targetStatus = ['pending', 'in_progress', 'done'] as const
+
+export const migrationTargets = mysqlTable(
+  'migration_targets',
+  {
+    id: varchar('id', { length: 36 }).primaryKey(),
+    onelaUpn: varchar('onela_upn', { length: 255 }).notNull(),
+    displayName: varchar('display_name', { length: 255 }).notNull(),
+    department: varchar('department', { length: 255 }),
+    office: varchar('office', { length: 255 }),
+    status: mysqlEnum('status', targetStatus).default('pending').notNull(),
+    migrationId: varchar('migration_id', { length: 36 }),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    uniq: uniqueIndex('migration_targets_upn_unique').on(t.onelaUpn),
+  })
+)
+
+export type MigrationTarget = typeof migrationTargets.$inferSelect

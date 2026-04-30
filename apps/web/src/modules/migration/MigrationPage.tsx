@@ -4,6 +4,7 @@ import type { MigrationRecord, MigrateUsersRequest, OnelaUser } from '@dsi-app/s
 import { useMigrationSearch, useMigrationHistory, useRunMigration } from './hooks/useMigration'
 import { MigrationCard } from './components/MigrationCard'
 import { UserRow } from './components/UserRow'
+import { MigrationDashboard } from './components/MigrationDashboard'
 
 export default function MigrationPage() {
   const [query, setQuery] = useState('')
@@ -67,6 +68,7 @@ export default function MigrationPage() {
     <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
       {/* ── Colonne principale ─────────────────────────────────────────── */}
       <div className="flex flex-col gap-6">
+        <MigrationDashboard />
         <header>
           <h1 className="text-2xl font-semibold text-gray-900">Migration ONELA → Ouihelp</h1>
           <p className="mt-1 text-sm text-gray-500">

@@ -4,7 +4,7 @@
 
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../db/index'
-import { migrations, migratedMessages, migratedEvents, migratedContacts, type Migration } from './schema'
+import { migrations, migratedMessages, migratedEvents, migratedContacts, migrationTargets, type Migration } from './schema'
 import {
   countOnelaMessages,
   iterateOnelaMessages,
@@ -171,6 +171,8 @@ async function processUserMail(job: Migration) {
       })
       .where(eq(migrations.id, job.id))
 
+    const [updatedJob] = await db.select().from(migrations).where(eq(migrations.id, job.id))
+    if (updatedJob) await checkAndMarkTargetDone(updatedJob)
     console.log(`[mail] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
   } catch (err) {
     await markStepError(job.id, 'mail', err instanceof Error ? err.message : String(err))
@@ -267,6 +269,8 @@ async function processUserCalendar(job: Migration) {
       })
       .where(eq(migrations.id, job.id))
 
+    const [updatedJobCal] = await db.select().from(migrations).where(eq(migrations.id, job.id))
+    if (updatedJobCal) await checkAndMarkTargetDone(updatedJobCal)
     console.log(`[calendar] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
   } catch (err) {
     await markStepError(job.id, 'calendar', err instanceof Error ? err.message : String(err))
@@ -351,6 +355,8 @@ async function processUserContacts(job: Migration) {
       })
       .where(eq(migrations.id, job.id))
 
+    const [updatedJobCt] = await db.select().from(migrations).where(eq(migrations.id, job.id))
+    if (updatedJobCt) await checkAndMarkTargetDone(updatedJobCt)
     console.log(`[contacts] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
   } catch (err) {
     await markStepError(job.id, 'contacts', err instanceof Error ? err.message : String(err))
@@ -358,6 +364,20 @@ async function processUserContacts(job: Migration) {
 }
 
 // ── Helpers communs ──────────────────────────────────────────────────────────
+
+// Passe le target à 'done' si les 3 phases data sont terminées (success ou skipped)
+async function checkAndMarkTargetDone(job: Migration) {
+  const done = (s: string) => s === 'success' || s === 'skipped' || s === 'error'
+  if (
+    done(job.stepMailMigration) &&
+    done(job.stepCalendarMigration) &&
+    done(job.stepContactsMigration)
+  ) {
+    await db.update(migrationTargets)
+      .set({ status: 'done' })
+      .where(eq(migrationTargets.migrationId, job.id))
+  }
+}
 
 async function markStepError(id: string, phase: 'mail' | 'calendar' | 'contacts', message: string) {
   console.error(`[migration-worker] ${id} ${phase} fatal: ${message}`)

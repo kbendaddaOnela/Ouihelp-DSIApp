@@ -118,6 +118,25 @@ async function ensureSchemaPatches() {
         KEY \`idx_contact_migration_id\` (\`migration_id\`)
       )`,
     },
+    {
+      table: 'migration_targets',
+      ddl: `CREATE TABLE \`migration_targets\` (
+        \`id\` varchar(36) NOT NULL,
+        \`onela_upn\` varchar(255) NOT NULL,
+        \`display_name\` varchar(255) NOT NULL,
+        \`department\` varchar(255),
+        \`office\` varchar(255),
+        \`status\` enum('pending','in_progress','done') NOT NULL DEFAULT 'pending',
+        \`migration_id\` varchar(36),
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`migration_targets_upn_unique\` (\`onela_upn\`),
+        KEY \`idx_target_status\` (\`status\`),
+        KEY \`idx_target_department\` (\`department\`),
+        KEY \`idx_target_office\` (\`office\`)
+      )`,
+    },
   ]
   for (const p of tablePatches) {
     try {

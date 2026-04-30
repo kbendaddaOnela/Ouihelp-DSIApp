@@ -5,7 +5,7 @@ import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
 import type { RbacVariables } from '../../middleware/rbac'
 import { getDb } from '../../db/index'
-import { migrations, migratedMessages, migratedEvents, migratedContacts } from './schema'
+import { migrations, migratedMessages, migratedEvents, migratedContacts, migrationTargets } from './schema'
 import {
   searchOnelaUsers,
   createGohUser,
@@ -136,6 +136,11 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
           exchangePsScript: psScript,
         })
         .where(eq(migrations.id, migrationId))
+
+      // Lier la cible de migration si elle existe
+      await db.update(migrationTargets)
+        .set({ status: 'in_progress', migrationId })
+        .where(eq(migrationTargets.onelaUpn, u.onelaUpn))
 
       const [updated] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
       results.push(updated)

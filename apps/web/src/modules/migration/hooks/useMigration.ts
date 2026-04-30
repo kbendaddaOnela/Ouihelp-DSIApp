@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { MigrationRecord, MigrateUsersRequest } from '@dsi-app/shared'
-import { migrationApi } from '../api'
+import { migrationApi, migrationTargetsApi } from '../api'
 
 export function useMigrationSearch(query: string) {
   return useQuery({
@@ -122,6 +122,23 @@ export function useResetPhase() {
       qc.invalidateQueries({ queryKey: ['migration-history'] })
       qc.invalidateQueries({ queryKey: ['migration-errors'] })
     },
+  })
+}
+
+export function useMigrationStats() {
+  return useQuery({
+    queryKey: ['migration-stats'],
+    queryFn: () => migrationTargetsApi.stats(),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useImportTargets() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (csv: string) => migrationTargetsApi.importCSV(csv),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-stats'] }),
   })
 }
 
