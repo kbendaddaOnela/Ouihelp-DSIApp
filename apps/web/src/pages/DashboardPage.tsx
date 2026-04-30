@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import {
+  ArrowRightLeft,
   UserPlus,
   Monitor,
   AppWindow,
@@ -24,6 +25,13 @@ interface ModuleCard {
 }
 
 const MODULES: ModuleCard[] = [
+  {
+    path: '/migration',
+    label: 'Migration ONELA',
+    description: 'Migrer les comptes Exchange / Google Workspace ONELA vers GOH.',
+    icon: ArrowRightLeft,
+    requiredPermissions: ['migration:read'],
+  },
   {
     path: '/accounts',
     label: 'Création de comptes',
