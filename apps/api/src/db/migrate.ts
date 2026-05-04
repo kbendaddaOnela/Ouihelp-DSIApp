@@ -138,6 +138,55 @@ async function ensureSchemaPatches() {
       )`,
     },
   ]
+    {
+      table: 'cached_users',
+      ddl: `CREATE TABLE \`cached_users\` (
+        \`id\` varchar(36) NOT NULL,
+        \`source\` enum('ouihelp','onela','google') NOT NULL,
+        \`upn\` varchar(255) NOT NULL,
+        \`display_name\` varchar(255),
+        \`department\` varchar(255),
+        \`job_title\` varchar(255),
+        \`account_enabled\` int NOT NULL DEFAULT 1,
+        \`synced_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_users_source\` (\`source\`),
+        KEY \`idx_users_upn\` (\`upn\`)
+      )`,
+    },
+    {
+      table: 'cached_devices',
+      ddl: `CREATE TABLE \`cached_devices\` (
+        \`id\` varchar(36) NOT NULL,
+        \`source\` enum('ouihelp','onela') NOT NULL,
+        \`device_name\` varchar(255),
+        \`operating_system\` varchar(100),
+        \`os_version\` varchar(100),
+        \`device_type\` varchar(100),
+        \`compliance_state\` enum('compliant','noncompliant','unknown','notApplicable','inGracePeriod','configManager') NOT NULL DEFAULT 'unknown',
+        \`user_principal_name\` varchar(255),
+        \`user_display_name\` varchar(255),
+        \`last_sync_date_time\` timestamp NULL,
+        \`enrolled_date_time\` timestamp NULL,
+        \`synced_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_devices_source\` (\`source\`),
+        KEY \`idx_devices_compliance\` (\`compliance_state\`)
+      )`,
+    },
+    {
+      table: 'sync_status',
+      ddl: `CREATE TABLE \`sync_status\` (
+        \`id\` varchar(50) NOT NULL,
+        \`last_sync_at\` timestamp NULL,
+        \`user_count\` int NOT NULL DEFAULT 0,
+        \`device_count\` int NOT NULL DEFAULT 0,
+        \`status\` varchar(50) NOT NULL DEFAULT 'idle',
+        \`error\` varchar(500),
+        PRIMARY KEY (\`id\`)
+      )`,
+    },
+  ]
   for (const p of tablePatches) {
     try {
       if (await tableExists(p.table)) {
