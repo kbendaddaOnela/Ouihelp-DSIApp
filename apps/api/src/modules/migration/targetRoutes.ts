@@ -3,9 +3,12 @@ import { randomUUID } from 'crypto'
 import { eq, sql, and, ne } from 'drizzle-orm'
 import { getDb } from '../../db/index'
 import { migrationTargets } from './schema'
-import { requirePermission } from '../../middleware/rbac'
+import { authMiddleware } from '../../middleware/auth'
+import { loadUserRole, requirePermission } from '../../middleware/rbac'
+import type { RbacVariables } from '../../middleware/rbac'
 
-export const migrationTargetsRouter = new Hono()
+export const migrationTargetsRouter = new Hono<{ Variables: RbacVariables }>()
+migrationTargetsRouter.use('*', authMiddleware, loadUserRole)
 
 // ── Import CSV ────────────────────────────────────────────────────────────────
 // Colonnes acceptées (insensible à la casse) :
