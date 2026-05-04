@@ -15,8 +15,10 @@ const COMPLIANCE_CONFIG: Record<string, { label: string; color: string; icon: Re
   configManager:   { label: 'Config Mgr',     color: 'text-blue-600 bg-blue-50',       icon: AlertCircle },
 }
 
+const COMPLIANCE_FALLBACK = { label: 'Inconnu', color: 'text-gray-500 bg-gray-100', icon: HelpCircle }
+
 function ComplianceBadge({ state }: { state: string }) {
-  const cfg = COMPLIANCE_CONFIG[state] ?? COMPLIANCE_CONFIG['unknown']
+  const cfg = COMPLIANCE_CONFIG[state] ?? COMPLIANCE_FALLBACK
   const Icon = cfg.icon
   return (
     <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium', cfg.color)}>

@@ -137,7 +137,6 @@ async function ensureSchemaPatches() {
         KEY \`idx_target_office\` (\`office\`)
       )`,
     },
-  ]
     {
       table: 'cached_users',
       ddl: `CREATE TABLE \`cached_users\` (
