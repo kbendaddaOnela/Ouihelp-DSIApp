@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Monitor, Search, RefreshCw, CheckCircle2, XCircle, AlertCircle, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useDevices, useInventoryStats, useInventorySync } from './hooks'
-import type { CachedDevice } from './api'
+import { useDevices, useUsers, useInventoryStats, useInventorySync } from './hooks'
+import type { CachedDevice, CachedUser } from './api'
 
 // ── Conformité ────────────────────────────────────────────────────────────────
 const COMPLIANCE_CONFIG: Record<string, { label: string; color: string; icon: React.ElementType }> = {
@@ -31,6 +31,46 @@ function ComplianceBadge({ state }: { state: string }) {
 function formatDate(d: string | null) {
   if (!d) return '—'
   return new Date(d).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' })
+}
+
+// ── Tableau users ─────────────────────────────────────────────────────────────
+function UsersTable({ users }: { users: CachedUser[] }) {
+  if (!users.length) return <p className="py-12 text-center text-sm text-gray-400">Aucun utilisateur trouvé.</p>
+  return (
+    <div className="overflow-hidden rounded-lg border border-gray-200">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-gray-200 bg-gray-50 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500">
+            <th className="px-4 py-3">Nom</th>
+            <th className="px-4 py-3">Email / UPN</th>
+            <th className="px-4 py-3">Département</th>
+            <th className="px-4 py-3">Poste</th>
+            <th className="px-4 py-3">Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((u) => (
+            <tr key={u.id} className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50">
+              <td className="px-4 py-3 font-medium text-gray-900">{u.displayName ?? '—'}</td>
+              <td className="px-4 py-3 text-gray-500">{u.upn}</td>
+              <td className="px-4 py-3 text-gray-600">{u.department ?? '—'}</td>
+              <td className="px-4 py-3 text-gray-600">{u.jobTitle ?? '—'}</td>
+              <td className="px-4 py-3">
+                <span className={cn(
+                  'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                  u.source === 'ouihelp' ? 'bg-blue-50 text-blue-700'
+                  : u.source === 'onela' ? 'bg-purple-50 text-purple-700'
+                  : 'bg-green-50 text-green-700'
+                )}>
+                  {u.source}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 // ── Tableau devices ───────────────────────────────────────────────────────────
@@ -93,6 +133,14 @@ export default function InventoryPage() {
       compliance: complianceFilter || undefined,
       q: search || undefined,
       limit: 200,
+    } : undefined
+  )
+
+  const { data: usersData, isFetching: isFetchingUsers } = useUsers(
+    tab === 'users' ? {
+      source: sourceFilter as 'ouihelp' | 'onela' | 'google' | undefined || undefined,
+      q: search || undefined,
+      limit: 300,
     } : undefined
   )
 
@@ -214,14 +262,40 @@ export default function InventoryPage() {
       )}
 
       {tab === 'users' && (
-        <div className="py-12 text-center text-sm text-gray-400">
-          Vue détaillée des utilisateurs — bientôt disponible.
-        </div>
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-48">
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Rechercher par nom ou email…"
+                className="w-full rounded-lg border border-gray-200 pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            <select
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+            >
+              <option value="">Toutes les sources</option>
+              <option value="ouihelp">Ouihelp</option>
+              <option value="onela">ONELA</option>
+              <option value="google">Google</option>
+            </select>
+          </div>
+
+          {isFetchingUsers ? (
+            <div className="py-12 text-center text-sm text-gray-400">Chargement…</div>
+          ) : (
+            <UsersTable users={usersData?.users ?? []} />
+          )}
+        </>
       )}
 
       {!statsData?.status?.lastSyncAt && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-700">
-          Aucune donnée disponible. Cliquez sur <strong>Synchroniser</strong> pour récupérer les appareils depuis Intune.
+          Aucune donnée disponible. Cliquez sur <strong>Synchroniser</strong> pour récupérer les données.
         </div>
       )}
     </div>

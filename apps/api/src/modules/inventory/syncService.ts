@@ -28,7 +28,7 @@ async function getMsToken(tenantId: string, clientId: string, clientSecret: stri
   if (!res.ok) throw new Error(`MS token error (${res.status}): ${await res.text()}`)
   const data = (await res.json()) as { access_token: string; expires_in: number }
   msTokenCache.set(key, { token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 })
-  return data.token ?? data.access_token
+  return data.access_token
 }
 
 function ouihelpCreds() {

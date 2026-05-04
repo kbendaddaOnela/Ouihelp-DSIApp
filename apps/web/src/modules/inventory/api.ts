@@ -28,6 +28,16 @@ export interface CachedDevice {
   enrolledDateTime: string | null
 }
 
+export interface CachedUser {
+  id: string
+  source: string
+  upn: string
+  displayName: string | null
+  department: string | null
+  jobTitle: string | null
+  accountEnabled: number
+}
+
 export const inventoryApi = {
   stats: () => apiClient.get<SyncStats>('/inventory/stats').then((r) => r.data),
   sync: () => apiClient.post<{ started: boolean }>('/inventory/sync', {}).then((r) => r.data),
@@ -39,5 +49,13 @@ export const inventoryApi = {
     if (params?.limit) p.set('limit', String(params.limit))
     if (params?.offset) p.set('offset', String(params.offset))
     return apiClient.get<{ devices: CachedDevice[] }>(`/inventory/devices?${p}`).then((r) => r.data)
+  },
+  users: (params?: { source?: string; q?: string; limit?: number; offset?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.source) p.set('source', params.source)
+    if (params?.q) p.set('q', params.q)
+    if (params?.limit) p.set('limit', String(params.limit))
+    if (params?.offset) p.set('offset', String(params.offset))
+    return apiClient.get<{ users: CachedUser[] }>(`/inventory/users?${p}`).then((r) => r.data)
   },
 }

@@ -27,3 +27,11 @@ export function useDevices(params?: Parameters<typeof inventoryApi.devices>[0]) 
     staleTime: 60_000,
   })
 }
+
+export function useUsers(params?: Parameters<typeof inventoryApi.users>[0]) {
+  return useQuery({
+    queryKey: ['inventory-users', params],
+    queryFn: () => inventoryApi.users(params),
+    staleTime: 60_000,
+  })
+}
