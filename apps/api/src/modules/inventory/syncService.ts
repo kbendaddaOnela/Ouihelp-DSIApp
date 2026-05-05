@@ -59,12 +59,16 @@ interface MsUser {
 }
 
 async function* iterateMsUsers(token: string): AsyncGenerator<MsUser> {
-  let url: string | undefined = `https://graph.microsoft.com/v1.0/users?$select=id,userPrincipalName,displayName,department,jobTitle,accountEnabled&$top=999&$filter=accountEnabled eq true`
+  // Pas de $filter côté serveur : avec accountEnabled, Graph nécessite ConsistencyLevel:eventual
+  // ce qui peut tronquer les résultats. On filtre côté client après récupération complète.
+  let url: string | undefined = `https://graph.microsoft.com/v1.0/users?$select=id,userPrincipalName,displayName,department,jobTitle,accountEnabled&$top=999`
   while (url) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`MS users error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: MsUser[]; '@odata.nextLink'?: string }
-    for (const u of data.value) yield u
+    for (const u of data.value) {
+      if (u.accountEnabled) yield u
+    }
     url = data['@odata.nextLink']
   }
 }
