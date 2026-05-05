@@ -187,6 +187,30 @@ async function ensureSchemaPatches() {
         PRIMARY KEY (\`id\`)
       )`,
     },
+    {
+      table: 'budget_items',
+      ddl: `CREATE TABLE \`budget_items\` (
+        \`id\` varchar(36) NOT NULL,
+        \`name\` varchar(255) NOT NULL,
+        \`vendor\` varchar(255),
+        \`category\` enum('cloud','saas','hardware','license','support','telecom','other') NOT NULL DEFAULT 'other',
+        \`amount\` decimal(12,2) NOT NULL DEFAULT 0,
+        \`currency\` varchar(3) NOT NULL DEFAULT 'EUR',
+        \`billing_cycle\` enum('monthly','quarterly','annual','one_time') NOT NULL DEFAULT 'annual',
+        \`contract_start\` date,
+        \`contract_end\` date,
+        \`auto_renewal\` int NOT NULL DEFAULT 0,
+        \`renewal_alert_days\` int NOT NULL DEFAULT 60,
+        \`status\` enum('active','expiring_soon','expired','cancelled') NOT NULL DEFAULT 'active',
+        \`notes\` text,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_budget_status\` (\`status\`),
+        KEY \`idx_budget_category\` (\`category\`),
+        KEY \`idx_budget_contract_end\` (\`contract_end\`)
+      )`,
+    },
   ]
   for (const p of tablePatches) {
     try {
