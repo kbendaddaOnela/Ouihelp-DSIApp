@@ -103,6 +103,24 @@ const ModuleTile = ({ module }: { module: ModuleCard }) => {
   )
 }
 
+// ── Barre de progression sync ─────────────────────────────────────────────────
+function SyncProgressBar({ step, progress }: { step: string | null; progress: number }) {
+  return (
+    <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+      <div className="mb-1.5 flex items-center justify-between text-xs">
+        <span className="font-medium text-blue-700">{step ?? 'Synchronisation en cours…'}</span>
+        <span className="text-blue-500">{progress}%</span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
+        <div
+          className="h-full bg-blue-500 transition-all duration-500"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
 // ── Cartes stats ──────────────────────────────────────────────────────────────
 function StatCards() {
   const { data: stats, isFetching } = useInventoryStats()
@@ -126,10 +144,10 @@ function StatCards() {
       <div className="flex items-center justify-between">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Vue d'ensemble</h2>
         <div className="flex items-center gap-2">
-          {lastSync && <span className="text-[10px] text-gray-400">Sync {formatLastSync(lastSync)}</span>}
+          {lastSync && !syncRunning && <span className="text-[10px] text-gray-400">Sync {formatLastSync(lastSync)}</span>}
           <button
             onClick={() => triggerSync()}
-            disabled={syncRunning || isFetching}
+            disabled={syncRunning}
             title="Synchroniser les données"
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-40"
           >
@@ -138,6 +156,13 @@ function StatCards() {
           </button>
         </div>
       </div>
+
+      {syncRunning && (
+        <SyncProgressBar
+          step={stats?.status?.syncStep ?? null}
+          progress={stats?.status?.syncProgress ?? 0}
+        />
+      )}
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {/* Utilisateurs actifs — clique → /inventory */}

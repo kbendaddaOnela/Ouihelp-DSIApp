@@ -50,6 +50,8 @@ export const syncStatus = mysqlTable('sync_status', {
   userCount: int('user_count').default(0).notNull(),
   deviceCount: int('device_count').default(0).notNull(),
   status: varchar('status', { length: 50 }).default('idle').notNull(),
+  syncStep: varchar('sync_step', { length: 100 }),
+  syncProgress: int('sync_progress').default(0).notNull(),
   error: varchar('error', { length: 500 }),
 })
 

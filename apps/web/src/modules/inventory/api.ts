@@ -7,6 +7,8 @@ export interface SyncStats {
     userCount: number
     deviceCount: number
     status: string
+    syncStep: string | null
+    syncProgress: number
     error: string | null
   } | null
   userCounts: Array<{ source: string; count: number }>

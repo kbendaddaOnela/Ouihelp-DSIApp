@@ -132,7 +132,7 @@ export default function InventoryPage() {
       source: sourceFilter as 'ouihelp' | 'onela' | undefined || undefined,
       compliance: complianceFilter || undefined,
       q: search || undefined,
-      limit: 200,
+      limit: 500,
     } : undefined
   )
 
@@ -140,7 +140,7 @@ export default function InventoryPage() {
     tab === 'users' ? {
       source: sourceFilter as 'ouihelp' | 'onela' | 'google' | undefined || undefined,
       q: search || undefined,
-      limit: 300,
+      limit: 2000,
     } : undefined
   )
 
@@ -174,6 +174,18 @@ export default function InventoryPage() {
           {syncRunning ? 'Sync en cours…' : 'Synchroniser'}
         </button>
       </div>
+
+      {syncRunning && (
+        <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+          <div className="mb-1.5 flex items-center justify-between text-xs">
+            <span className="font-medium text-blue-700">{statsData?.status?.syncStep ?? 'Synchronisation en cours…'}</span>
+            <span className="text-blue-500">{statsData?.status?.syncProgress ?? 0}%</span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
+            <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${statsData?.status?.syncProgress ?? 0}%` }} />
+          </div>
+        </div>
+      )}
 
       {/* Cartes résumé */}
       {deviceTotal > 0 && (

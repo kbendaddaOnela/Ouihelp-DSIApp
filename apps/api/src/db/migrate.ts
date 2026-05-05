@@ -55,6 +55,8 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'contacts_last_sync_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`contacts_last_sync_at\` timestamp NULL` },
     { table: 'migrations', column: 'archived', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`archived\` int NOT NULL DEFAULT 0` },
     { table: 'migrations', column: 'archived_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`archived_at\` timestamp NULL` },
+    { table: 'sync_status', column: 'sync_step', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_step\` varchar(100)` },
+    { table: 'sync_status', column: 'sync_progress', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_progress\` int NOT NULL DEFAULT 0` },
   ]
   for (const p of columnPatches) {
     try {

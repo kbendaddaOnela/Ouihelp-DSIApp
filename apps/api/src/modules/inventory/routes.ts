@@ -37,7 +37,7 @@ inventoryRouter.get('/users', requirePermission('inventory:read'), async (c) => 
   const db = getDb()
   const source = c.req.query('source') as 'ouihelp' | 'onela' | 'google' | undefined
   const search = c.req.query('q')
-  const limit = Math.min(Number(c.req.query('limit') ?? 100), 500)
+  const limit = Math.min(Number(c.req.query('limit') ?? 100), 2000)
   const offset = Number(c.req.query('offset') ?? 0)
 
   const searchFilter = search

@@ -5,8 +5,11 @@ export function useInventoryStats() {
   return useQuery({
     queryKey: ['inventory-stats'],
     queryFn: () => inventoryApi.stats(),
-    staleTime: 60_000,
-    refetchInterval: 120_000,
+    staleTime: 5_000,
+    refetchInterval: (q) => {
+      const status = q.state.data?.status?.status
+      return status === 'running' ? 2_000 : 60_000
+    },
   })
 }
 

@@ -153,147 +153,128 @@ function inferDeviceType(os: string, chassis: string | undefined): string {
 
 let syncInProgress = false
 
+// 5 étapes : users OH, users ONELA, users Google, devices OH, devices ONELA
+const SYNC_STEPS = [
+  { key: 'users-ouihelp',  label: 'Utilisateurs Ouihelp',  progress: 10 },
+  { key: 'users-onela',    label: 'Utilisateurs ONELA',    progress: 30 },
+  { key: 'users-google',   label: 'Utilisateurs Google',   progress: 50 },
+  { key: 'devices-ouihelp',label: 'Appareils Ouihelp',     progress: 70 },
+  { key: 'devices-onela',  label: 'Appareils ONELA',       progress: 90 },
+]
+
+async function setStep(step: string, progress: number) {
+  await db.insert(syncStatus)
+    .values({ id: 'main', status: 'running', syncStep: step, syncProgress: progress, userCount: 0, deviceCount: 0 })
+    .onDuplicateKeyUpdate({ set: { syncStep: step, syncProgress: progress } })
+}
+
+async function collectAll<T>(gen: AsyncGenerator<T>): Promise<T[]> {
+  const items: T[] = []
+  for await (const item of gen) items.push(item)
+  return items
+}
+
+async function insertBatched<T extends object>(rows: T[], inserter: (batch: T[]) => Promise<void>, batchSize = 200) {
+  for (let i = 0; i < rows.length; i += batchSize) {
+    await inserter(rows.slice(i, i + batchSize))
+  }
+}
+
 export async function runSync(): Promise<{ users: number; devices: number }> {
   if (syncInProgress) throw new Error('Sync déjà en cours')
   syncInProgress = true
 
-  await db.insert(syncStatus).values({ id: 'main', status: 'running', userCount: 0, deviceCount: 0 })
-    .onDuplicateKeyUpdate({ set: { status: 'running', error: null } })
+  await db.insert(syncStatus)
+    .values({ id: 'main', status: 'running', userCount: 0, deviceCount: 0, syncStep: 'Démarrage…', syncProgress: 0, error: null })
+    .onDuplicateKeyUpdate({ set: { status: 'running', syncStep: 'Démarrage…', syncProgress: 0, error: null } })
 
   try {
-    let totalUsers = 0
-    let totalDevices = 0
+    const { tid: ohTid, cid: ohCid, sec: ohSec } = ouihelpCreds()
+    const { tid: olTid, cid: olCid, sec: olSec } = onelaCreds()
+    const ohToken = await getMsToken(ohTid, ohCid, ohSec)
+    const olToken = await getMsToken(olTid, olCid, olSec)
 
-    // ── Supprimer les anciennes données ──
+    // ── Ouihelp users ──────────────────────────────────────────
+    await setStep(SYNC_STEPS[0].label, SYNC_STEPS[0].progress)
+    const ohRawUsers = await collectAll(iterateMsUsers(ohToken))
+    const ohUsersRows = ohRawUsers.map((u) => ({
+      id: randomUUID(), source: 'ouihelp' as const,
+      upn: u.userPrincipalName, displayName: u.displayName,
+      department: u.department ?? null, jobTitle: u.jobTitle ?? null,
+      accountEnabled: 1, syncedAt: new Date(),
+    }))
+
+    // ── ONELA users ────────────────────────────────────────────
+    await setStep(SYNC_STEPS[1].label, SYNC_STEPS[1].progress)
+    const olRawUsers = await collectAll(iterateMsUsers(olToken))
+    const olUsersRows = olRawUsers.map((u) => ({
+      id: randomUUID(), source: 'onela' as const,
+      upn: u.userPrincipalName, displayName: u.displayName,
+      department: u.department ?? null, jobTitle: u.jobTitle ?? null,
+      accountEnabled: 1, syncedAt: new Date(),
+    }))
+
+    // ── Google users ───────────────────────────────────────────
+    await setStep(SYNC_STEPS[2].label, SYNC_STEPS[2].progress)
+    const gRawUsers = await collectAll(iterateGoogleUsers())
+    const gUsersRows = gRawUsers.map((u) => {
+      const org = u.organizations?.find((o) => o.primary) ?? u.organizations?.[0]
+      return {
+        id: randomUUID(), source: 'google' as const,
+        upn: u.primaryEmail, displayName: u.name.fullName,
+        department: org?.department ?? null, jobTitle: org?.title ?? null,
+        accountEnabled: 1, syncedAt: new Date(),
+      }
+    })
+
+    // ── Ouihelp devices ────────────────────────────────────────
+    await setStep(SYNC_STEPS[3].label, SYNC_STEPS[3].progress)
+    const ohRawDevices = await collectAll(iterateIntuneDevices(ohToken))
+    const ohDevicesRows = ohRawDevices.map((d) => ({
+      id: randomUUID(), source: 'ouihelp' as const,
+      deviceName: d.deviceName, operatingSystem: d.operatingSystem, osVersion: d.osVersion,
+      deviceType: inferDeviceType(d.operatingSystem, d.chassisType),
+      complianceState: (d.complianceState as typeof cachedDevices.$inferInsert['complianceState']) ?? 'unknown',
+      userPrincipalName: d.userPrincipalName || null, userDisplayName: d.userDisplayName || null,
+      lastSyncDateTime: d.lastSyncDateTime ? new Date(d.lastSyncDateTime) : null,
+      enrolledDateTime: d.enrolledDateTime ? new Date(d.enrolledDateTime) : null,
+      syncedAt: new Date(),
+    }))
+
+    // ── ONELA devices ──────────────────────────────────────────
+    await setStep(SYNC_STEPS[4].label, SYNC_STEPS[4].progress)
+    const olRawDevices = await collectAll(iterateIntuneDevices(olToken))
+    const olDevicesRows = olRawDevices.map((d) => ({
+      id: randomUUID(), source: 'onela' as const,
+      deviceName: d.deviceName, operatingSystem: d.operatingSystem, osVersion: d.osVersion,
+      deviceType: inferDeviceType(d.operatingSystem, d.chassisType),
+      complianceState: (d.complianceState as typeof cachedDevices.$inferInsert['complianceState']) ?? 'unknown',
+      userPrincipalName: d.userPrincipalName || null, userDisplayName: d.userDisplayName || null,
+      lastSyncDateTime: d.lastSyncDateTime ? new Date(d.lastSyncDateTime) : null,
+      enrolledDateTime: d.enrolledDateTime ? new Date(d.enrolledDateTime) : null,
+      syncedAt: new Date(),
+    }))
+
+    // ── Écriture atomique ──────────────────────────────────────
+    await setStep('Enregistrement…', 95)
     await db.delete(cachedUsers)
     await db.delete(cachedDevices)
 
-    // ── Ouihelp users ──
-    const { tid: ohTid, cid: ohCid, sec: ohSec } = ouihelpCreds()
-    const ohToken = await getMsToken(ohTid, ohCid, ohSec)
-    const ohUsers: (typeof cachedUsers.$inferInsert)[] = []
-    for await (const u of iterateMsUsers(ohToken)) {
-      ohUsers.push({
-        id: randomUUID(),
-        source: 'ouihelp',
-        upn: u.userPrincipalName,
-        displayName: u.displayName,
-        department: u.department ?? null,
-        jobTitle: u.jobTitle ?? null,
-        accountEnabled: 1,
-        syncedAt: new Date(),
-      })
-      if (ohUsers.length === 200) {
-        await db.insert(cachedUsers).values(ohUsers)
-        totalUsers += ohUsers.length
-        ohUsers.length = 0
-      }
-    }
-    if (ohUsers.length) { await db.insert(cachedUsers).values(ohUsers); totalUsers += ohUsers.length }
+    const allUsers = [...ohUsersRows, ...olUsersRows, ...gUsersRows]
+    const allDevices = [...ohDevicesRows, ...olDevicesRows]
 
-    // ── ONELA users ──
-    const { tid: olTid, cid: olCid, sec: olSec } = onelaCreds()
-    const olToken = await getMsToken(olTid, olCid, olSec)
-    const olUsers: (typeof cachedUsers.$inferInsert)[] = []
-    for await (const u of iterateMsUsers(olToken)) {
-      olUsers.push({
-        id: randomUUID(),
-        source: 'onela',
-        upn: u.userPrincipalName,
-        displayName: u.displayName,
-        department: u.department ?? null,
-        jobTitle: u.jobTitle ?? null,
-        accountEnabled: 1,
-        syncedAt: new Date(),
-      })
-      if (olUsers.length === 200) {
-        await db.insert(cachedUsers).values(olUsers)
-        totalUsers += olUsers.length
-        olUsers.length = 0
-      }
-    }
-    if (olUsers.length) { await db.insert(cachedUsers).values(olUsers); totalUsers += olUsers.length }
+    if (allUsers.length) await insertBatched(allUsers, (b) => db.insert(cachedUsers).values(b))
+    if (allDevices.length) await insertBatched(allDevices, (b) => db.insert(cachedDevices).values(b))
 
-    // ── Google users ──
-    const gUsers: (typeof cachedUsers.$inferInsert)[] = []
-    for await (const u of iterateGoogleUsers()) {
-      const org = u.organizations?.find((o) => o.primary) ?? u.organizations?.[0]
-      gUsers.push({
-        id: randomUUID(),
-        source: 'google',
-        upn: u.primaryEmail,
-        displayName: u.name.fullName,
-        department: org?.department ?? null,
-        jobTitle: org?.title ?? null,
-        accountEnabled: 1,
-        syncedAt: new Date(),
-      })
-      if (gUsers.length === 200) {
-        await db.insert(cachedUsers).values(gUsers)
-        totalUsers += gUsers.length
-        gUsers.length = 0
-      }
-    }
-    if (gUsers.length) { await db.insert(cachedUsers).values(gUsers); totalUsers += gUsers.length }
+    await db.insert(syncStatus)
+      .values({ id: 'main', status: 'idle', userCount: allUsers.length, deviceCount: allDevices.length, lastSyncAt: new Date(), syncStep: 'Terminé', syncProgress: 100 })
+      .onDuplicateKeyUpdate({ set: { status: 'idle', userCount: allUsers.length, deviceCount: allDevices.length, lastSyncAt: new Date(), syncStep: 'Terminé', syncProgress: 100, error: null } })
 
-    // ── Ouihelp devices (Intune) ──
-    const ohDevices: (typeof cachedDevices.$inferInsert)[] = []
-    for await (const d of iterateIntuneDevices(ohToken)) {
-      ohDevices.push({
-        id: randomUUID(),
-        source: 'ouihelp',
-        deviceName: d.deviceName,
-        operatingSystem: d.operatingSystem,
-        osVersion: d.osVersion,
-        deviceType: inferDeviceType(d.operatingSystem, d.chassisType),
-        complianceState: (d.complianceState as typeof cachedDevices.$inferInsert['complianceState']) ?? 'unknown',
-        userPrincipalName: d.userPrincipalName || null,
-        userDisplayName: d.userDisplayName || null,
-        lastSyncDateTime: d.lastSyncDateTime ? new Date(d.lastSyncDateTime) : null,
-        enrolledDateTime: d.enrolledDateTime ? new Date(d.enrolledDateTime) : null,
-        syncedAt: new Date(),
-      })
-      if (ohDevices.length === 200) {
-        await db.insert(cachedDevices).values(ohDevices)
-        totalDevices += ohDevices.length
-        ohDevices.length = 0
-      }
-    }
-    if (ohDevices.length) { await db.insert(cachedDevices).values(ohDevices); totalDevices += ohDevices.length }
-
-    // ── ONELA devices (Intune) ──
-    const olDevices: (typeof cachedDevices.$inferInsert)[] = []
-    for await (const d of iterateIntuneDevices(olToken)) {
-      olDevices.push({
-        id: randomUUID(),
-        source: 'onela',
-        deviceName: d.deviceName,
-        operatingSystem: d.operatingSystem,
-        osVersion: d.osVersion,
-        deviceType: inferDeviceType(d.operatingSystem, d.chassisType),
-        complianceState: (d.complianceState as typeof cachedDevices.$inferInsert['complianceState']) ?? 'unknown',
-        userPrincipalName: d.userPrincipalName || null,
-        userDisplayName: d.userDisplayName || null,
-        lastSyncDateTime: d.lastSyncDateTime ? new Date(d.lastSyncDateTime) : null,
-        enrolledDateTime: d.enrolledDateTime ? new Date(d.enrolledDateTime) : null,
-        syncedAt: new Date(),
-      })
-      if (olDevices.length === 200) {
-        await db.insert(cachedDevices).values(olDevices)
-        totalDevices += olDevices.length
-        olDevices.length = 0
-      }
-    }
-    if (olDevices.length) { await db.insert(cachedDevices).values(olDevices); totalDevices += olDevices.length }
-
-    await db.insert(syncStatus).values({ id: 'main', status: 'idle', userCount: totalUsers, deviceCount: totalDevices, lastSyncAt: new Date() })
-      .onDuplicateKeyUpdate({ set: { status: 'idle', userCount: totalUsers, deviceCount: totalDevices, lastSyncAt: new Date(), error: null } })
-
-    return { users: totalUsers, devices: totalDevices }
+    return { users: allUsers.length, devices: allDevices.length }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    await db.insert(syncStatus).values({ id: 'main', status: 'error', error: msg })
-      .onDuplicateKeyUpdate({ set: { status: 'error', error: msg } })
+    await db.insert(syncStatus).values({ id: 'main', status: 'error', error: msg, syncProgress: 0 })
+      .onDuplicateKeyUpdate({ set: { status: 'error', error: msg, syncProgress: 0 } })
     throw err
   } finally {
     syncInProgress = false
