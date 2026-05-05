@@ -10,7 +10,7 @@ import {
   useBudgetStats, useBudgetItems, useCreateBudgetItem, useUpdateBudgetItem, useDeleteBudgetItem,
 } from './hooks'
 import type { BudgetItem, BudgetCategory, BillingCycle, BillingEntity, BudgetItemInput } from './api'
-import { BILLING_ENTITIES } from './api'
+import { BILLING_ENTITIES, BILLING_ENTITY_LABELS } from './api'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const CATEGORY_CONFIG: Record<BudgetCategory, { label: string; icon: React.ElementType; color: string }> = {
@@ -210,6 +210,7 @@ function formToInput(f: FormState): BudgetItemInput {
 
 function BudgetForm({ item, onClose }: { item?: BudgetItem; onClose: () => void }) {
   const [form, setForm] = useState<FormState>(item ? itemToForm(item) : EMPTY_FORM)
+  const [apiError, setApiError] = useState<string | null>(null)
   const { mutate: create, isPending: creating } = useCreateBudgetItem()
   const { mutate: update, isPending: updating } = useUpdateBudgetItem()
   const pending = creating || updating
@@ -218,11 +219,15 @@ function BudgetForm({ item, onClose }: { item?: BudgetItem; onClose: () => void 
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setApiError(null)
     const input = formToInput(form)
+    const onError = (err: unknown) => {
+      setApiError(err instanceof Error ? err.message : 'Erreur lors de l\'enregistrement')
+    }
     if (item) {
-      update({ id: item.id, data: input }, { onSuccess: onClose })
+      update({ id: item.id, data: input }, { onSuccess: onClose, onError })
     } else {
-      create(input, { onSuccess: onClose })
+      create(input, { onSuccess: onClose, onError })
     }
   }
 
@@ -285,7 +290,7 @@ function BudgetForm({ item, onClose }: { item?: BudgetItem; onClose: () => void 
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
             >
               <option value="">— Non défini —</option>
-              {BILLING_ENTITIES.map(e => <option key={e} value={e}>{e}</option>)}
+              {BILLING_ENTITIES.map(e => <option key={e} value={e}>{BILLING_ENTITY_LABELS[e]}</option>)}
             </select>
           </div>
 
@@ -378,6 +383,10 @@ function BudgetForm({ item, onClose }: { item?: BudgetItem; onClose: () => void 
             />
           </div>
 
+          {apiError && (
+            <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{apiError}</p>
+          )}
+
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
               Annuler
@@ -433,7 +442,7 @@ function ItemsTable({ items, onEdit }: { items: BudgetItem[]; onEdit: (item: Bud
                 </td>
                 <td className="px-4 py-3">
                   {item.billingEntity
-                    ? <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700">{item.billingEntity}</span>
+                    ? <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700">{BILLING_ENTITY_LABELS[item.billingEntity] ?? item.billingEntity}</span>
                     : <span className="text-gray-300">—</span>
                   }
                 </td>
@@ -632,7 +641,7 @@ export default function BudgetPage() {
               className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
             >
               <option value="">Toutes entités</option>
-              {BILLING_ENTITIES.map(e => <option key={e} value={e}>{e}</option>)}
+              {BILLING_ENTITIES.map(e => <option key={e} value={e}>{BILLING_ENTITY_LABELS[e]}</option>)}
             </select>
           </div>
 

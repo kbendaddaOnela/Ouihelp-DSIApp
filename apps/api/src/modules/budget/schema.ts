@@ -13,7 +13,7 @@ export const budgetItems = mysqlTable('budget_items', {
   autoRenewal: int('auto_renewal').notNull().default(0),
   renewalAlertDays: int('renewal_alert_days').notNull().default(60),
   status: mysqlEnum('status', ['active', 'expiring_soon', 'expired', 'cancelled']).notNull().default('active'),
-  billingEntity: mysqlEnum('billing_entity', ['BALM', 'NHS', 'NHS PACA', 'ONELA Services', 'ONELA SAS', 'Colisée Domicile']),
+  billingEntity: mysqlEnum('billing_entity', ['BALM', 'NHS', 'NHS PACA', 'ONELA Services', 'ONELA SAS', 'Colisee Domicile']),
   notes: text('notes'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),

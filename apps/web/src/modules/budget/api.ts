@@ -1,11 +1,16 @@
 import { apiClient } from '@/lib/api'
 
-export type BillingEntity = 'BALM' | 'NHS' | 'NHS PACA' | 'ONELA Services' | 'ONELA SAS' | 'Colisée Domicile'
+export type BillingEntity = 'BALM' | 'NHS' | 'NHS PACA' | 'ONELA Services' | 'ONELA SAS' | 'Colisee Domicile'
 export type BudgetCategory = 'cloud' | 'saas' | 'hardware' | 'license' | 'support' | 'telecom' | 'other'
 export type BillingCycle = 'monthly' | 'quarterly' | 'annual' | 'one_time'
 export type BudgetStatus = 'active' | 'expiring_soon' | 'expired' | 'cancelled'
 
-export const BILLING_ENTITIES: BillingEntity[] = ['BALM', 'NHS', 'NHS PACA', 'ONELA Services', 'ONELA SAS', 'Colisée Domicile']
+export const BILLING_ENTITIES: BillingEntity[] = ['BALM', 'NHS', 'NHS PACA', 'ONELA Services', 'ONELA SAS', 'Colisee Domicile']
+export const BILLING_ENTITY_LABELS: Record<BillingEntity, string> = {
+  BALM: 'BALM', NHS: 'NHS', 'NHS PACA': 'NHS PACA',
+  'ONELA Services': 'ONELA Services', 'ONELA SAS': 'ONELA SAS',
+  'Colisee Domicile': 'Colisée Domicile',
+}
 
 export interface BudgetItem {
   id: string

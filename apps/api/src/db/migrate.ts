@@ -56,7 +56,7 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'archived', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`archived\` int NOT NULL DEFAULT 0` },
     { table: 'migrations', column: 'archived_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`archived_at\` timestamp NULL` },
     { table: 'sync_status', column: 'sync_step', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_step\` varchar(100)` },
-    { table: 'budget_items', column: 'billing_entity', ddl: `ALTER TABLE \`budget_items\` ADD COLUMN \`billing_entity\` enum('BALM','NHS','NHS PACA','ONELA Services','ONELA SAS','Colisée Domicile')` },
+    { table: 'budget_items', column: 'billing_entity', ddl: `ALTER TABLE \`budget_items\` ADD COLUMN \`billing_entity\` enum('BALM','NHS','NHS PACA','ONELA Services','ONELA SAS','Colisee Domicile')` },
     { table: 'sync_status', column: 'sync_progress', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_progress\` int NOT NULL DEFAULT 0` },
   ]
   for (const p of columnPatches) {
@@ -203,6 +203,7 @@ async function ensureSchemaPatches() {
         \`auto_renewal\` int NOT NULL DEFAULT 0,
         \`renewal_alert_days\` int NOT NULL DEFAULT 60,
         \`status\` enum('active','expiring_soon','expired','cancelled') NOT NULL DEFAULT 'active',
+        \`billing_entity\` enum('BALM','NHS','NHS PACA','ONELA Services','ONELA SAS','Colisee Domicile'),
         \`notes\` text,
         \`created_at\` timestamp NOT NULL DEFAULT (now()),
         \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
