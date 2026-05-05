@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, and, like, desc } from 'drizzle-orm'
+import { eq, and, like, or, desc } from 'drizzle-orm'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
 import type { RbacVariables } from '../../middleware/rbac'
@@ -16,6 +16,16 @@ inventoryRouter.post('/sync', requirePermission('inventory:read'), async (c) => 
   return c.json({ started: true })
 })
 
+// ── Sync bloquante pour debug (retourne le résultat ou l'erreur) ──────────────
+inventoryRouter.post('/sync/debug', requirePermission('inventory:read'), async (c) => {
+  try {
+    const result = await runSync()
+    return c.json({ ok: true, ...result })
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+  }
+})
+
 // ── Stats pour le dashboard ───────────────────────────────────────────────────
 inventoryRouter.get('/stats', requirePermission('inventory:read'), async (c) => {
   const stats = await getSyncStats()
@@ -30,12 +40,15 @@ inventoryRouter.get('/users', requirePermission('inventory:read'), async (c) => 
   const limit = Math.min(Number(c.req.query('limit') ?? 100), 500)
   const offset = Number(c.req.query('offset') ?? 0)
 
+  const searchFilter = search
+    ? or(like(cachedUsers.upn, `%${search}%`), like(cachedUsers.displayName, `%${search}%`))
+    : undefined
+  const sourceFilter = source ? eq(cachedUsers.source, source) : undefined
+
   const rows = await db.select().from(cachedUsers)
     .where(
-      source && search ? and(eq(cachedUsers.source, source), like(cachedUsers.upn, `%${search}%`))
-      : source ? eq(cachedUsers.source, source)
-      : search ? like(cachedUsers.upn, `%${search}%`)
-      : undefined
+      searchFilter && sourceFilter ? and(sourceFilter, searchFilter)
+      : sourceFilter ?? searchFilter
     )
     .orderBy(cachedUsers.displayName)
     .limit(limit)
