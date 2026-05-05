@@ -199,7 +199,7 @@ function formToInput(f: FormState): BudgetItemInput {
     billingCycle: f.billingCycle,
     contractStart: f.contractStart || null,
     contractEnd: f.contractEnd || null,
-    autoRenewal: f.autoRenewal,
+    autoRenewal: f.autoRenewal ? 1 : 0,
     renewalAlertDays: Number(f.renewalAlertDays),
     notes: f.notes || null,
   }
