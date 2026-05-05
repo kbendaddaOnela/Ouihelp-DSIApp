@@ -68,11 +68,13 @@ budgetRouter.get('/items', requirePermission('budget:read'), async (c) => {
   const db = getDb()
   const category = c.req.query('category') as typeof budgetItems.$inferSelect['category'] | undefined
   const status = c.req.query('status') as typeof budgetItems.$inferSelect['status'] | undefined
+  const entity = c.req.query('entity') as typeof budgetItems.$inferSelect['billingEntity'] | undefined
   const search = c.req.query('q')
 
   const filters = []
   if (category) filters.push(eq(budgetItems.category, category))
   if (status) filters.push(eq(budgetItems.status, status))
+  if (entity) filters.push(eq(budgetItems.billingEntity, entity))
   if (search) filters.push(or(
     like(budgetItems.name, `%${search}%`),
     like(budgetItems.vendor, `%${search}%`)
@@ -108,6 +110,7 @@ budgetRouter.post('/items', requirePermission('budget:write'), async (c) => {
     autoRenewal: body.autoRenewal ? 1 : 0,
     renewalAlertDays: body.renewalAlertDays ?? 60,
     status,
+    billingEntity: body.billingEntity ?? null,
     notes: body.notes ?? null,
     createdAt: now,
     updatedAt: now,
@@ -137,6 +140,7 @@ budgetRouter.put('/items/:id', requirePermission('budget:write'), async (c) => {
     autoRenewal: body.autoRenewal ? 1 : 0,
     renewalAlertDays: body.renewalAlertDays ?? 60,
     status,
+    billingEntity: body.billingEntity ?? null,
     notes: body.notes ?? null,
     updatedAt: new Date(),
   }).where(eq(budgetItems.id, id))

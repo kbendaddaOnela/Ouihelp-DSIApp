@@ -1,8 +1,11 @@
 import { apiClient } from '@/lib/api'
 
+export type BillingEntity = 'BALM' | 'NHS' | 'NHS PACA' | 'ONELA Services' | 'ONELA SAS' | 'Colisée Domicile'
 export type BudgetCategory = 'cloud' | 'saas' | 'hardware' | 'license' | 'support' | 'telecom' | 'other'
 export type BillingCycle = 'monthly' | 'quarterly' | 'annual' | 'one_time'
 export type BudgetStatus = 'active' | 'expiring_soon' | 'expired' | 'cancelled'
+
+export const BILLING_ENTITIES: BillingEntity[] = ['BALM', 'NHS', 'NHS PACA', 'ONELA Services', 'ONELA SAS', 'Colisée Domicile']
 
 export interface BudgetItem {
   id: string
@@ -16,6 +19,7 @@ export interface BudgetItem {
   contractEnd: string | null
   autoRenewal: number
   renewalAlertDays: number
+  billingEntity: BillingEntity | null
   status: BudgetStatus
   notes: string | null
   createdAt: string
@@ -36,10 +40,11 @@ export type BudgetItemInput = Omit<BudgetItem, 'id' | 'createdAt' | 'updatedAt' 
 
 export const budgetApi = {
   stats: () => apiClient.get<BudgetStats>('/budget/stats').then((r) => r.data),
-  items: (params?: { category?: string; status?: string; q?: string }) => {
+  items: (params?: { category?: string; status?: string; entity?: string; q?: string }) => {
     const p = new URLSearchParams()
     if (params?.category) p.set('category', params.category)
     if (params?.status) p.set('status', params.status)
+    if (params?.entity) p.set('entity', params.entity)
     if (params?.q) p.set('q', params.q)
     const qs = p.toString()
     return apiClient.get<{ items: BudgetItem[] }>(`/budget/items${qs ? `?${qs}` : ''}`).then((r) => r.data)

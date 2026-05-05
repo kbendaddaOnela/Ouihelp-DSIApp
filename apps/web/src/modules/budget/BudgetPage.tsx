@@ -1,15 +1,16 @@
 import { useState } from 'react'
 import {
-  Euro, TrendingUp, AlertTriangle, Clock, Plus, Search, Pencil, Trash2, X, ChevronDown,
+  Euro, AlertTriangle, Clock, Plus, Search, Pencil, Trash2, X,
   Building2, Cloud, Monitor, Key, Headphones, Phone, Package, CheckCircle2, XCircle,
-  AlertCircle, CalendarClock,
+  AlertCircle,
 } from 'lucide-react'
 import { usePermission } from '@/hooks/usePermission'
 import { cn } from '@/lib/utils'
 import {
   useBudgetStats, useBudgetItems, useCreateBudgetItem, useUpdateBudgetItem, useDeleteBudgetItem,
 } from './hooks'
-import type { BudgetItem, BudgetCategory, BillingCycle, BudgetItemInput } from './api'
+import type { BudgetItem, BudgetCategory, BillingCycle, BillingEntity, BudgetItemInput } from './api'
+import { BILLING_ENTITIES } from './api'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const CATEGORY_CONFIG: Record<BudgetCategory, { label: string; icon: React.ElementType; color: string }> = {
@@ -164,13 +165,13 @@ function ExpiryTimeline({ items }: { items: BudgetItem[] }) {
 interface FormState {
   name: string; vendor: string; category: BudgetCategory; amount: string
   currency: string; billingCycle: BillingCycle; contractStart: string; contractEnd: string
-  autoRenewal: boolean; renewalAlertDays: string; notes: string
+  autoRenewal: boolean; renewalAlertDays: string; billingEntity: BillingEntity | ''; notes: string
 }
 
 const EMPTY_FORM: FormState = {
   name: '', vendor: '', category: 'saas', amount: '',
   currency: 'EUR', billingCycle: 'annual', contractStart: '', contractEnd: '',
-  autoRenewal: false, renewalAlertDays: '60', notes: '',
+  autoRenewal: false, renewalAlertDays: '60', billingEntity: '', notes: '',
 }
 
 function itemToForm(item: BudgetItem): FormState {
@@ -185,6 +186,7 @@ function itemToForm(item: BudgetItem): FormState {
     contractEnd: item.contractEnd ?? '',
     autoRenewal: item.autoRenewal === 1,
     renewalAlertDays: String(item.renewalAlertDays),
+    billingEntity: item.billingEntity ?? '',
     notes: item.notes ?? '',
   }
 }
@@ -201,6 +203,7 @@ function formToInput(f: FormState): BudgetItemInput {
     contractEnd: f.contractEnd || null,
     autoRenewal: f.autoRenewal ? 1 : 0,
     renewalAlertDays: Number(f.renewalAlertDays),
+    billingEntity: (f.billingEntity || null) as BillingEntity | null,
     notes: f.notes || null,
   }
 }
@@ -271,6 +274,19 @@ function BudgetForm({ item, onClose }: { item?: BudgetItem; onClose: () => void 
                 ))}
               </select>
             </div>
+          </div>
+
+          {/* Entité de facturation */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Entité de facturation</label>
+            <select
+              value={form.billingEntity}
+              onChange={e => set('billingEntity', e.target.value as BillingEntity | '')}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+            >
+              <option value="">— Non défini —</option>
+              {BILLING_ENTITIES.map(e => <option key={e} value={e}>{e}</option>)}
+            </select>
           </div>
 
           {/* Montant + Fréquence */}
@@ -394,6 +410,7 @@ function ItemsTable({ items, onEdit }: { items: BudgetItem[]; onEdit: (item: Bud
         <thead>
           <tr className="border-b border-gray-100 bg-gray-50 text-xs font-medium uppercase tracking-wide text-gray-500">
             <th className="px-4 py-3 text-left">Contrat / Service</th>
+            <th className="px-4 py-3 text-left">Entité</th>
             <th className="px-4 py-3 text-left">Catégorie</th>
             <th className="px-4 py-3 text-right">Montant</th>
             <th className="px-4 py-3 text-right">Annualisé</th>
@@ -413,6 +430,12 @@ function ItemsTable({ items, onEdit }: { items: BudgetItem[]; onEdit: (item: Bud
                 <td className="px-4 py-3">
                   <p className="font-medium text-gray-900">{item.name}</p>
                   {item.vendor && <p className="text-xs text-gray-400">{item.vendor}</p>}
+                </td>
+                <td className="px-4 py-3">
+                  {item.billingEntity
+                    ? <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700">{item.billingEntity}</span>
+                    : <span className="text-gray-300">—</span>
+                  }
                 </td>
                 <td className="px-4 py-3">
                   <span className={cn('inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium', catCfg.color)}>
@@ -473,12 +496,13 @@ export default function BudgetPage() {
   const [search, setSearch] = useState('')
   const [filterCat, setFilterCat] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
+  const [filterEntity, setFilterEntity] = useState('')
   const [editItem, setEditItem] = useState<BudgetItem | null | 'new'>(null)
 
   const { data: stats } = useBudgetStats()
   const { data: itemsData } = useBudgetItems(
-    search || filterCat || filterStatus
-      ? { q: search || undefined, category: filterCat || undefined, status: filterStatus || undefined }
+    search || filterCat || filterStatus || filterEntity
+      ? { q: search || undefined, category: filterCat || undefined, status: filterStatus || undefined, entity: filterEntity || undefined }
       : undefined
   )
   const { data: allItemsData } = useBudgetItems()
@@ -601,6 +625,14 @@ export default function BudgetPage() {
               {Object.entries(STATUS_CONFIG).map(([k, v]) => (
                 <option key={k} value={k}>{v.label}</option>
               ))}
+            </select>
+            <select
+              value={filterEntity}
+              onChange={e => setFilterEntity(e.target.value)}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+            >
+              <option value="">Toutes entités</option>
+              {BILLING_ENTITIES.map(e => <option key={e} value={e}>{e}</option>)}
             </select>
           </div>
 
