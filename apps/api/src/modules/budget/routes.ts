@@ -94,15 +94,17 @@ budgetRouter.post('/items', requirePermission('budget:write'), async (c) => {
   const id = randomUUID()
   const now = new Date()
 
-  // Auto-compute status based on contract end
   const status = computeStatus(body.contractEnd, body.status)
+  const { quantity, unitCost, amount } = computeAmounts(body)
 
   await db.insert(budgetItems).values({
     id,
     name: body.name,
     vendor: body.vendor ?? null,
     category: body.category ?? 'other',
-    amount: String(body.amount ?? 0),
+    quantity,
+    unitCost,
+    amount,
     currency: body.currency ?? 'EUR',
     billingCycle: body.billingCycle ?? 'annual',
     contractStart: body.contractStart ?? null,
@@ -127,12 +129,15 @@ budgetRouter.put('/items/:id', requirePermission('budget:write'), async (c) => {
   const body = await c.req.json()
 
   const status = computeStatus(body.contractEnd, body.status)
+  const { quantity, unitCost, amount } = computeAmounts(body)
 
   await db.update(budgetItems).set({
     name: body.name,
     vendor: body.vendor ?? null,
     category: body.category ?? 'other',
-    amount: String(body.amount ?? 0),
+    quantity,
+    unitCost,
+    amount,
     currency: body.currency ?? 'EUR',
     billingCycle: body.billingCycle ?? 'annual',
     contractStart: body.contractStart ?? null,
@@ -159,6 +164,17 @@ budgetRouter.delete('/items/:id', requirePermission('budget:write'), async (c) =
 })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+function computeAmounts(body: Record<string, unknown>) {
+  const quantity = Number(body.quantity ?? 1) || 1
+  const unitCost = body.unitCost !== null && body.unitCost !== '' && body.unitCost !== undefined
+    ? Number(body.unitCost)
+    : null
+  const amount = unitCost !== null
+    ? String((quantity * unitCost).toFixed(2))
+    : String(Number(body.amount ?? 0).toFixed(2))
+  return { quantity, unitCost: unitCost !== null ? String(unitCost.toFixed(2)) : null, amount }
+}
+
 function computeStatus(
   contractEnd: string | null | undefined,
   explicitStatus: string | null | undefined

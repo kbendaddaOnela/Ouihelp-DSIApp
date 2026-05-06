@@ -57,6 +57,8 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'archived_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`archived_at\` timestamp NULL` },
     { table: 'sync_status', column: 'sync_step', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_step\` varchar(100)` },
     { table: 'budget_items', column: 'billing_entity', ddl: `ALTER TABLE \`budget_items\` ADD COLUMN \`billing_entity\` enum('BALM','NHS','NHS PACA','ONELA Services','ONELA SAS','Colisee Domicile')` },
+    { table: 'budget_items', column: 'quantity', ddl: `ALTER TABLE \`budget_items\` ADD COLUMN \`quantity\` int NOT NULL DEFAULT 1` },
+    { table: 'budget_items', column: 'unit_cost', ddl: `ALTER TABLE \`budget_items\` ADD COLUMN \`unit_cost\` decimal(12,2)` },
     { table: 'sync_status', column: 'sync_progress', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_progress\` int NOT NULL DEFAULT 0` },
   ]
   for (const p of columnPatches) {
@@ -195,6 +197,8 @@ async function ensureSchemaPatches() {
         \`name\` varchar(255) NOT NULL,
         \`vendor\` varchar(255),
         \`category\` enum('cloud','saas','hardware','license','support','telecom','other') NOT NULL DEFAULT 'other',
+        \`quantity\` int NOT NULL DEFAULT 1,
+        \`unit_cost\` decimal(12,2),
         \`amount\` decimal(12,2) NOT NULL DEFAULT 0,
         \`currency\` varchar(3) NOT NULL DEFAULT 'EUR',
         \`billing_cycle\` enum('monthly','quarterly','annual','one_time') NOT NULL DEFAULT 'annual',

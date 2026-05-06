@@ -163,13 +163,15 @@ function ExpiryTimeline({ items }: { items: BudgetItem[] }) {
 
 // ── Budget Form Modal ─────────────────────────────────────────────────────────
 interface FormState {
-  name: string; vendor: string; category: BudgetCategory; amount: string
+  name: string; vendor: string; category: BudgetCategory
+  quantity: string; unitCost: string; amount: string
   currency: string; billingCycle: BillingCycle; contractStart: string; contractEnd: string
   autoRenewal: boolean; renewalAlertDays: string; billingEntity: BillingEntity | ''; notes: string
 }
 
 const EMPTY_FORM: FormState = {
-  name: '', vendor: '', category: 'saas', amount: '',
+  name: '', vendor: '', category: 'saas',
+  quantity: '1', unitCost: '', amount: '',
   currency: 'EUR', billingCycle: 'annual', contractStart: '', contractEnd: '',
   autoRenewal: false, renewalAlertDays: '60', billingEntity: '', notes: '',
 }
@@ -179,7 +181,9 @@ function itemToForm(item: BudgetItem): FormState {
     name: item.name,
     vendor: item.vendor ?? '',
     category: item.category,
-    amount: item.amount,
+    quantity: String(item.quantity ?? 1),
+    unitCost: item.unitCost ?? '',
+    amount: item.unitCost ? '' : item.amount,
     currency: item.currency,
     billingCycle: item.billingCycle,
     contractStart: item.contractStart ?? '',
@@ -191,12 +195,22 @@ function itemToForm(item: BudgetItem): FormState {
   }
 }
 
+function computedTotal(f: FormState): number | null {
+  const qty = Number(f.quantity)
+  const uc = Number(f.unitCost)
+  if (f.unitCost && !isNaN(qty) && !isNaN(uc) && qty > 0) return qty * uc
+  return null
+}
+
 function formToInput(f: FormState): BudgetItemInput {
+  const total = computedTotal(f)
   return {
     name: f.name,
     vendor: f.vendor || null,
     category: f.category,
-    amount: f.amount,
+    quantity: Number(f.quantity) || 1,
+    unitCost: f.unitCost || null,
+    amount: total !== null ? String(total.toFixed(2)) : f.amount,
     currency: f.currency,
     billingCycle: f.billingCycle,
     contractStart: f.contractStart || null,
@@ -294,33 +308,66 @@ function BudgetForm({ item, onClose }: { item?: BudgetItem; onClose: () => void 
             </select>
           </div>
 
-          {/* Montant + Fréquence */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Quantité + Coût unitaire → Total calculé */}
+          <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-700">Montant (€) *</label>
+              <label className="mb-1 block text-xs font-medium text-gray-700">Quantité</label>
               <input
-                required
+                type="number"
+                min="1"
+                step="1"
+                value={form.quantity}
+                onChange={e => set('quantity', e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">Coût unitaire (€)</label>
+              <input
                 type="number"
                 min="0"
                 step="0.01"
-                value={form.amount}
-                onChange={e => set('amount', e.target.value)}
+                value={form.unitCost}
+                onChange={e => set('unitCost', e.target.value)}
                 placeholder="0.00"
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-700">Fréquence</label>
-              <select
-                value={form.billingCycle}
-                onChange={e => set('billingCycle', e.target.value as BillingCycle)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-              >
-                {Object.entries(BILLING_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
-                ))}
-              </select>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                Total (€) {computedTotal(form) !== null ? <span className="font-normal text-gray-400">calculé</span> : '*'}
+              </label>
+              {computedTotal(form) !== null ? (
+                <div className="flex h-[38px] items-center rounded-lg border border-primary-200 bg-primary-50 px-3 text-sm font-semibold text-primary-700">
+                  {formatEur(computedTotal(form)!)}
+                </div>
+              ) : (
+                <input
+                  required
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.amount}
+                  onChange={e => set('amount', e.target.value)}
+                  placeholder="0.00"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                />
+              )}
             </div>
+          </div>
+
+          {/* Fréquence */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Fréquence de facturation</label>
+            <select
+              value={form.billingCycle}
+              onChange={e => set('billingCycle', e.target.value as BillingCycle)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+            >
+              {Object.entries(BILLING_LABELS).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
           </div>
 
           {/* Dates contrat */}
@@ -453,7 +500,14 @@ function ItemsTable({ items, onEdit }: { items: BudgetItem[]; onEdit: (item: Bud
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right text-gray-700">
-                  {formatEur(Number(item.amount))}
+                  {item.unitCost ? (
+                    <>
+                      <p>{formatEur(Number(item.amount))}</p>
+                      <p className="text-[10px] text-gray-400">{item.quantity} × {formatEur(Number(item.unitCost))}</p>
+                    </>
+                  ) : (
+                    formatEur(Number(item.amount))
+                  )}
                   <span className="ml-1 text-[10px] text-gray-400">/ {BILLING_LABELS[item.billingCycle]}</span>
                 </td>
                 <td className="px-4 py-3 text-right font-medium text-gray-900">

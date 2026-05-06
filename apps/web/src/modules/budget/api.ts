@@ -17,6 +17,8 @@ export interface BudgetItem {
   name: string
   vendor: string | null
   category: BudgetCategory
+  quantity: number
+  unitCost: string | null
   amount: string
   currency: string
   billingCycle: BillingCycle

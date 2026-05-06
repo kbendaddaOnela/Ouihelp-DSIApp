@@ -5,6 +5,8 @@ export const budgetItems = mysqlTable('budget_items', {
   name: varchar('name', { length: 255 }).notNull(),
   vendor: varchar('vendor', { length: 255 }),
   category: mysqlEnum('category', ['cloud', 'saas', 'hardware', 'license', 'support', 'telecom', 'other']).notNull().default('other'),
+  quantity: int('quantity').notNull().default(1),
+  unitCost: decimal('unit_cost', { precision: 12, scale: 2 }),
   amount: decimal('amount', { precision: 12, scale: 2 }).notNull().default('0'),
   currency: varchar('currency', { length: 3 }).notNull().default('EUR'),
   billingCycle: mysqlEnum('billing_cycle', ['monthly', 'quarterly', 'annual', 'one_time']).notNull().default('annual'),
