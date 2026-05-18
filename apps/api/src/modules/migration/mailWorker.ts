@@ -100,25 +100,34 @@ async function processUserMail(job: Migration) {
   if (!job.gohUpn) return markStepError(job.id, 'mail', 'gohUpn manquant')
 
   try {
-    // Charger l'état existant pour reprendre là où on s'est arrêté
+    // Charger les messages déjà migrés pour skip (idempotence)
     const already = await db
       .select({ graphMessageId: migratedMessages.graphMessageId, status: migratedMessages.status })
       .from(migratedMessages)
       .where(eq(migratedMessages.migrationId, job.id))
     const skipSet = new Set(already.map((r) => r.graphMessageId))
+
+    // Mode resume (crash recovery) vs delta (sync incrémentale)
+    // Resume = mailLastSyncAt est null → première migration pas encore terminée
+    // Delta = mailLastSyncAt set → migration précédente terminée, on sync les nouveaux
+    const isDelta = !!job.mailLastSyncAt
     const alreadySuccess = already.filter((r) => r.status === 'success').length
     const alreadyFailed = already.filter((r) => r.status === 'error').length
 
-    console.log(`[mail] resuming ${job.id}: ${alreadySuccess} OK + ${alreadyFailed} erreurs déjà en DB, ${skipSet.size} à skipper`)
+    // En delta : compteurs à 0 (on compte que les nouveaux messages)
+    // En resume : on part des compteurs DB (on reprend où on s'est arrêté)
+    const startMigrated = isDelta ? 0 : alreadySuccess
+    const startFailed = isDelta ? 0 : alreadyFailed
+
+    console.log(`[mail] ${isDelta ? 'delta' : 'resume'} ${job.id}: ${alreadySuccess} OK + ${alreadyFailed} erreurs en DB, ${skipSet.size} à skipper`)
 
     await db.update(migrations)
       .set({
         stepMailMigration: 'running',
         mailStartedAt: new Date(),
         mailError: null,
-        // Reprendre depuis les compteurs existants (pas de reset à 0)
-        mailMigrated: alreadySuccess,
-        mailFailed: alreadyFailed,
+        mailMigrated: startMigrated,
+        mailFailed: startFailed,
       })
       .where(eq(migrations.id, job.id))
 
@@ -126,8 +135,8 @@ async function processUserMail(job: Migration) {
     const folderById = new Map<string, GraphFolder>(folders.map((f) => [f.id, f]))
     const resolver = await buildLabelResolver(job.gohUpn, folders)
 
-    let migrated = alreadySuccess
-    let failed = alreadyFailed
+    let migrated = startMigrated
+    let failed = startFailed
     let total = 0
     let preCountSet = false
     try {
@@ -144,7 +153,6 @@ async function processUserMail(job: Migration) {
       if (!preCountSet) total++
       if (skipSet.has(msg.id)) {
         skipped++
-        // Log progression du skip toutes les 500 messages pour montrer que ça avance
         if (skipped % 500 === 0) console.log(`[mail] ${job.id}: skipped ${skipped}/${skipSet.size} déjà migrés...`)
         continue
       }
@@ -233,18 +241,21 @@ async function processUserCalendar(job: Migration) {
       .from(migratedEvents)
       .where(eq(migratedEvents.migrationId, job.id))
     const skipSet = new Set(alreadyCal.map((r) => r.graphEventId))
-    const calSuccess = alreadyCal.filter((r) => r.status === 'success').length
-    const calFailed = alreadyCal.filter((r) => r.status === 'error').length
+    const isDeltaCal = !!job.calLastSyncAt
+    const calSuccessCount = alreadyCal.filter((r) => r.status === 'success').length
+    const calFailedCount = alreadyCal.filter((r) => r.status === 'error').length
+    const startMig = isDeltaCal ? 0 : calSuccessCount
+    const startFail = isDeltaCal ? 0 : calFailedCount
 
     await db.update(migrations)
       .set({
         stepCalendarMigration: 'running', calStartedAt: new Date(), calError: null,
-        calMigrated: calSuccess, calFailed,
+        calMigrated: startMig, calFailed: startFail,
       })
       .where(eq(migrations.id, job.id))
 
-    let migrated = calSuccess
-    let failed = calFailed
+    let migrated = startMig
+    let failed = startFail
     let total = 0
     let preCountSet = false
     try {
@@ -331,18 +342,21 @@ async function processUserContacts(job: Migration) {
       .from(migratedContacts)
       .where(eq(migratedContacts.migrationId, job.id))
     const skipSet = new Set(alreadyCt.map((r) => r.graphContactId))
-    const ctSuccess = alreadyCt.filter((r) => r.status === 'success').length
-    const ctFailed = alreadyCt.filter((r) => r.status === 'error').length
+    const isDeltaCt = !!job.contactsLastSyncAt
+    const ctSuccessCount = alreadyCt.filter((r) => r.status === 'success').length
+    const ctFailedCount = alreadyCt.filter((r) => r.status === 'error').length
+    const startMigCt = isDeltaCt ? 0 : ctSuccessCount
+    const startFailCt = isDeltaCt ? 0 : ctFailedCount
 
     await db.update(migrations)
       .set({
         stepContactsMigration: 'running', contactsStartedAt: new Date(), contactsError: null,
-        contactsMigrated: ctSuccess, contactsFailed: ctFailed,
+        contactsMigrated: startMigCt, contactsFailed: startFailCt,
       })
       .where(eq(migrations.id, job.id))
 
-    let migrated = ctSuccess
-    let failed = ctFailed
+    let migrated = startMigCt
+    let failed = startFailCt
     let total = 0
     let preCountSet = false
     try {
