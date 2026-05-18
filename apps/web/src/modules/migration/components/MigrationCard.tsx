@@ -37,14 +37,15 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   const accountReady = m.stepCreateAccount === 'success' || m.stepCreateAccount === 'skipped'
 
   // Polling Google toutes les 30s pour vérifier si le compte est provisionné par SCIM
-  // Actif uniquement si le compte Entra est créé mais que le mail n'a pas encore été lancé
+  // Actif si : compte Entra créé (pas skipped), aucune migration data n'a encore réussi
+  const anyDataStarted = m.stepMailMigration !== 'skipped' ||
+    m.stepCalendarMigration !== 'skipped' ||
+    m.stepContactsMigration !== 'skipped'
   const needsGoogleCheck = accountReady && !!m.gohUpn &&
-    m.stepCreateAccount === 'success' && // Pas pour les comptes existants (skipped)
-    m.stepMailMigration === 'skipped' &&
-    m.stepCalendarMigration === 'skipped' &&
-    m.stepContactsMigration === 'skipped'
+    m.stepCreateAccount === 'success' && !anyDataStarted
   const { data: googleCheck, isFetching: isCheckingGoogle } = useCheckGoogle(m.id, needsGoogleCheck)
-  const googleReady = m.stepCreateAccount === 'skipped' || googleCheck?.exists === true
+  // Google est prêt si : compte existant (skipped), ou des migrations ont déjà tourné, ou le check confirme
+  const googleReady = m.stepCreateAccount === 'skipped' || anyDataStarted || googleCheck?.exists === true
 
   const canAddAlias = accountReady && m.stepGoogleAlias !== 'success' && m.stepGoogleAlias !== 'skipped'
   const canMoveOu = accountReady && !!m.gohUpn && m.stepOuMove !== 'success'
