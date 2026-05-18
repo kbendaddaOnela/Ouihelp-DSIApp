@@ -29,6 +29,8 @@ export interface MigrationRecord {
   stepMailMigration: StepStatus
   stepGoogleAlias: StepStatus
   googleAliasError: string | null
+  stepOuMove: StepStatus
+  ouMoveError: string | null
   mailTotal: number
   mailMigrated: number
   mailFailed: number

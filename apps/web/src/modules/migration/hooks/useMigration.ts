@@ -136,6 +136,14 @@ export function useResetPhase() {
   })
 }
 
+export function useMoveOu() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.moveOu(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
 export function useMigrationStats() {
   return useQuery({
     queryKey: ['migration-stats'],

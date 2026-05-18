@@ -60,6 +60,8 @@ async function ensureSchemaPatches() {
     { table: 'budget_items', column: 'quantity', ddl: `ALTER TABLE \`budget_items\` ADD COLUMN \`quantity\` int NOT NULL DEFAULT 1` },
     { table: 'budget_items', column: 'unit_cost', ddl: `ALTER TABLE \`budget_items\` ADD COLUMN \`unit_cost\` decimal(12,2)` },
     { table: 'sync_status', column: 'sync_progress', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_progress\` int NOT NULL DEFAULT 0` },
+    { table: 'migrations', column: 'step_ou_move', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_ou_move\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'migrations', column: 'ou_move_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`ou_move_error\` text` },
   ]
   for (const p of columnPatches) {
     try {

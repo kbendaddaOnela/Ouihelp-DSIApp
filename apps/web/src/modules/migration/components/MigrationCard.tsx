@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore } from 'lucide-react'
+import { ChevronDown, ChevronUp, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
@@ -13,13 +13,15 @@ import {
   useArchiveMigration,
   useUnarchiveMigration,
   useDeleteMigration,
+  useMoveOu,
 } from '../hooks/useMigration'
 
 export function MigrationCard({ m }: { m: MigrationRecord }) {
   const [expanded, setExpanded] = useState(false)
   const [aliasMessage, setAliasMessage] = useState<string | null>(null)
-  const defaultAlias = m.onelaUpn.replace('@onela.com', '@test-mig.onela.com')
-  const [aliasInput, setAliasInput] = useState(defaultAlias)
+  const [ouMessage, setOuMessage] = useState<string | null>(null)
+  // Alias par défaut = UPN ONELA source (ex: kbendadda@onela.com)
+  const [aliasInput, setAliasInput] = useState(m.onelaUpn)
 
   const { mutate: addAlias, isPending: isAddingAlias } = useAddGoogleAlias()
   const { mutate: migrateMail, isPending: isStartingMail } = useMigrateMail()
@@ -28,6 +30,7 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
   const { mutate: archive, isPending: isArchiving } = useArchiveMigration()
   const { mutate: unarchive, isPending: isUnarchiving } = useUnarchiveMigration()
   const { mutate: removeMigration, isPending: isDeleting } = useDeleteMigration()
+  const { mutate: moveOu, isPending: isMovingOu } = useMoveOu()
 
   const handleDelete = () => {
     if (window.confirm(`Supprimer définitivement la migration de ${m.onelaDisplayName} ?\nCela ne supprime pas les données déjà migrées dans Google.`)) {
@@ -36,8 +39,21 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
   }
 
   const hasError = m.stepCreateAccount === 'error'
-  const accountReady = m.stepCreateAccount === 'success'
-  const canAddAlias = accountReady && m.stepGoogleAlias !== 'success'
+  const accountReady = m.stepCreateAccount === 'success' || m.stepCreateAccount === 'skipped'
+  const canAddAlias = accountReady && m.stepGoogleAlias !== 'success' && m.stepGoogleAlias !== 'skipped'
+  const canMoveOu = accountReady && !!m.gohUpn && m.stepOuMove !== 'success'
+
+  const handleMoveOu = () => {
+    setOuMessage(null)
+    moveOu(m.id, {
+      onSuccess: () => setOuMessage(null),
+      onError: (err: unknown) => {
+        const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+          ?? (err instanceof Error ? err.message : 'Erreur inconnue')
+        setOuMessage(msg)
+      },
+    })
+  }
 
   const handleAddAlias = () => {
     setAliasMessage(null)
@@ -67,6 +83,7 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
           <StepBadge status={m.stepSetAttributes} label="Attributs SCIM" />
           <StepBadge status={m.stepGroupMembership} label="Groupe dyn." />
           <StepBadge status={m.stepGoogleAlias} label="Alias Google" />
+          <StepBadge status={m.stepOuMove} label="OU ONELA" />
           <StepBadge status={m.stepMailMigration} label="Mail" />
           <StepBadge status={m.stepCalendarMigration} label="Calendrier" />
           <StepBadge status={m.stepContactsMigration} label="Contacts" />
@@ -155,6 +172,29 @@ export function MigrationCard({ m }: { m: MigrationRecord }) {
 
       {m.stepGoogleAlias === 'success' && (
         <p className="mt-2 text-xs text-green-600">✓ Alias <strong>{m.onelaUpn}</strong> ajouté sur {m.gohUpn}</p>
+      )}
+
+      {/* Bouton déplacer vers OU ONELA */}
+      {canMoveOu && (
+        <div className="mt-3">
+          <button
+            onClick={handleMoveOu}
+            disabled={isMovingOu}
+            className="flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-60"
+          >
+            <FolderInput className={cn('h-3.5 w-3.5', isMovingOu && 'animate-pulse')} />
+            {isMovingOu ? 'Déplacement en cours…' : 'Déplacer vers OU ONELA'}
+          </button>
+          {ouMessage && (
+            <p className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{ouMessage}</p>
+          )}
+        </div>
+      )}
+      {m.stepOuMove === 'success' && (
+        <p className="mt-2 text-xs text-green-600">✓ Compte déplacé dans l'OU ONELA</p>
+      )}
+      {m.stepOuMove === 'error' && m.ouMoveError && (
+        <p className="mt-2 rounded bg-red-50 px-2 py-1 text-xs text-red-700">OU: {m.ouMoveError}</p>
       )}
 
       {accountReady && (
