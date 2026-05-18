@@ -10,6 +10,7 @@ export type {
   OnelaUser,
   MigrationRecord,
   MigrateUsersRequest,
+  MigrateExistingRequest,
   MigrateUsersResponse,
   SearchOnelaUsersResponse,
   MigrationHistoryResponse,

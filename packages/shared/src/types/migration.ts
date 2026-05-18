@@ -75,6 +75,18 @@ export interface MigrateUsersRequest {
   }[]
 }
 
+/** Migration vers un compte Google déjà existant (pas de création Entra GOH) */
+export interface MigrateExistingRequest {
+  onelaUserId: string
+  onelaUpn: string
+  onelaDisplayName: string
+  onelaEmail: string
+  onelaDepartment: string | null
+  onelaJobTitle: string | null
+  /** Email du compte Google cible déjà provisionné (ex: khalid.bendadda@ouihelp.fr) */
+  targetGoogleEmail: string
+}
+
 // Responses
 export interface SearchOnelaUsersResponse {
   users: OnelaUser[]

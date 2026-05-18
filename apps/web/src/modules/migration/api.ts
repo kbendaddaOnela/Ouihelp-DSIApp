@@ -2,6 +2,7 @@ import { apiClient } from '@/lib/api'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
+  MigrateExistingRequest,
   MigrateUsersResponse,
   MigrationHistoryResponse,
   MigrationRecord,
@@ -15,6 +16,9 @@ export const migrationApi = {
 
   run: (req: MigrateUsersRequest) =>
     apiClient.post<MigrateUsersResponse>('/migration/run', req).then((r) => r.data),
+
+  runExisting: (req: MigrateExistingRequest) =>
+    apiClient.post<MigrateUsersResponse>('/migration/run-existing', req).then((r) => r.data),
 
   history: (page = 1) =>
     apiClient.get<MigrationHistoryResponse>(`/migration/history?page=${page}`).then((r) => r.data),

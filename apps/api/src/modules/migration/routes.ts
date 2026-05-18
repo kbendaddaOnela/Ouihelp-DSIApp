@@ -17,6 +17,7 @@ import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigratio
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
+  MigrateExistingRequest,
   MigrateUsersResponse,
   MigrationHistoryResponse,
 } from '@dsi-app/shared'
@@ -163,6 +164,51 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
   const response: MigrateUsersResponse = {
     migrations: results.filter((r): r is NonNullable<typeof r> => r != null).map(serializeMigration),
   }
+  return c.json(response, 201)
+})
+
+// ── Migration vers compte Google existant (sans création Entra GOH) ──────────
+migrationRouter.post('/run-existing', requirePermission('migration:read'), async (c) => {
+  const body = await c.req.json<MigrateExistingRequest>()
+  const initiatedBy = c.get('dbUser').email
+  const db = getDb()
+
+  if (!body.targetGoogleEmail?.includes('@')) {
+    return c.json({ error: 'targetGoogleEmail invalide' }, 400)
+  }
+
+  const migrationId = randomUUID()
+  const now = new Date()
+
+  // Insérer le record avec toutes les étapes Entra/compte marquées 'skipped'
+  await db.insert(migrations).values({
+    id: migrationId,
+    onelaUserId: body.onelaUserId,
+    onelaUpn: body.onelaUpn,
+    onelaDisplayName: body.onelaDisplayName,
+    onelaEmail: body.onelaEmail,
+    onelaDepartment: body.onelaDepartment,
+    onelaJobTitle: body.onelaJobTitle,
+    gohUpn: body.targetGoogleEmail,
+    initiatedBy,
+    stepCreateAccount: 'skipped',
+    stepSetAttributes: 'skipped',
+    stepGroupMembership: 'skipped',
+    stepGoogleAlias: 'skipped',
+    stepMailMigration: 'skipped',
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  // Lier la cible de migration si elle existe
+  await db.update(migrationTargets)
+    .set({ status: 'in_progress', migrationId })
+    .where(eq(migrationTargets.onelaUpn, body.onelaUpn))
+
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
+  if (!row) return c.json({ error: 'Erreur interne' }, 500)
+
+  const response: MigrateUsersResponse = { migrations: [serializeMigration(row)] }
   return c.json(response, 201)
 })
 
