@@ -42,6 +42,29 @@ async function pollAndProcess() {
   const pending: Array<{ job: Migration; phase: 'mail' | 'calendar' | 'contacts' }> = []
 
   for (const job of candidates) {
+    // Récupérer les migrations "running" orphelines (process a crashé/redémarré)
+    // Si le status est 'running' mais pas dans notre map RUNNING → remettre en 'pending'
+    for (const [phase, stepCol] of [
+      ['mail', 'stepMailMigration'],
+      ['calendar', 'stepCalendarMigration'],
+      ['contacts', 'stepContactsMigration'],
+    ] as const) {
+      const key = `${job.id}-${phase}`
+      if (job[stepCol] === 'running' && !RUNNING.has(key)) {
+        console.warn(`[migration-worker] orphan detected: ${key} is 'running' but not in RUNNING map — resetting to 'pending'`)
+        if (phase === 'mail') {
+          await db.update(migrations).set({ stepMailMigration: 'pending' }).where(eq(migrations.id, job.id))
+          job.stepMailMigration = 'pending'
+        } else if (phase === 'calendar') {
+          await db.update(migrations).set({ stepCalendarMigration: 'pending' }).where(eq(migrations.id, job.id))
+          job.stepCalendarMigration = 'pending'
+        } else {
+          await db.update(migrations).set({ stepContactsMigration: 'pending' }).where(eq(migrations.id, job.id))
+          job.stepContactsMigration = 'pending'
+        }
+      }
+    }
+
     const key = `${job.id}-mail`
     if (job.stepMailMigration === 'pending' && !RUNNING.has(key)) {
       pending.push({ job, phase: 'mail' })

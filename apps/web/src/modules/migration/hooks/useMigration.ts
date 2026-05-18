@@ -134,6 +134,17 @@ export function useDeleteMigration() {
   })
 }
 
+export function useStopPhase() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, phase }: { id: string; phase: 'mail' | 'calendar' | 'contacts' }) =>
+      migrationApi.stop(id, phase),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['migration-history'] })
+    },
+  })
+}
+
 export function useResetPhase() {
   const qc = useQueryClient()
   return useMutation({

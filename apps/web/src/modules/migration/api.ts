@@ -56,6 +56,9 @@ export const migrationApi = {
   remove: (id: string) =>
     apiClient.delete(`/migration/${id}`).then((r) => r.data),
 
+  stop: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/stop/${phase}`).then((r) => r.data),
+
   reset: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
     apiClient.post<MigrationRecord>(`/migration/${id}/reset/${phase}`).then((r) => r.data),
 

@@ -399,6 +399,41 @@ migrationRouter.delete('/:id', requirePermission('migration:write'), async (c) =
   return c.json({ deleted: id })
 })
 
+// ── Forcer l'arrêt d'une phase (running → error) ────────────────────────────
+migrationRouter.post('/:id/stop/:phase', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const phase = c.req.param('phase')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+
+  if (phase === 'mail' && (row.stepMailMigration === 'running' || row.stepMailMigration === 'pending')) {
+    await db.update(migrations).set({
+      stepMailMigration: 'error',
+      mailError: 'Arrêt forcé par l\'utilisateur',
+      mailFinishedAt: new Date(),
+    }).where(eq(migrations.id, id))
+  } else if (phase === 'calendar' && (row.stepCalendarMigration === 'running' || row.stepCalendarMigration === 'pending')) {
+    await db.update(migrations).set({
+      stepCalendarMigration: 'error',
+      calError: 'Arrêt forcé par l\'utilisateur',
+      calFinishedAt: new Date(),
+    }).where(eq(migrations.id, id))
+  } else if (phase === 'contacts' && (row.stepContactsMigration === 'running' || row.stepContactsMigration === 'pending')) {
+    await db.update(migrations).set({
+      stepContactsMigration: 'error',
+      contactsError: 'Arrêt forcé par l\'utilisateur',
+      contactsFinishedAt: new Date(),
+    }).where(eq(migrations.id, id))
+  } else {
+    return c.json({ error: 'Phase non en cours' }, 400)
+  }
+
+  const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!updated) return c.json({ error: 'Not Found' }, 404)
+  return c.json(serializeMigration(updated))
+})
+
 // ── Réinitialiser une phase (pour re-migrer depuis 0 après suppression Google) ──
 migrationRouter.post('/:id/reset/:phase', requirePermission('migration:write'), async (c) => {
   const db = getDb()

@@ -1,8 +1,8 @@
-import { RefreshCcw, Eraser, Download } from 'lucide-react'
+import { RefreshCcw, Eraser, Download, Square } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
-import { useResetPhase } from '../hooks/useMigration'
+import { useResetPhase, useStopPhase } from '../hooks/useMigration'
 import { apiClient } from '@/lib/api'
 import { migrationApi } from '../api'
 
@@ -36,6 +36,13 @@ export function DataMigrationSection({
   itemUnit, onStart, isStarting, startedAt, finishedAt, lastSyncAt, color,
 }: Props) {
   const { mutate: resetPhase, isPending: isResetting } = useResetPhase()
+  const { mutate: stopPhase, isPending: isStopping } = useStopPhase()
+
+  const handleStop = () => {
+    if (window.confirm(`Forcer l'arrêt de la migration ${label} ? Vous pourrez la relancer ensuite.`)) {
+      stopPhase({ id: migrationId, phase })
+    }
+  }
 
   const handleReset = () => {
     if (window.confirm(
@@ -66,6 +73,7 @@ export function DataMigrationSection({
   }
 
   const running = status === 'running' || status === 'pending'
+  const showStopButton = running
   const showActionButton = !running
   const showBar = running || total > 0
   const pct = total > 0 ? Math.round(((migrated + failed) / total) * 100) : 0
@@ -83,6 +91,17 @@ export function DataMigrationSection({
 
   return (
     <div className="space-y-2">
+      {showStopButton && (
+        <button
+          onClick={handleStop}
+          disabled={isStopping}
+          className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
+        >
+          <Square className="h-3 w-3" />
+          {isStopping ? 'Arrêt...' : 'Forcer l\'arrêt'}
+        </button>
+      )}
+
       {showActionButton && (
         <div className="flex flex-wrap items-center gap-1.5">
           <button
