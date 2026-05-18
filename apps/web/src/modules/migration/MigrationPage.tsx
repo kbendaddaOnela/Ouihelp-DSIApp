@@ -170,7 +170,7 @@ export default function MigrationPage() {
                   key={u.id}
                   user={u}
                   selected={selectedIds.has(u.id)}
-                  alreadyMigrated={migratedUpns.has(u.upn)}
+                  alreadyMigrated={!existingMode && migratedUpns.has(u.upn)}
                   onToggle={() => toggleUser(u)}
                 />
               ))}
