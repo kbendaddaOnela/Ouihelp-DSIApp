@@ -69,4 +69,7 @@ export const migrationTargetsApi = {
 
   stats: () =>
     apiClient.get<MigrationStats>('/migration-targets/stats').then((r) => r.data),
+
+  resetDone: () =>
+    apiClient.post<{ ok: boolean }>('/migration-targets/reset-done').then((r) => r.data),
 }

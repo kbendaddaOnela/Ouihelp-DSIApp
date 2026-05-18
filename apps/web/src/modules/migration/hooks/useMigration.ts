@@ -161,6 +161,14 @@ export function useImportTargets() {
   })
 }
 
+export function useResetDone() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => migrationTargetsApi.resetDone(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-stats'] }),
+  })
+}
+
 export function useDebounce(value: string, delay = 400) {
   const [debounced, setDebounced] = useState(value)
   useState(() => {
