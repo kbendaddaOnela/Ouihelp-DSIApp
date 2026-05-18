@@ -185,17 +185,17 @@ export default function MigrationPage() {
           )}
         </div>
 
-        {/* Résultats de la dernière migration (juste après le clic, indépendant de l'archivage) */}
+        {/* Résultats de la dernière migration (juste après le clic) */}
         {lastResults.length > 0 && (
           <section>
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">Résultats</h2>
             <div className="flex flex-col gap-3">
-              {lastResults.map((m) => <MigrationCard key={m.id} m={m} />)}
+              {lastResults.map((m) => <MigrationCard key={m.id} m={m} defaultExpanded />)}
             </div>
           </section>
         )}
 
-        {/* Migrations actives */}
+        {/* Migrations actives (cartes repliées par défaut) */}
         {activeMigrations.length > 0 && (
           <section>
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">

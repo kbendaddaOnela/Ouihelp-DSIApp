@@ -35,11 +35,17 @@ export const migrationApi = {
   migrateContacts: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-contacts`).then((r) => r.data),
 
+  checkGoogle: (id: string) =>
+    apiClient.get<{ exists: boolean; email: string | null }>(`/migration/${id}/check-google`).then((r) => r.data),
+
   fetchErrors: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
     apiClient.get<{
       phase: string
       errors: Array<{ id: number; graphId: string; internetMessageId?: string | null; iCalUid?: string | null; errorDetails: string | null; createdAt: string }>
     }>(`/migration/${id}/errors/${phase}`).then((r) => r.data),
+
+  downloadErrors: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
+    apiClient.get(`/migration/${id}/errors/${phase}/download`, { responseType: 'blob' }).then((r) => r.data),
 
   archive: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/archive`).then((r) => r.data),

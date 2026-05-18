@@ -1,9 +1,9 @@
-import { useState } from 'react'
-import { RefreshCcw, ChevronDown, ChevronUp, Eraser } from 'lucide-react'
+import { RefreshCcw, Eraser, Download } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
-import { useMigrationErrors, useResetPhase } from '../hooks/useMigration'
+import { useResetPhase } from '../hooks/useMigration'
+import { migrationApi } from '../api'
 
 interface Props {
   migrationId: string
@@ -34,19 +34,31 @@ export function DataMigrationSection({
   migrationId, phase, label, icon: Icon, status, total, migrated, failed, errorMessage,
   itemUnit, onStart, isStarting, startedAt, finishedAt, lastSyncAt, color,
 }: Props) {
-  const [showErrors, setShowErrors] = useState(false)
-  const { data: errorsData, isFetching: isFetchingErrors } = useMigrationErrors(
-    migrationId, phase, showErrors && failed > 0, failed
-  )
   const { mutate: resetPhase, isPending: isResetting } = useResetPhase()
 
   const handleReset = () => {
     if (window.confirm(
       `Réinitialiser la migration ${label} ?\n` +
-      `Cela vide le tracking en DB et permet de tout re-migrer (utile si tu as supprimé les données côté Google).\n` +
+      `Cela vide le tracking en DB et permet de tout re-migrer.\n` +
       `Les données déjà dans Google ne sont pas touchées.`
     )) {
       resetPhase({ id: migrationId, phase })
+    }
+  }
+
+  const handleDownloadErrors = async () => {
+    try {
+      const blob = await migrationApi.downloadErrors(migrationId, phase)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `errors-${phase}-${migrationId.slice(0, 8)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      alert('Erreur lors du téléchargement des logs')
     }
   }
 
@@ -56,9 +68,8 @@ export function DataMigrationSection({
   const pct = total > 0 ? Math.round(((migrated + failed) / total) * 100) : 0
   const c = COLOR_CLASSES[color]
 
-  // Bouton "Synchroniser" dès qu'une synchro a déjà tourné (lastSyncAt set), sinon "Lancer".
   const buttonLabel = isStarting
-    ? 'Démarrage…'
+    ? 'Démarrage...'
     : lastSyncAt
       ? `Synchroniser ${label.toLowerCase()} (delta)`
       : status === 'error'
@@ -86,7 +97,7 @@ export function DataMigrationSection({
             <button
               onClick={handleReset}
               disabled={isResetting || isStarting}
-              title="Vide le tracking et permet de tout re-migrer (cas où tu as supprimé les données côté Google)"
+              title="Vide le tracking et permet de tout re-migrer"
               className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-100 hover:text-gray-700"
             >
               <Eraser className={cn('h-3 w-3', isResetting && 'animate-spin')} />
@@ -100,7 +111,7 @@ export function DataMigrationSection({
         <div className="rounded-lg bg-gray-50 px-3 py-2">
           <div className="flex items-center justify-between text-xs">
             <span className="font-medium text-gray-700">
-              {running ? `Migration ${label.toLowerCase()} en cours…` : `Migration ${label.toLowerCase()}`}
+              {running ? `Migration ${label.toLowerCase()} en cours...` : `Migration ${label.toLowerCase()}`}
             </span>
             <span className="font-mono text-gray-600">
               {migrated + failed} / {total} ({pct}%)
@@ -113,40 +124,24 @@ export function DataMigrationSection({
             />
           </div>
 
-          {failed > 0 ? (
+          {/* Erreurs : bouton de téléchargement au lieu de listing inline */}
+          {failed > 0 && (
             <button
-              onClick={() => setShowErrors((v) => !v)}
-              className="mt-1 flex items-center gap-1 text-xs text-red-600 hover:text-red-700"
+              onClick={handleDownloadErrors}
+              className="mt-1.5 flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
             >
-              {showErrors ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-              {failed} {itemUnit}(s) en erreur — voir détail
+              <Download className="h-3 w-3" />
+              Télécharger les logs ({failed} {itemUnit}(s) en erreur)
             </button>
-          ) : errorMessage ? (
-            <p className="mt-1 text-xs text-red-600">{errorMessage}</p>
-          ) : null}
+          )}
 
-          {showErrors && (
-            <div className="mt-2 max-h-48 overflow-y-auto rounded border border-red-100 bg-white">
-              {isFetchingErrors && <p className="p-2 text-xs text-gray-500">Chargement…</p>}
-              {!isFetchingErrors && errorsData && errorsData.errors.length === 0 && (
-                <p className="p-2 text-xs text-gray-500">Aucune erreur enregistrée.</p>
-              )}
-              {!isFetchingErrors && errorsData && errorsData.errors.map((err) => (
-                <div key={err.id} className="border-b border-red-50 p-2 last:border-b-0">
-                  <p className="font-mono text-[11px] text-gray-500 truncate">
-                    {err.internetMessageId ?? err.iCalUid ?? err.graphId}
-                  </p>
-                  <p className="mt-0.5 break-words text-[11px] text-red-700">
-                    {err.errorDetails ?? '(pas de détails)'}
-                  </p>
-                </div>
-              ))}
-            </div>
+          {!failed && errorMessage && (
+            <p className="mt-1 text-xs text-red-600">{errorMessage}</p>
           )}
 
           {finishedAt && status === 'success' && (
             <p className="mt-1 text-xs text-green-600">
-              ✓ Terminé{startedAt ? ` en ${formatDuration(startedAt, finishedAt)}` : ''}
+              Terminé{startedAt ? ` en ${formatDuration(startedAt, finishedAt)}` : ''}
             </p>
           )}
           {lastSyncAt && (
@@ -169,7 +164,7 @@ function formatDuration(start: string, end: string): string {
 
 function formatRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
-  if (ms < 60_000) return 'à l\'instant'
+  if (ms < 60_000) return "a l'instant"
   if (ms < 3_600_000) return `il y a ${Math.round(ms / 60_000)} min`
   if (ms < 86_400_000) return `il y a ${Math.round(ms / 3_600_000)}h`
   return `il y a ${Math.round(ms / 86_400_000)}j`

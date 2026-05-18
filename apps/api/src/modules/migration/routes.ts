@@ -91,6 +91,10 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
       stepSetAttributes: 'pending',
       stepGroupMembership: 'pending',
       stepMailMigration: 'skipped',
+      stepCalendarMigration: 'skipped',
+      stepContactsMigration: 'skipped',
+      stepGoogleAlias: 'skipped',
+      stepOuMove: 'skipped',
     })
 
     try {
@@ -196,6 +200,9 @@ migrationRouter.post('/run-existing', requirePermission('migration:read'), async
     stepGroupMembership: 'skipped',
     stepGoogleAlias: 'skipped',
     stepMailMigration: 'skipped',
+    stepCalendarMigration: 'skipped',
+    stepContactsMigration: 'skipped',
+    stepOuMove: 'skipped',
     createdAt: now,
     updatedAt: now,
   })
@@ -276,7 +283,7 @@ migrationRouter.post('/:id/move-ou', requirePermission('migration:read'), async 
   if (!row) return c.json({ error: 'Not Found' }, 404)
   if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé à cette migration' }, 400)
 
-  const ouPath = process.env['GOOGLE_ONELA_OU_PATH'] ?? '/ONELA'
+  const ouPath = process.env['GOOGLE_ONELA_OU_PATH'] ?? '/onela.com'
 
   await db.update(migrations).set({ stepOuMove: 'running', ouMoveError: null }).where(eq(migrations.id, row.id))
 
@@ -348,11 +355,23 @@ migrationRouter.post('/:id/migrate-contacts', requirePermission('migration:write
   return c.json(serializeMigration(updated), 202)
 })
 
+// ── Vérifier si le compte Google existe (SCIM provisionné) ──────────────────
+migrationRouter.get('/:id/check-google', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ exists: false, email: null })
+  const exists = await googleUserExists(row.gohUpn)
+  return c.json({ exists, email: row.gohUpn })
+})
+
 // ── Archiver / désarchiver une migration ─────────────────────────────────────
 migrationRouter.post('/:id/archive', requirePermission('migration:write'), async (c) => {
   const db = getDb()
   const id = c.req.param('id')
   await db.update(migrations).set({ archived: 1, archivedAt: new Date() }).where(eq(migrations.id, id))
+  // Passer la cible de migration en "done"
+  await db.update(migrationTargets).set({ status: 'done' }).where(eq(migrationTargets.migrationId, id))
   const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!updated) return c.json({ error: 'Not Found' }, 404)
   return c.json(serializeMigration(updated))
@@ -362,6 +381,8 @@ migrationRouter.post('/:id/unarchive', requirePermission('migration:write'), asy
   const db = getDb()
   const id = c.req.param('id')
   await db.update(migrations).set({ archived: 0, archivedAt: null }).where(eq(migrations.id, id))
+  // Remettre la cible en "in_progress"
+  await db.update(migrationTargets).set({ status: 'in_progress' }).where(eq(migrationTargets.migrationId, id))
   const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!updated) return c.json({ error: 'Not Found' }, 404)
   return c.json(serializeMigration(updated))
@@ -469,6 +490,76 @@ migrationRouter.get('/:id/errors/:phase', requirePermission('migration:read'), a
   }
 
   return c.json({ error: 'Phase invalide (mail, calendar, contacts)' }, 400)
+})
+
+// ── Télécharger les erreurs en CSV ───────────────────────────────────────────
+migrationRouter.get('/:id/errors/:phase/download', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const phase = c.req.param('phase')
+
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+
+  let rows: Array<{ graphId: string; refId: string | null; errorDetails: string | null; createdAt: Date }> = []
+
+  if (phase === 'mail') {
+    const data = await db.select({
+      graphId: migratedMessages.graphMessageId,
+      refId: migratedMessages.internetMessageId,
+      errorDetails: migratedMessages.errorDetails,
+      createdAt: migratedMessages.createdAt,
+    }).from(migratedMessages)
+      .where(and(eq(migratedMessages.migrationId, id), eq(migratedMessages.status, 'error')))
+      .orderBy(desc(migratedMessages.createdAt))
+    rows = data
+  } else if (phase === 'calendar') {
+    const data = await db.select({
+      graphId: migratedEvents.graphEventId,
+      refId: migratedEvents.iCalUid,
+      errorDetails: migratedEvents.errorDetails,
+      createdAt: migratedEvents.createdAt,
+    }).from(migratedEvents)
+      .where(and(eq(migratedEvents.migrationId, id), eq(migratedEvents.status, 'error')))
+      .orderBy(desc(migratedEvents.createdAt))
+    rows = data
+  } else if (phase === 'contacts') {
+    const data = await db.select({
+      graphId: migratedContacts.graphContactId,
+      refId: migratedContacts.googleResourceName,
+      errorDetails: migratedContacts.errorDetails,
+      createdAt: migratedContacts.createdAt,
+    }).from(migratedContacts)
+      .where(and(eq(migratedContacts.migrationId, id), eq(migratedContacts.status, 'error')))
+      .orderBy(desc(migratedContacts.createdAt))
+    rows = data
+  } else {
+    return c.json({ error: 'Phase invalide' }, 400)
+  }
+
+  // Construire le CSV
+  const csvEscape = (s: string | null) => {
+    if (!s) return ''
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
+    return s
+  }
+  const csvLines = ['graphId,referenceId,errorDetails,createdAt']
+  for (const r of rows) {
+    csvLines.push([
+      csvEscape(r.graphId),
+      csvEscape(r.refId),
+      csvEscape(r.errorDetails),
+      r.createdAt.toISOString(),
+    ].join(','))
+  }
+
+  const filename = `errors-${phase}-${row.onelaUpn.replace('@', '_')}-${new Date().toISOString().slice(0, 10)}.csv`
+  return new Response(csvLines.join('\n'), {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    },
+  })
 })
 
 // ── Détail d'une migration ────────────────────────────────────────────────────
