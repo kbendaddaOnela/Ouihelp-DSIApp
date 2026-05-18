@@ -275,10 +275,10 @@ async function processUserCalendar(job: Migration) {
       }
     }
 
-    const calSuccess = failed === 0
+    const calAllOk = failed === 0
     await db.update(migrations)
       .set({
-        stepCalendarMigration: calSuccess ? 'success' : 'error',
+        stepCalendarMigration: calAllOk ? 'success' : 'error',
         calTotal: total, calMigrated: migrated, calFailed: failed,
         calFinishedAt: new Date(),
         calLastSyncAt: calSyncStart,
@@ -361,10 +361,10 @@ async function processUserContacts(job: Migration) {
       }
     }
 
-    const ctSuccess = failed === 0
+    const ctAllOk = failed === 0
     await db.update(migrations)
       .set({
-        stepContactsMigration: ctSuccess ? 'success' : 'error',
+        stepContactsMigration: ctAllOk ? 'success' : 'error',
         contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed,
         contactsFinishedAt: new Date(),
         contactsLastSyncAt: ctSyncStart,
