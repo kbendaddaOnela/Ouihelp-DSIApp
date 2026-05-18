@@ -79,6 +79,20 @@ async function ensureSchemaPatches() {
     }
   }
 
+  // Conversions charset pour supporter les emojis (utf8mb4)
+  const charsetPatches: Array<{ desc: string; ddl: string }> = [
+    { desc: 'migrated_messages.subject → utf8mb4', ddl: `ALTER TABLE \`migrated_messages\` MODIFY COLUMN \`subject\` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
+    { desc: 'migrated_messages.error_details → utf8mb4', ddl: `ALTER TABLE \`migrated_messages\` MODIFY COLUMN \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
+  ]
+  for (const p of charsetPatches) {
+    try {
+      await db.execute(sql.raw(p.ddl))
+      console.log(`[migrate] Charset patch OK: ${p.desc}`)
+    } catch (err) {
+      console.error(`[migrate] Charset patch failed: ${p.desc} →`, err instanceof Error ? err.message : String(err))
+    }
+  }
+
   // Tables à créer
   const tablePatches: Array<{ table: string; ddl: string }> = [
     {
