@@ -74,6 +74,8 @@ export const migratedMessages = mysqlTable(
     graphMessageId: varchar('graph_message_id', { length: 255 }).notNull(),
     internetMessageId: varchar('internet_message_id', { length: 1000 }),
     gmailMessageId: varchar('gmail_message_id', { length: 255 }),
+    subject: varchar('subject', { length: 500 }),
+    receivedAt: timestamp('received_at'),
     status: mysqlEnum('status', messageStatus).notNull(),
     errorDetails: text('error_details'),
     createdAt: timestamp('created_at').defaultNow().notNull(),

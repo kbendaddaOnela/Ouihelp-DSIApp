@@ -173,6 +173,8 @@ async function processUserMail(job: Migration) {
           graphMessageId: msg.id,
           internetMessageId: msg.internetMessageId ?? null,
           gmailMessageId: result.id,
+          subject: msg.subject?.slice(0, 500) ?? null,
+          receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
           status: 'success',
         })
         migrated++
@@ -183,6 +185,8 @@ async function processUserMail(job: Migration) {
             migrationId: job.id,
             graphMessageId: msg.id,
             internetMessageId: msg.internetMessageId ?? null,
+            subject: msg.subject?.slice(0, 500) ?? null,
+            receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
             status: 'error',
             errorDetails,
           })

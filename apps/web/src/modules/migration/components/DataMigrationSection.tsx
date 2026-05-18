@@ -1,9 +1,11 @@
-import { RefreshCcw, Eraser, Download, Square } from 'lucide-react'
+import { useState } from 'react'
+import { RefreshCcw, Eraser, Download, Square, Loader2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { useResetPhase, useStopPhase } from '../hooks/useMigration'
 import { apiClient } from '@/lib/api'
+import { msalInstance, apiLoginRequest } from '@/lib/auth'
 import { migrationApi } from '../api'
 
 interface Props {
@@ -54,11 +56,30 @@ export function DataMigrationSection({
     }
   }
 
+  const [isDownloading, setIsDownloading] = useState(false)
+
   const handleDownloadErrors = async () => {
+    setIsDownloading(true)
     try {
-      const url = migrationApi.downloadErrorsUrl(migrationId, phase)
-      const res = await apiClient.get(url, { responseType: 'arraybuffer' })
-      const blob = new Blob([res.data], { type: 'text/csv' })
+      // Récupérer le token MSAL directement
+      const accounts = msalInstance.getAllAccounts()
+      const account = accounts[0]
+      let authHeader = ''
+      if (account) {
+        const tokenRes = await msalInstance.acquireTokenSilent({ ...apiLoginRequest, account })
+        authHeader = `Bearer ${tokenRes.accessToken}`
+      }
+
+      const baseUrl = apiClient.defaults.baseURL ?? '/api'
+      const path = migrationApi.downloadErrorsUrl(migrationId, phase)
+
+      const res = await fetch(`${baseUrl}${path}`, {
+        headers: { Authorization: authHeader },
+      })
+
+      if (!res.ok) throw new Error(`Erreur ${res.status}: ${await res.text()}`)
+
+      const blob = await res.blob()
       const blobUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = blobUrl
@@ -67,8 +88,11 @@ export function DataMigrationSection({
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(blobUrl)
-    } catch {
-      alert('Erreur lors du téléchargement des logs')
+    } catch (err) {
+      console.error('Download error:', err)
+      alert(`Erreur : ${err instanceof Error ? err.message : 'inconnue'}`)
+    } finally {
+      setIsDownloading(false)
     }
   }
 
@@ -150,10 +174,11 @@ export function DataMigrationSection({
           {failed > 0 && (
             <button
               onClick={handleDownloadErrors}
-              className="mt-1.5 flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+              disabled={isDownloading}
+              className="mt-1.5 flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
             >
-              <Download className="h-3 w-3" />
-              Télécharger les logs ({failed} {itemUnit}(s) en erreur)
+              {isDownloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+              {isDownloading ? 'Téléchargement...' : `Télécharger les logs (${failed} ${itemUnit}(s) en erreur)`}
             </button>
           )}
 

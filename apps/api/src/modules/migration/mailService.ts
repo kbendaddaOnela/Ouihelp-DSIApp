@@ -42,6 +42,8 @@ interface GraphMessageMeta {
   isRead?: boolean
   isDraft?: boolean
   categories?: string[]
+  subject?: string
+  receivedDateTime?: string
 }
 
 // Liste les folders en utilisant les alias well-known (pour identifier inbox/sent/...) +
@@ -118,7 +120,7 @@ export async function* iterateOnelaMessages(
   since?: Date | null
 ): AsyncGenerator<GraphMessageMeta> {
   const token = await onelaToken()
-  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories`
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime`
   // Delta sync : on filtre sur receivedDateTime > since (les mails ne changent pas après réception)
   const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
   let url: string | null = base + filter

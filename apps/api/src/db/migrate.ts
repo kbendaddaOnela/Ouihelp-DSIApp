@@ -62,6 +62,9 @@ async function ensureSchemaPatches() {
     { table: 'sync_status', column: 'sync_progress', ddl: `ALTER TABLE \`sync_status\` ADD COLUMN \`sync_progress\` int NOT NULL DEFAULT 0` },
     { table: 'migrations', column: 'step_ou_move', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_ou_move\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
     { table: 'migrations', column: 'ou_move_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`ou_move_error\` text` },
+    // Sujet et date de réception pour les messages migrés (diagnostic erreurs)
+    { table: 'migrated_messages', column: 'subject', ddl: `ALTER TABLE \`migrated_messages\` ADD COLUMN \`subject\` varchar(500)` },
+    { table: 'migrated_messages', column: 'received_at', ddl: `ALTER TABLE \`migrated_messages\` ADD COLUMN \`received_at\` timestamp NULL` },
   ]
   for (const p of columnPatches) {
     try {

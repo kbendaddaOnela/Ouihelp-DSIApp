@@ -536,12 +536,14 @@ migrationRouter.get('/:id/errors/:phase/download', requirePermission('migration:
   const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!row) return c.json({ error: 'Not Found' }, 404)
 
-  let rows: Array<{ graphId: string; refId: string | null; errorDetails: string | null; createdAt: Date }> = []
+  let rows: Array<{ graphId: string; refId: string | null; subject: string | null; receivedAt: Date | null; errorDetails: string | null; createdAt: Date }> = []
 
   if (phase === 'mail') {
     const data = await db.select({
       graphId: migratedMessages.graphMessageId,
       refId: migratedMessages.internetMessageId,
+      subject: migratedMessages.subject,
+      receivedAt: migratedMessages.receivedAt,
       errorDetails: migratedMessages.errorDetails,
       createdAt: migratedMessages.createdAt,
     }).from(migratedMessages)
@@ -557,7 +559,7 @@ migrationRouter.get('/:id/errors/:phase/download', requirePermission('migration:
     }).from(migratedEvents)
       .where(and(eq(migratedEvents.migrationId, id), eq(migratedEvents.status, 'error')))
       .orderBy(desc(migratedEvents.createdAt))
-    rows = data
+    rows = data.map((r) => ({ ...r, subject: null, receivedAt: null }))
   } else if (phase === 'contacts') {
     const data = await db.select({
       graphId: migratedContacts.graphContactId,
@@ -567,7 +569,7 @@ migrationRouter.get('/:id/errors/:phase/download', requirePermission('migration:
     }).from(migratedContacts)
       .where(and(eq(migratedContacts.migrationId, id), eq(migratedContacts.status, 'error')))
       .orderBy(desc(migratedContacts.createdAt))
-    rows = data
+    rows = data.map((r) => ({ ...r, subject: null, receivedAt: null }))
   } else {
     return c.json({ error: 'Phase invalide' }, 400)
   }
@@ -578,9 +580,11 @@ migrationRouter.get('/:id/errors/:phase/download', requirePermission('migration:
     if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
     return s
   }
-  const csvLines = ['graphId,referenceId,errorDetails,createdAt']
+  const csvLines = ['subject,receivedAt,graphId,referenceId,errorDetails,createdAt']
   for (const r of rows) {
     csvLines.push([
+      csvEscape(r.subject),
+      r.receivedAt ? r.receivedAt.toISOString() : '',
       csvEscape(r.graphId),
       csvEscape(r.refId),
       csvEscape(r.errorDetails),
