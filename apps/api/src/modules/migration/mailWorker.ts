@@ -131,8 +131,9 @@ async function processUserMail(job: Migration) {
 
     let migrated = alreadySuccess
     let failed = alreadyFailed
-    // En delta : total = ancien total + nouveaux messages ; en resume : total = tous les messages
-    const previousTotal = isDelta ? (job.mailTotal || 0) : 0
+    // En delta : total = messages déjà traités (en DB) + nouveaux messages ; en resume : total = tous
+    // On utilise skipSet.size (nombre réel d'entrées en DB) plutôt que job.mailTotal qui peut être corrompu
+    const previousTotal = isDelta ? skipSet.size : 0
     let total = previousTotal
     let preCountSet = false
     try {
@@ -251,7 +252,7 @@ async function processUserCalendar(job: Migration) {
 
     let migrated = calSuccessCount
     let failed = calFailedCount
-    const previousCalTotal = isDeltaCal ? (job.calTotal || 0) : 0
+    const previousCalTotal = isDeltaCal ? skipSet.size : 0
     let total = previousCalTotal
     let preCountSet = false
     try {
@@ -352,7 +353,7 @@ async function processUserContacts(job: Migration) {
 
     let migrated = ctSuccessCount
     let failed = ctFailedCount
-    const previousCtTotal = isDeltaCt ? (job.contactsTotal || 0) : 0
+    const previousCtTotal = isDeltaCt ? skipSet.size : 0
     let total = previousCtTotal
     let preCountSet = false
     try {
