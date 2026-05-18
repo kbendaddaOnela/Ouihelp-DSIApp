@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { useResetPhase } from '../hooks/useMigration'
+import { apiClient } from '@/lib/api'
 import { migrationApi } from '../api'
 
 interface Props {
@@ -48,15 +49,17 @@ export function DataMigrationSection({
 
   const handleDownloadErrors = async () => {
     try {
-      const blob = await migrationApi.downloadErrors(migrationId, phase)
-      const url = URL.createObjectURL(blob)
+      const url = migrationApi.downloadErrorsUrl(migrationId, phase)
+      const res = await apiClient.get(url, { responseType: 'arraybuffer' })
+      const blob = new Blob([res.data], { type: 'text/csv' })
+      const blobUrl = URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = url
+      a.href = blobUrl
       a.download = `errors-${phase}-${migrationId.slice(0, 8)}.csv`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      URL.revokeObjectURL(blobUrl)
     } catch {
       alert('Erreur lors du téléchargement des logs')
     }
