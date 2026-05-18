@@ -17,6 +17,11 @@ import {
 import { countOnelaEvents, iterateOnelaEvents, googleCalendarImportEvent } from './calendarService'
 import { countOnelaContacts, iterateOnelaContacts, googlePeopleCreateContact } from './contactsService'
 
+// Supprime les caractères hors BMP (emojis 4-bytes) pour éviter les erreurs MySQL utf8
+// eslint-disable-next-line no-control-regex
+const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
+  s ? s.replace(/[\u{10000}-\u{10FFFF}]/gu, '').slice(0, maxLen) || null : null
+
 const MAX_CONCURRENT = 3
 const POLL_INTERVAL_MS = 5000
 const RUNNING = new Map<string, 'mail' | 'calendar' | 'contacts'>()
@@ -182,11 +187,11 @@ async function processUserMail(job: Migration) {
           graphMessageId: msg.id,
           internetMessageId: msg.internetMessageId ?? null,
           gmailMessageId: result.id,
-          subject: msg.subject?.slice(0, 500) ?? null,
+          subject: sanitize(msg.subject),
           receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
           status: 'success',
         }).onDuplicateKeyUpdate({
-          set: { gmailMessageId: result.id, status: 'success', subject: msg.subject?.slice(0, 500) ?? null, receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
+          set: { gmailMessageId: result.id, status: 'success', subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
         })
         migrated++
         if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
@@ -196,12 +201,12 @@ async function processUserMail(job: Migration) {
           migrationId: job.id,
           graphMessageId: msg.id,
           internetMessageId: msg.internetMessageId ?? null,
-          subject: msg.subject?.slice(0, 500) ?? null,
+          subject: sanitize(msg.subject),
           receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
           status: 'error',
           errorDetails,
         }).onDuplicateKeyUpdate({
-          set: { status: 'error', errorDetails, subject: msg.subject?.slice(0, 500) ?? null, receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
+          set: { status: 'error', errorDetails, subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
         })
         failed++
         console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
