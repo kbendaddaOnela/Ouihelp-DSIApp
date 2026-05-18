@@ -107,17 +107,11 @@ async function processUserMail(job: Migration) {
       .where(eq(migratedMessages.migrationId, job.id))
     const skipSet = new Set(already.map((r) => r.graphMessageId))
 
-    // Mode resume (crash recovery) vs delta (sync incrémentale)
-    // Resume = mailLastSyncAt est null → première migration pas encore terminée
-    // Delta = mailLastSyncAt set → migration précédente terminée, on sync les nouveaux
+    // Compteurs toujours cumulatifs (total historique) — l'utilisateur veut voir
+    // le nombre TOTAL de mails migrés, pas seulement ceux du dernier run.
     const isDelta = !!job.mailLastSyncAt
     const alreadySuccess = already.filter((r) => r.status === 'success').length
     const alreadyFailed = already.filter((r) => r.status === 'error').length
-
-    // En delta : compteurs à 0 (on compte que les nouveaux messages)
-    // En resume : on part des compteurs DB (on reprend où on s'est arrêté)
-    const startMigrated = isDelta ? 0 : alreadySuccess
-    const startFailed = isDelta ? 0 : alreadyFailed
 
     console.log(`[mail] ${isDelta ? 'delta' : 'resume'} ${job.id}: ${alreadySuccess} OK + ${alreadyFailed} erreurs en DB, ${skipSet.size} à skipper`)
 
@@ -126,8 +120,8 @@ async function processUserMail(job: Migration) {
         stepMailMigration: 'running',
         mailStartedAt: new Date(),
         mailError: null,
-        mailMigrated: startMigrated,
-        mailFailed: startFailed,
+        mailMigrated: alreadySuccess,
+        mailFailed: alreadyFailed,
       })
       .where(eq(migrations.id, job.id))
 
@@ -135,12 +129,15 @@ async function processUserMail(job: Migration) {
     const folderById = new Map<string, GraphFolder>(folders.map((f) => [f.id, f]))
     const resolver = await buildLabelResolver(job.gohUpn, folders)
 
-    let migrated = startMigrated
-    let failed = startFailed
-    let total = 0
+    let migrated = alreadySuccess
+    let failed = alreadyFailed
+    // En delta : total = ancien total + nouveaux messages ; en resume : total = tous les messages
+    const previousTotal = isDelta ? (job.mailTotal || 0) : 0
+    let total = previousTotal
     let preCountSet = false
     try {
-      total = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
+      const newCount = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
+      total = previousTotal + newCount
       preCountSet = true
       await db.update(migrations).set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed }).where(eq(migrations.id, job.id))
     } catch (countErr) {
@@ -244,22 +241,22 @@ async function processUserCalendar(job: Migration) {
     const isDeltaCal = !!job.calLastSyncAt
     const calSuccessCount = alreadyCal.filter((r) => r.status === 'success').length
     const calFailedCount = alreadyCal.filter((r) => r.status === 'error').length
-    const startMig = isDeltaCal ? 0 : calSuccessCount
-    const startFail = isDeltaCal ? 0 : calFailedCount
 
     await db.update(migrations)
       .set({
         stepCalendarMigration: 'running', calStartedAt: new Date(), calError: null,
-        calMigrated: startMig, calFailed: startFail,
+        calMigrated: calSuccessCount, calFailed: calFailedCount,
       })
       .where(eq(migrations.id, job.id))
 
-    let migrated = startMig
-    let failed = startFail
-    let total = 0
+    let migrated = calSuccessCount
+    let failed = calFailedCount
+    const previousCalTotal = isDeltaCal ? (job.calTotal || 0) : 0
+    let total = previousCalTotal
     let preCountSet = false
     try {
-      total = await countOnelaEvents(job.onelaUserId, job.calLastSyncAt)
+      const newCount = await countOnelaEvents(job.onelaUserId, job.calLastSyncAt)
+      total = previousCalTotal + newCount
       preCountSet = true
       await db.update(migrations).set({ calTotal: total }).where(eq(migrations.id, job.id))
     } catch (countErr) {
@@ -345,22 +342,22 @@ async function processUserContacts(job: Migration) {
     const isDeltaCt = !!job.contactsLastSyncAt
     const ctSuccessCount = alreadyCt.filter((r) => r.status === 'success').length
     const ctFailedCount = alreadyCt.filter((r) => r.status === 'error').length
-    const startMigCt = isDeltaCt ? 0 : ctSuccessCount
-    const startFailCt = isDeltaCt ? 0 : ctFailedCount
 
     await db.update(migrations)
       .set({
         stepContactsMigration: 'running', contactsStartedAt: new Date(), contactsError: null,
-        contactsMigrated: startMigCt, contactsFailed: startFailCt,
+        contactsMigrated: ctSuccessCount, contactsFailed: ctFailedCount,
       })
       .where(eq(migrations.id, job.id))
 
-    let migrated = startMigCt
-    let failed = startFailCt
-    let total = 0
+    let migrated = ctSuccessCount
+    let failed = ctFailedCount
+    const previousCtTotal = isDeltaCt ? (job.contactsTotal || 0) : 0
+    let total = previousCtTotal
     let preCountSet = false
     try {
-      total = await countOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)
+      const newCount = await countOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)
+      total = previousCtTotal + newCount
       preCountSet = true
       await db.update(migrations).set({ contactsTotal: total }).where(eq(migrations.id, job.id))
     } catch (countErr) {
