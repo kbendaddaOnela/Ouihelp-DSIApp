@@ -91,6 +91,16 @@ export function useMigrateContacts() {
   })
 }
 
+export function useCheckGoogle(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['check-google', id],
+    queryFn: () => migrationApi.checkGoogle(id),
+    enabled,
+    refetchInterval: enabled ? 30_000 : false,
+    staleTime: 15_000,
+  })
+}
+
 export function useMigrationErrors(id: string, phase: 'mail' | 'calendar' | 'contacts', enabled: boolean, failedCount?: number) {
   return useQuery({
     queryKey: ['migration-errors', id, phase, failedCount],
