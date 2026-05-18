@@ -2,6 +2,7 @@ import { apiClient } from '@/lib/api'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
+  MigrateExistingRequest,
   MigrateUsersResponse,
   MigrationHistoryResponse,
   MigrationRecord,
@@ -15,6 +16,9 @@ export const migrationApi = {
 
   run: (req: MigrateUsersRequest) =>
     apiClient.post<MigrateUsersResponse>('/migration/run', req).then((r) => r.data),
+
+  runExisting: (req: MigrateExistingRequest) =>
+    apiClient.post<MigrateUsersResponse>('/migration/run-existing', req).then((r) => r.data),
 
   history: (page = 1) =>
     apiClient.get<MigrationHistoryResponse>(`/migration/history?page=${page}`).then((r) => r.data),
@@ -48,6 +52,9 @@ export const migrationApi = {
 
   reset: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
     apiClient.post<MigrationRecord>(`/migration/${id}/reset/${phase}`).then((r) => r.data),
+
+  moveOu: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/move-ou`).then((r) => r.data),
 }
 
 export interface MigrationStats {
@@ -62,4 +69,7 @@ export const migrationTargetsApi = {
 
   stats: () =>
     apiClient.get<MigrationStats>('/migration-targets/stats').then((r) => r.data),
+
+  resetDone: () =>
+    apiClient.post<{ ok: boolean }>('/migration-targets/reset-done').then((r) => r.data),
 }

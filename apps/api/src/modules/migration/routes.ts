@@ -12,11 +12,12 @@ import {
   setGohUserAttributes,
   checkGohUserExists,
 } from './service'
-import { googleUserExists, addGoogleAlias } from './googleService'
+import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration } from './mailWorker'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
+  MigrateExistingRequest,
   MigrateUsersResponse,
   MigrationHistoryResponse,
 } from '@dsi-app/shared'
@@ -166,6 +167,51 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
   return c.json(response, 201)
 })
 
+// ── Migration vers compte Google existant (sans création Entra GOH) ──────────
+migrationRouter.post('/run-existing', requirePermission('migration:read'), async (c) => {
+  const body = await c.req.json<MigrateExistingRequest>()
+  const initiatedBy = c.get('dbUser').email
+  const db = getDb()
+
+  if (!body.targetGoogleEmail?.includes('@')) {
+    return c.json({ error: 'targetGoogleEmail invalide' }, 400)
+  }
+
+  const migrationId = randomUUID()
+  const now = new Date()
+
+  // Insérer le record avec toutes les étapes Entra/compte marquées 'skipped'
+  await db.insert(migrations).values({
+    id: migrationId,
+    onelaUserId: body.onelaUserId,
+    onelaUpn: body.onelaUpn,
+    onelaDisplayName: body.onelaDisplayName,
+    onelaEmail: body.onelaEmail,
+    onelaDepartment: body.onelaDepartment,
+    onelaJobTitle: body.onelaJobTitle,
+    gohUpn: body.targetGoogleEmail,
+    initiatedBy,
+    stepCreateAccount: 'skipped',
+    stepSetAttributes: 'skipped',
+    stepGroupMembership: 'skipped',
+    stepGoogleAlias: 'skipped',
+    stepMailMigration: 'skipped',
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  // Lier la cible de migration si elle existe
+  await db.update(migrationTargets)
+    .set({ status: 'in_progress', migrationId })
+    .where(eq(migrationTargets.onelaUpn, body.onelaUpn))
+
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
+  if (!row) return c.json({ error: 'Erreur interne' }, 500)
+
+  const response: MigrateUsersResponse = { migrations: [serializeMigration(row)] }
+  return c.json(response, 201)
+})
+
 // ── Historique des migrations ─────────────────────────────────────────────────
 migrationRouter.get('/history', requirePermission('migration:read'), async (c) => {
   const db = getDb()
@@ -188,7 +234,7 @@ migrationRouter.post('/:id/google-alias', requirePermission('migration:read'), a
   const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
   if (!row) return c.json({ error: 'Not Found' }, 404)
 
-  if (row.stepCreateAccount !== 'success' || !row.gohUpn) {
+  if ((row.stepCreateAccount !== 'success' && row.stepCreateAccount !== 'skipped') || !row.gohUpn) {
     return c.json({ error: 'Migration non réussie, impossible d\'ajouter l\'alias' }, 400)
   }
 
@@ -223,13 +269,37 @@ migrationRouter.post('/:id/google-alias', requirePermission('migration:read'), a
   }
 })
 
+// ── Déplacer le compte Google vers l'OU ONELA ────────────────────────────────
+migrationRouter.post('/:id/move-ou', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé à cette migration' }, 400)
+
+  const ouPath = process.env['GOOGLE_ONELA_OU_PATH'] ?? '/ONELA'
+
+  await db.update(migrations).set({ stepOuMove: 'running', ouMoveError: null }).where(eq(migrations.id, row.id))
+
+  try {
+    await moveUserToOu(row.gohUpn, ouPath)
+    await db.update(migrations).set({ stepOuMove: 'success' }).where(eq(migrations.id, row.id))
+    const [updated] = await db.select().from(migrations).where(eq(migrations.id, row.id))
+    if (!updated) return c.json({ error: 'Not Found' }, 404)
+    return c.json(serializeMigration(updated))
+  } catch (err) {
+    const errorDetails = err instanceof Error ? err.message : String(err)
+    await db.update(migrations).set({ stepOuMove: 'error', ouMoveError: errorDetails }).where(eq(migrations.id, row.id))
+    return c.json({ error: 'Google move OU error', message: errorDetails }, 502)
+  }
+})
+
 // ── Lancer la migration mail (worker en background) ──────────────────────────
 migrationRouter.post('/:id/migrate-mail', requirePermission('migration:write'), async (c) => {
   const db = getDb()
   const id = c.req.param('id')
   const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!row) return c.json({ error: 'Not Found' }, 404)
-  if (row.stepCreateAccount !== 'success' || !row.gohUpn) {
+  if ((row.stepCreateAccount !== 'success' && row.stepCreateAccount !== 'skipped') || !row.gohUpn) {
     return c.json({ error: 'Migration de compte non réussie, mail impossible' }, 400)
   }
   if (row.stepMailMigration === 'running' || row.stepMailMigration === 'pending') {
@@ -248,7 +318,7 @@ migrationRouter.post('/:id/migrate-calendar', requirePermission('migration:write
   const id = c.req.param('id')
   const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!row) return c.json({ error: 'Not Found' }, 404)
-  if (row.stepCreateAccount !== 'success' || !row.gohUpn) {
+  if ((row.stepCreateAccount !== 'success' && row.stepCreateAccount !== 'skipped') || !row.gohUpn) {
     return c.json({ error: 'Migration de compte non réussie' }, 400)
   }
   if (row.stepCalendarMigration === 'running' || row.stepCalendarMigration === 'pending') {
@@ -266,7 +336,7 @@ migrationRouter.post('/:id/migrate-contacts', requirePermission('migration:write
   const id = c.req.param('id')
   const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!row) return c.json({ error: 'Not Found' }, 404)
-  if (row.stepCreateAccount !== 'success' || !row.gohUpn) {
+  if ((row.stepCreateAccount !== 'success' && row.stepCreateAccount !== 'skipped') || !row.gohUpn) {
     return c.json({ error: 'Migration de compte non réussie' }, 400)
   }
   if (row.stepContactsMigration === 'running' || row.stepContactsMigration === 'pending') {

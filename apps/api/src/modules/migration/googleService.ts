@@ -64,6 +64,23 @@ export async function googleUserExists(email: string): Promise<boolean> {
   return res.status === 200
 }
 
+/** Déplace un utilisateur Google vers une OU donnée (ex: /ONELA) */
+export async function moveUserToOu(userEmail: string, ouPath: string): Promise<void> {
+  const token = await getGoogleAccessToken()
+  const res = await fetch(
+    `https://admin.googleapis.com/admin/directory/v1/users/${encodeURIComponent(userEmail)}`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgUnitPath: ouPath }),
+    }
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Google move OU error (${res.status}): ${err}`)
+  }
+}
+
 export async function addGoogleAlias(userEmail: string, alias: string): Promise<void> {
   const token = await getGoogleAccessToken()
   const res = await fetch(

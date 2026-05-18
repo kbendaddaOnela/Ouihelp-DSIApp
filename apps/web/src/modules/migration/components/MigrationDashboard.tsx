@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
-import { Upload, CheckCircle2, Clock, Users, RefreshCw } from 'lucide-react'
+import { Upload, CheckCircle2, Clock, Users, RefreshCw, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useMigrationStats, useImportTargets } from '../hooks/useMigration'
+import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useMigration'
 import type { MigrationStats } from '../api'
 
 // ── Barre de progression ──────────────────────────────────────────────────────
@@ -65,6 +65,7 @@ function GroupTable({ rows }: { rows: MigrationStats['byDept'] | MigrationStats[
 export function MigrationDashboard() {
   const { data: stats, isFetching, refetch } = useMigrationStats()
   const { mutate: importCSV, isPending: isImporting, data: importResult, reset: resetImport } = useImportTargets()
+  const { mutate: resetDone, isPending: isResetting } = useResetDone()
   const fileRef = useRef<HTMLInputElement>(null)
   const [tab, setTab] = useState<'dept' | 'office'>('dept')
 
@@ -104,6 +105,17 @@ export function MigrationDashboard() {
           >
             <RefreshCw className={cn('h-3 w-3', isFetching && 'animate-spin')} />
             Actualiser
+          </button>
+          <button
+            onClick={() => {
+              if (window.confirm('Remettre tous les compteurs à zéro (done + in_progress → pending) ?'))
+                resetDone()
+            }}
+            disabled={isResetting}
+            className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-60"
+          >
+            <RotateCcw className={cn('h-3 w-3', isResetting && 'animate-spin')} />
+            {isResetting ? 'Réinitialisation…' : 'Réinitialiser compteurs'}
           </button>
           <button
             onClick={() => { resetImport(); fileRef.current?.click() }}

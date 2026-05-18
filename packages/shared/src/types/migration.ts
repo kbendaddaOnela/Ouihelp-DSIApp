@@ -29,6 +29,8 @@ export interface MigrationRecord {
   stepMailMigration: StepStatus
   stepGoogleAlias: StepStatus
   googleAliasError: string | null
+  stepOuMove: StepStatus
+  ouMoveError: string | null
   mailTotal: number
   mailMigrated: number
   mailFailed: number
@@ -73,6 +75,18 @@ export interface MigrateUsersRequest {
     givenName: string
     surname: string
   }[]
+}
+
+/** Migration vers un compte Google déjà existant (pas de création Entra GOH) */
+export interface MigrateExistingRequest {
+  onelaUserId: string
+  onelaUpn: string
+  onelaDisplayName: string
+  onelaEmail: string
+  onelaDepartment: string | null
+  onelaJobTitle: string | null
+  /** Email du compte Google cible déjà provisionné (ex: khalid.bendadda@ouihelp.fr) */
+  targetGoogleEmail: string
 }
 
 // Responses

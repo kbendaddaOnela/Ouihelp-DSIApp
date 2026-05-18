@@ -158,6 +158,21 @@ migrationTargetsRouter.get('/', requirePermission('migration:read'), async (c) =
   return c.json(rows)
 })
 
+// ── Remettre tous les "done" en "pending" ─────────────────────────────────────
+migrationTargetsRouter.post('/reset-done', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  await db.update(migrationTargets)
+    .set({ status: 'pending', migrationId: null })
+    .where(eq(migrationTargets.status, 'done'))
+  // Remettre aussi les in_progress sans migration active
+  await db.update(migrationTargets)
+    .set({ status: 'pending', migrationId: null })
+    .where(and(
+      eq(migrationTargets.status, 'in_progress'),
+    ))
+  return c.json({ ok: true })
+})
+
 // ── Réinitialiser la liste (admin) ────────────────────────────────────────────
 migrationTargetsRouter.delete('/', requirePermission('migration:write'), async (c) => {
   const db = getDb()

@@ -23,6 +23,8 @@ export const migrations = mysqlTable('migrations', {
   stepMailMigration: mysqlEnum('step_mail_migration', stepStatus).default('skipped').notNull(),
   stepGoogleAlias: mysqlEnum('step_google_alias', stepStatus).default('pending').notNull(),
   googleAliasError: text('google_alias_error'),
+  stepOuMove: mysqlEnum('step_ou_move', stepStatus).default('pending').notNull(),
+  ouMoveError: text('ou_move_error'),
   // Mail migration progress (Phase B)
   mailTotal: int('mail_total').default(0).notNull(),
   mailMigrated: int('mail_migrated').default(0).notNull(),

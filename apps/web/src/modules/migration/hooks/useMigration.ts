@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { MigrationRecord, MigrateUsersRequest } from '@dsi-app/shared'
+import type { MigrationRecord, MigrateUsersRequest, MigrateExistingRequest } from '@dsi-app/shared'
 import { migrationApi, migrationTargetsApi } from '../api'
 
 export function useMigrationSearch(query: string) {
@@ -33,6 +33,17 @@ export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => vo
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (req: MigrateUsersRequest) => migrationApi.run(req),
+    onSuccess: (data) => {
+      onSuccess(data.migrations)
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    },
+  })
+}
+
+export function useRunMigrationExisting(onSuccess: (migrations: MigrationRecord[]) => void) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (req: MigrateExistingRequest) => migrationApi.runExisting(req),
     onSuccess: (data) => {
       onSuccess(data.migrations)
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
@@ -125,6 +136,14 @@ export function useResetPhase() {
   })
 }
 
+export function useMoveOu() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.moveOu(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
 export function useMigrationStats() {
   return useQuery({
     queryKey: ['migration-stats'],
@@ -138,6 +157,14 @@ export function useImportTargets() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (csv: string) => migrationTargetsApi.importCSV(csv),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-stats'] }),
+  })
+}
+
+export function useResetDone() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => migrationTargetsApi.resetDone(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-stats'] }),
   })
 }
