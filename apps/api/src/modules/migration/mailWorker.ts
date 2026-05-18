@@ -101,11 +101,13 @@ async function processUserMail(job: Migration) {
 
   try {
     // Charger les messages déjà migrés pour skip (idempotence)
+    // On ne skip que les succès — les erreurs seront retentées automatiquement
     const already = await db
       .select({ graphMessageId: migratedMessages.graphMessageId, status: migratedMessages.status })
       .from(migratedMessages)
       .where(eq(migratedMessages.migrationId, job.id))
-    const skipSet = new Set(already.map((r) => r.graphMessageId))
+    const skipSet = new Set(already.filter((r) => r.status === 'success' || r.status === 'skipped').map((r) => r.graphMessageId))
+    const errorSet = new Set(already.filter((r) => r.status === 'error').map((r) => r.graphMessageId))
 
     // Compteurs toujours cumulatifs (total historique) — l'utilisateur veut voir
     // le nombre TOTAL de mails migrés, pas seulement ceux du dernier run.
@@ -113,7 +115,7 @@ async function processUserMail(job: Migration) {
     const alreadySuccess = already.filter((r) => r.status === 'success').length
     const alreadyFailed = already.filter((r) => r.status === 'error').length
 
-    console.log(`[mail] ${isDelta ? 'delta' : 'resume'} ${job.id}: ${alreadySuccess} OK + ${alreadyFailed} erreurs en DB, ${skipSet.size} à skipper`)
+    console.log(`[mail] ${isDelta ? 'delta' : 'resume'} ${job.id}: ${alreadySuccess} OK + ${alreadyFailed} erreurs (à retenter), ${skipSet.size} à skipper, ${errorSet.size} à retenter`)
 
     await db.update(migrations)
       .set({
@@ -121,7 +123,7 @@ async function processUserMail(job: Migration) {
         mailStartedAt: new Date(),
         mailError: null,
         mailMigrated: alreadySuccess,
-        mailFailed: alreadyFailed,
+        mailFailed: 0, // Les erreurs vont être retentées
       })
       .where(eq(migrations.id, job.id))
 
@@ -130,10 +132,10 @@ async function processUserMail(job: Migration) {
     const resolver = await buildLabelResolver(job.gohUpn, folders)
 
     let migrated = alreadySuccess
-    let failed = alreadyFailed
+    let failed = 0 // Les erreurs vont être retentées, on ne les compte pas d'avance
     // En delta : total = messages déjà traités (en DB) + nouveaux messages ; en resume : total = tous
-    // On utilise skipSet.size (nombre réel d'entrées en DB) plutôt que job.mailTotal qui peut être corrompu
-    const previousTotal = isDelta ? skipSet.size : 0
+    // On utilise already.length (nombre réel d'entrées en DB) plutôt que job.mailTotal qui peut être corrompu
+    const previousTotal = isDelta ? already.length : 0
     let total = previousTotal
     let preCountSet = false
     try {
@@ -174,6 +176,7 @@ async function processUserMail(job: Migration) {
           isRead: msg.isRead,
         })
 
+        const isRetry = errorSet.has(msg.id)
         await db.insert(migratedMessages).values({
           migrationId: job.id,
           graphMessageId: msg.id,
@@ -182,21 +185,24 @@ async function processUserMail(job: Migration) {
           subject: msg.subject?.slice(0, 500) ?? null,
           receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
           status: 'success',
+        }).onDuplicateKeyUpdate({
+          set: { gmailMessageId: result.id, status: 'success', subject: msg.subject?.slice(0, 500) ?? null, receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
         })
         migrated++
+        if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
       } catch (err) {
         const errorDetails = err instanceof Error ? err.message : String(err)
-        try {
-          await db.insert(migratedMessages).values({
-            migrationId: job.id,
-            graphMessageId: msg.id,
-            internetMessageId: msg.internetMessageId ?? null,
-            subject: msg.subject?.slice(0, 500) ?? null,
-            receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
-            status: 'error',
-            errorDetails,
-          })
-        } catch { /* dup */ }
+        await db.insert(migratedMessages).values({
+          migrationId: job.id,
+          graphMessageId: msg.id,
+          internetMessageId: msg.internetMessageId ?? null,
+          subject: msg.subject?.slice(0, 500) ?? null,
+          receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
+          status: 'error',
+          errorDetails,
+        }).onDuplicateKeyUpdate({
+          set: { status: 'error', errorDetails, subject: msg.subject?.slice(0, 500) ?? null, receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
+        })
         failed++
         console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
       }
@@ -238,21 +244,21 @@ async function processUserCalendar(job: Migration) {
       .select({ graphEventId: migratedEvents.graphEventId, status: migratedEvents.status })
       .from(migratedEvents)
       .where(eq(migratedEvents.migrationId, job.id))
-    const skipSet = new Set(alreadyCal.map((r) => r.graphEventId))
+    const skipSet = new Set(alreadyCal.filter((r) => r.status === 'success' || r.status === 'skipped').map((r) => r.graphEventId))
+    const calErrorSet = new Set(alreadyCal.filter((r) => r.status === 'error').map((r) => r.graphEventId))
     const isDeltaCal = !!job.calLastSyncAt
     const calSuccessCount = alreadyCal.filter((r) => r.status === 'success').length
-    const calFailedCount = alreadyCal.filter((r) => r.status === 'error').length
 
     await db.update(migrations)
       .set({
         stepCalendarMigration: 'running', calStartedAt: new Date(), calError: null,
-        calMigrated: calSuccessCount, calFailed: calFailedCount,
+        calMigrated: calSuccessCount, calFailed: 0,
       })
       .where(eq(migrations.id, job.id))
 
     let migrated = calSuccessCount
-    let failed = calFailedCount
-    const previousCalTotal = isDeltaCal ? skipSet.size : 0
+    let failed = 0
+    const previousCalTotal = isDeltaCal ? alreadyCal.length : 0
     let total = previousCalTotal
     let preCountSet = false
     try {
@@ -278,7 +284,7 @@ async function processUserCalendar(job: Migration) {
             iCalUid: ev.iCalUId ?? null,
             status: 'skipped',
             errorDetails: 'event sans start/end',
-          })
+          }).onDuplicateKeyUpdate({ set: { status: 'skipped', errorDetails: 'event sans start/end' } })
           continue
         }
         await db.insert(migratedEvents).values({
@@ -287,19 +293,17 @@ async function processUserCalendar(job: Migration) {
           iCalUid: ev.iCalUId ?? null,
           googleEventId: result.id,
           status: 'success',
-        })
+        }).onDuplicateKeyUpdate({ set: { googleEventId: result.id, status: 'success', errorDetails: null } })
         migrated++
       } catch (err) {
         const errorDetails = err instanceof Error ? err.message : String(err)
-        try {
-          await db.insert(migratedEvents).values({
-            migrationId: job.id,
-            graphEventId: ev.id,
-            iCalUid: ev.iCalUId ?? null,
-            status: 'error',
-            errorDetails,
-          })
-        } catch { /* dup */ }
+        await db.insert(migratedEvents).values({
+          migrationId: job.id,
+          graphEventId: ev.id,
+          iCalUid: ev.iCalUId ?? null,
+          status: 'error',
+          errorDetails,
+        }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
         failed++
         console.warn(`[calendar] event ${ev.id} error:`, errorDetails.slice(0, 200))
       }
@@ -339,21 +343,20 @@ async function processUserContacts(job: Migration) {
       .select({ graphContactId: migratedContacts.graphContactId, status: migratedContacts.status })
       .from(migratedContacts)
       .where(eq(migratedContacts.migrationId, job.id))
-    const skipSet = new Set(alreadyCt.map((r) => r.graphContactId))
+    const skipSet = new Set(alreadyCt.filter((r) => r.status === 'success' || r.status === 'skipped').map((r) => r.graphContactId))
     const isDeltaCt = !!job.contactsLastSyncAt
     const ctSuccessCount = alreadyCt.filter((r) => r.status === 'success').length
-    const ctFailedCount = alreadyCt.filter((r) => r.status === 'error').length
 
     await db.update(migrations)
       .set({
         stepContactsMigration: 'running', contactsStartedAt: new Date(), contactsError: null,
-        contactsMigrated: ctSuccessCount, contactsFailed: ctFailedCount,
+        contactsMigrated: ctSuccessCount, contactsFailed: 0,
       })
       .where(eq(migrations.id, job.id))
 
     let migrated = ctSuccessCount
-    let failed = ctFailedCount
-    const previousCtTotal = isDeltaCt ? skipSet.size : 0
+    let failed = 0
+    const previousCtTotal = isDeltaCt ? alreadyCt.length : 0
     let total = previousCtTotal
     let preCountSet = false
     try {
@@ -377,18 +380,16 @@ async function processUserContacts(job: Migration) {
           graphContactId: ct.id,
           googleResourceName: result.resourceName,
           status: 'success',
-        })
+        }).onDuplicateKeyUpdate({ set: { googleResourceName: result.resourceName, status: 'success', errorDetails: null } })
         migrated++
       } catch (err) {
         const errorDetails = err instanceof Error ? err.message : String(err)
-        try {
-          await db.insert(migratedContacts).values({
-            migrationId: job.id,
-            graphContactId: ct.id,
-            status: 'error',
-            errorDetails,
-          })
-        } catch { /* dup */ }
+        await db.insert(migratedContacts).values({
+          migrationId: job.id,
+          graphContactId: ct.id,
+          status: 'error',
+          errorDetails,
+        }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
         failed++
         console.warn(`[contacts] ct ${ct.id} error:`, errorDetails.slice(0, 200))
       }
