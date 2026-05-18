@@ -195,110 +195,109 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
             <div className="space-y-3">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Étapes de migration</h4>
 
-              {/* 1) Migration mail */}
-              <StepBlock number={1} label="Migration des mails">
-                <DataMigrationSection
-                  migrationId={m.id} phase="mail" label="mail" icon={Mail}
-                  status={m.stepMailMigration} total={m.mailTotal}
-                  migrated={m.mailMigrated} failed={m.mailFailed}
-                  errorMessage={m.mailError} itemUnit="message"
-                  onStart={() => migrateMail(m.id)} isStarting={isStartingMail}
-                  startedAt={m.mailStartedAt} finishedAt={m.mailFinishedAt}
-                  lastSyncAt={m.mailLastSyncAt} color="purple"
-                />
-              </StepBlock>
+              {/* Ligne 1 : Data migrations (3 colonnes) */}
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                <StepBlock number={1} label="Mails">
+                  <DataMigrationSection
+                    migrationId={m.id} phase="mail" label="mail" icon={Mail}
+                    status={m.stepMailMigration} total={m.mailTotal}
+                    migrated={m.mailMigrated} failed={m.mailFailed}
+                    errorMessage={m.mailError} itemUnit="message"
+                    onStart={() => migrateMail(m.id)} isStarting={isStartingMail}
+                    startedAt={m.mailStartedAt} finishedAt={m.mailFinishedAt}
+                    lastSyncAt={m.mailLastSyncAt} color="purple"
+                  />
+                </StepBlock>
 
-              {/* 2) Migration calendrier */}
-              <StepBlock number={2} label="Migration du calendrier">
-                <DataMigrationSection
-                  migrationId={m.id} phase="calendar" label="calendrier" icon={Calendar}
-                  status={m.stepCalendarMigration} total={m.calTotal}
-                  migrated={m.calMigrated} failed={m.calFailed}
-                  errorMessage={m.calError} itemUnit="événement"
-                  onStart={() => migrateCalendar(m.id)} isStarting={isStartingCalendar}
-                  startedAt={m.calStartedAt} finishedAt={m.calFinishedAt}
-                  lastSyncAt={m.calLastSyncAt} color="blue"
-                />
-              </StepBlock>
+                <StepBlock number={2} label="Calendrier">
+                  <DataMigrationSection
+                    migrationId={m.id} phase="calendar" label="calendrier" icon={Calendar}
+                    status={m.stepCalendarMigration} total={m.calTotal}
+                    migrated={m.calMigrated} failed={m.calFailed}
+                    errorMessage={m.calError} itemUnit="événement"
+                    onStart={() => migrateCalendar(m.id)} isStarting={isStartingCalendar}
+                    startedAt={m.calStartedAt} finishedAt={m.calFinishedAt}
+                    lastSyncAt={m.calLastSyncAt} color="blue"
+                  />
+                </StepBlock>
 
-              {/* 3) Migration contacts */}
-              <StepBlock number={3} label="Migration des contacts">
-                <DataMigrationSection
-                  migrationId={m.id} phase="contacts" label="contacts" icon={Users}
-                  status={m.stepContactsMigration} total={m.contactsTotal}
-                  migrated={m.contactsMigrated} failed={m.contactsFailed}
-                  errorMessage={m.contactsError} itemUnit="contact"
-                  onStart={() => migrateContacts(m.id)} isStarting={isStartingContacts}
-                  startedAt={m.contactsStartedAt} finishedAt={m.contactsFinishedAt}
-                  lastSyncAt={m.contactsLastSyncAt} color="emerald"
-                />
-              </StepBlock>
+                <StepBlock number={3} label="Contacts">
+                  <DataMigrationSection
+                    migrationId={m.id} phase="contacts" label="contacts" icon={Users}
+                    status={m.stepContactsMigration} total={m.contactsTotal}
+                    migrated={m.contactsMigrated} failed={m.contactsFailed}
+                    errorMessage={m.contactsError} itemUnit="contact"
+                    onStart={() => migrateContacts(m.id)} isStarting={isStartingContacts}
+                    startedAt={m.contactsStartedAt} finishedAt={m.contactsFinishedAt}
+                    lastSyncAt={m.contactsLastSyncAt} color="emerald"
+                  />
+                </StepBlock>
+              </div>
 
-              {/* 4) Alias Google */}
-              <StepBlock number={4} label="Ajouter alias Google">
-                {canAddAlias ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <input type="text" value={aliasInput}
-                        onChange={(e) => setAliasInput(e.target.value)}
-                        placeholder="alias@domaine.com"
-                        className="flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-mono focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                      <button onClick={handleAddAlias}
-                        disabled={isAddingAlias || !aliasInput.trim()}
-                        className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60">
-                        <RefreshCw className={cn('h-3 w-3', isAddingAlias && 'animate-spin')} />
-                        {isAddingAlias ? 'Vérification...' : 'Ajouter alias Google'}
-                      </button>
+              {/* Ligne 2 : Alias + OU + Delta (3 colonnes) */}
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                <StepBlock number={4} label="Alias Google">
+                  {canAddAlias ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5">
+                        <input type="text" value={aliasInput}
+                          onChange={(e) => setAliasInput(e.target.value)}
+                          placeholder="alias@domaine.com"
+                          className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2 py-1.5 text-xs font-mono focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                        <button onClick={handleAddAlias}
+                          disabled={isAddingAlias || !aliasInput.trim()}
+                          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60">
+                          <RefreshCw className={cn('h-3 w-3', isAddingAlias && 'animate-spin')} />
+                          {isAddingAlias ? '...' : 'Ajouter'}
+                        </button>
+                      </div>
+                      {aliasMessage && (
+                        <p className={cn('rounded px-2 py-1 text-xs',
+                          aliasMessage.includes('pas encore') ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'
+                        )}>{aliasMessage}</p>
+                      )}
                     </div>
-                    {aliasMessage && (
-                      <p className={cn('rounded px-2 py-1 text-xs',
-                        aliasMessage.includes('pas encore') ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'
-                      )}>{aliasMessage}</p>
-                    )}
-                  </div>
-                ) : m.stepGoogleAlias === 'success' ? (
-                  <p className="text-xs text-green-600">Alias {m.onelaUpn} ajouté sur {m.gohUpn}</p>
-                ) : m.stepGoogleAlias === 'skipped' ? (
-                  <p className="text-xs text-gray-400">Ignoré (compte existant)</p>
-                ) : null}
-              </StepBlock>
+                  ) : m.stepGoogleAlias === 'success' ? (
+                    <p className="text-xs text-green-600">Alias ajouté</p>
+                  ) : m.stepGoogleAlias === 'skipped' ? (
+                    <p className="text-xs text-gray-400">Ignoré</p>
+                  ) : null}
+                </StepBlock>
 
-              {/* 5) Déplacer vers OU */}
-              <StepBlock number={5} label="Déplacer vers OU onela.com">
-                {canMoveOu ? (
-                  <div>
-                    <button onClick={handleMoveOu} disabled={isMovingOu}
-                      className="flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-60">
-                      <FolderInput className={cn('h-3.5 w-3.5', isMovingOu && 'animate-pulse')} />
-                      {isMovingOu ? 'Déplacement en cours...' : 'Déplacer vers OU onela.com'}
-                    </button>
-                    {ouMessage && <p className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{ouMessage}</p>}
-                  </div>
-                ) : m.stepOuMove === 'success' ? (
-                  <p className="text-xs text-green-600">Compte déplacé dans l'OU onela.com</p>
-                ) : m.stepOuMove === 'skipped' ? (
-                  <p className="text-xs text-gray-400">Ignoré</p>
-                ) : m.stepOuMove === 'error' && m.ouMoveError ? (
-                  <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.ouMoveError}</p>
-                ) : null}
-              </StepBlock>
+                <StepBlock number={5} label="OU onela.com">
+                  {canMoveOu ? (
+                    <div>
+                      <button onClick={handleMoveOu} disabled={isMovingOu}
+                        className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-60">
+                        <FolderInput className={cn('h-3.5 w-3.5', isMovingOu && 'animate-pulse')} />
+                        {isMovingOu ? 'En cours...' : 'Déplacer'}
+                      </button>
+                      {ouMessage && <p className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{ouMessage}</p>}
+                    </div>
+                  ) : m.stepOuMove === 'success' ? (
+                    <p className="text-xs text-green-600">Déplacé</p>
+                  ) : m.stepOuMove === 'skipped' ? (
+                    <p className="text-xs text-gray-400">Ignoré</p>
+                  ) : m.stepOuMove === 'error' && m.ouMoveError ? (
+                    <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.ouMoveError}</p>
+                  ) : null}
+                </StepBlock>
 
-              {/* 6) Delta sync */}
-              <StepBlock number={6} label="Synchronisation delta">
-                <p className="text-xs text-gray-500">
-                  Relancez les étapes 1 à 3 pour synchroniser les nouveaux éléments arrivés depuis la dernière migration.
-                  Les boutons "Synchroniser (delta)" dans les étapes précédentes servent à ça.
-                </p>
-              </StepBlock>
+                <StepBlock number={6} label="Sync delta">
+                  <p className="text-xs text-gray-500">
+                    Relancez 1→3 pour synchroniser les nouveaux éléments.
+                  </p>
+                </StepBlock>
+              </div>
 
-              {/* 7) Forwarding SMTP */}
-              <StepBlock number={7} label="Activer le transfert SMTP Exchange">
+              {/* Ligne 3 : SMTP (pleine largeur) */}
+              <StepBlock number={7} label="Transfert SMTP Exchange">
                 {m.exchangePsScript ? (
                   <div>
                     <button onClick={() => setPsExpanded((v) => !v)}
                       className="flex items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900">
                       {psExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                      Script PowerShell Exchange (ForwardingSMTPAddress)
+                      Script PowerShell (ForwardingSMTPAddress)
                     </button>
                     {psExpanded && (
                       <div className="mt-2 rounded border border-gray-200 bg-gray-50">
@@ -310,9 +309,7 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                     )}
                   </div>
                 ) : (
-                  <p className="text-xs text-gray-400">
-                    Le script de transfert sera disponible après la création du compte.
-                  </p>
+                  <p className="text-xs text-gray-400">Disponible après création du compte.</p>
                 )}
               </StepBlock>
             </div>

@@ -554,12 +554,9 @@ migrationRouter.get('/:id/errors/:phase/download', requirePermission('migration:
   }
 
   const filename = `errors-${phase}-${row.onelaUpn.replace('@', '_')}-${new Date().toISOString().slice(0, 10)}.csv`
-  return new Response(csvLines.join('\n'), {
-    headers: {
-      'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-    },
-  })
+  c.header('Content-Type', 'text/csv; charset=utf-8')
+  c.header('Content-Disposition', `attachment; filename="${filename}"`)
+  return c.body(csvLines.join('\n'))
 })
 
 // ── Détail d'une migration ────────────────────────────────────────────────────

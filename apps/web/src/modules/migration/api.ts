@@ -44,8 +44,8 @@ export const migrationApi = {
       errors: Array<{ id: number; graphId: string; internetMessageId?: string | null; iCalUid?: string | null; errorDetails: string | null; createdAt: string }>
     }>(`/migration/${id}/errors/${phase}`).then((r) => r.data),
 
-  downloadErrors: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
-    apiClient.get(`/migration/${id}/errors/${phase}/download`, { responseType: 'blob' }).then((r) => r.data),
+  downloadErrorsUrl: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
+    `/migration/${id}/errors/${phase}/download`,
 
   archive: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/archive`).then((r) => r.data),
