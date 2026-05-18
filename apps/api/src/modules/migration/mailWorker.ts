@@ -117,8 +117,13 @@ async function processUserMail(job: Migration) {
       try {
         const rawMime = await fetchOnelaMessageMime(job.onelaUserId, msg.id)
         const folder = msg.parentFolderId ? folderById.get(msg.parentFolderId) : undefined
-        const labelIds = folder ? await resolver.resolve(folder) : ['INBOX']
-        const finalLabels = msg.isDraft ? ['DRAFT'] : labelIds
+        const folderLabels = folder ? await resolver.resolve(folder) : ['INBOX']
+        // Catégories Outlook → labels Gmail supplémentaires
+        const categoryLabels = msg.categories?.length
+          ? await resolver.resolveCategories(msg.categories)
+          : []
+        const mergedLabels = [...new Set([...folderLabels, ...categoryLabels])]
+        const finalLabels = msg.isDraft ? ['DRAFT'] : mergedLabels
 
         const result = await gmailImportMime({
           userEmail: job.gohUpn,
