@@ -41,6 +41,7 @@ interface GraphMessageMeta {
   parentFolderId?: string
   isRead?: boolean
   isDraft?: boolean
+  categories?: string[]
 }
 
 // Liste les folders en utilisant les alias well-known (pour identifier inbox/sent/...) +
@@ -117,7 +118,7 @@ export async function* iterateOnelaMessages(
   since?: Date | null
 ): AsyncGenerator<GraphMessageMeta> {
   const token = await onelaToken()
-  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft`
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories`
   // Delta sync : on filtre sur receivedDateTime > since (les mails ne changent pas après réception)
   const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
   let url: string | null = base + filter
@@ -205,6 +206,8 @@ const SYSTEM_LABEL_MAP: Record<string, string> = {
 
 export interface LabelResolver {
   resolve(folder: GraphFolder): Promise<string[]>
+  /** Résout les catégories Outlook en IDs de labels Gmail (crée les labels à la volée si besoin) */
+  resolveCategories(categories: string[]): Promise<string[]>
 }
 
 export async function buildLabelResolver(
@@ -238,9 +241,47 @@ export async function buildLabelResolver(
     folderToLabelIds.set(f.id, [labelId])
   }
 
+  // Cache catégorie Outlook → label Gmail (créé à la volée)
+  const categoryCache = new Map<string, string>()
+
   return {
     async resolve(folder: GraphFolder) {
       return folderToLabelIds.get(folder.id) ?? ['INBOX']
+    },
+
+    async resolveCategories(categories: string[]): Promise<string[]> {
+      if (!categories.length) return []
+      const labelIds: string[] = []
+      for (const cat of categories) {
+        const catName = cat.trim()
+        if (!catName) continue
+
+        // Déjà résolu ?
+        let labelId = categoryCache.get(catName.toLowerCase())
+        if (labelId) { labelIds.push(labelId); continue }
+
+        // Label existant avec le même nom ?
+        labelId = byName.get(catName.toLowerCase())
+        if (labelId) {
+          categoryCache.set(catName.toLowerCase(), labelId)
+          labelIds.push(labelId)
+          continue
+        }
+
+        // Créer le label Gmail
+        try {
+          const created = await createGmailLabel(userEmail, catName)
+          labelId = created.id
+          byName.set(catName.toLowerCase(), labelId)
+          categoryCache.set(catName.toLowerCase(), labelId)
+          labelIds.push(labelId)
+          console.log(`[mail] catégorie Outlook "${catName}" → label Gmail créé`)
+        } catch (err) {
+          console.error(`[mail] create category label "${catName}" échoué:`, err instanceof Error ? err.message : err)
+          // On ne fait pas de fallback pour les catégories — on skip simplement
+        }
+      }
+      return labelIds
     },
   }
 }
