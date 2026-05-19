@@ -331,6 +331,11 @@ function fixDuplicateHeaders(mime: string): string {
   return fixed.join(eol) + body
 }
 
+function mimeToBase64Url(mime: string): string {
+  return Buffer.from(mime, 'utf-8').toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
 export async function gmailImportMime(params: {
   userEmail: string
   rawMime: string
@@ -341,47 +346,45 @@ export async function gmailImportMime(params: {
   const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
 
   const sanitizedMime = fixDuplicateHeaders(params.rawMime)
-  if (sanitizedMime !== params.rawMime) {
-    console.log('[mail] fixDuplicateHeaders: headers corrigés')
-  }
+  const raw = mimeToBase64Url(sanitizedMime)
 
-  // Encoding base64url pour Gmail API
-  const raw = Buffer.from(sanitizedMime, 'utf-8').toString('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-
-  // Si non lu, on n'inclut pas le label UNREAD car il y est par défaut.
-  // Si lu, il faut RETIRER UNREAD via labelIds (en n'ajoutant pas) — Gmail ajoute UNREAD par défaut sur import.
-  // Solution : on liste explicitement nos labels + on omet UNREAD si isRead, sinon on ajoute UNREAD.
   const labelIds = [...params.labelIds]
   if (!params.isRead && !labelIds.includes('UNREAD')) labelIds.push('UNREAD')
 
-  const url = new URL(
+  // 1) Essai avec messages.import (préserve les métadonnées, plus strict)
+  const importUrl = new URL(
     `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/import`
   )
-  url.searchParams.set('internalDateSource', 'dateHeader')
-  url.searchParams.set('neverMarkSpam', 'true')
-  url.searchParams.set('processForCalendar', 'false')
-  url.searchParams.set('deleted', 'false')
+  importUrl.searchParams.set('internalDateSource', 'dateHeader')
+  importUrl.searchParams.set('neverMarkSpam', 'true')
+  importUrl.searchParams.set('processForCalendar', 'false')
+  importUrl.searchParams.set('deleted', 'false')
 
-  const res = await fetch(url.toString(), {
+  const importRes = await fetch(importUrl.toString(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ raw, labelIds }),
   })
 
-  if (!res.ok) {
-    const err = await res.text()
-    if (err.includes('From') || err.includes('header')) {
-      // Log les premiers headers pour diagnostic
-      const eol = sanitizedMime.includes('\r\n') ? '\r\n' : '\n'
-      const headerEnd = sanitizedMime.indexOf(eol + eol)
-      const headers = sanitizedMime.slice(0, Math.min(headerEnd, 2000))
-      const fromHeaders = headers.split(eol).filter(l => /^from\s*:/i.test(l))
-      console.error(`[mail] Gmail 400 From header — found ${fromHeaders.length} From headers:`, fromHeaders)
-    }
-    throw new Error(`Gmail import error (${res.status}): ${err}`)
+  if (importRes.ok) return (await importRes.json()) as { id: string }
+
+  const importErr = await importRes.text()
+
+  // 2) Si erreur 400 (headers malformés), fallback sur messages.insert (plus tolérant)
+  if (importRes.status === 400) {
+    console.warn(`[mail] import 400, fallback insert: ${importErr.slice(0, 120)}`)
+    const insertUrl = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
+    const insertRes = await fetch(insertUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw, labelIds, internalDateSource: 'dateHeader' }),
+    })
+    if (insertRes.ok) return (await insertRes.json()) as { id: string }
+    const insertErr = await insertRes.text()
+    throw new Error(`Gmail insert error (${insertRes.status}): ${insertErr}`)
   }
-  return (await res.json()) as { id: string }
+
+  throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
 }
 
 export type { GraphFolder, GraphMessageMeta }

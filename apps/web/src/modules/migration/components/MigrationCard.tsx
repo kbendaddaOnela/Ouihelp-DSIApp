@@ -47,7 +47,7 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   // Google est prêt si : compte existant (skipped), ou des migrations ont déjà tourné, ou le check confirme
   const googleReady = m.stepCreateAccount === 'skipped' || anyDataStarted || googleCheck?.exists === true
 
-  const canAddAlias = accountReady && m.stepGoogleAlias !== 'success' && m.stepGoogleAlias !== 'skipped'
+  const canAddAlias = accountReady && m.stepGoogleAlias !== 'success'
   const canMoveOu = accountReady && !!m.gohUpn && m.stepOuMove !== 'success'
 
   // Est-ce qu'il y a des données en cours de migration ?
