@@ -182,32 +182,40 @@ async function processUserMail(job: Migration) {
         })
 
         const isRetry = errorSet.has(msg.id)
-        await db.insert(migratedMessages).values({
-          migrationId: job.id,
-          graphMessageId: msg.id,
-          internetMessageId: msg.internetMessageId ?? null,
-          gmailMessageId: result.id,
-          subject: sanitize(msg.subject),
-          receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
-          status: 'success',
-        }).onDuplicateKeyUpdate({
-          set: { gmailMessageId: result.id, status: 'success', subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
-        })
+        try {
+          await db.insert(migratedMessages).values({
+            migrationId: job.id,
+            graphMessageId: msg.id,
+            internetMessageId: msg.internetMessageId ?? null,
+            gmailMessageId: result.id,
+            subject: sanitize(msg.subject),
+            receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
+            status: 'success',
+          }).onDuplicateKeyUpdate({
+            set: { gmailMessageId: result.id, status: 'success', subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
+          })
+        } catch (dbErr) {
+          console.error(`[mail] DB write failed for success record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+        }
         migrated++
         if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
       } catch (err) {
-        const errorDetails = err instanceof Error ? err.message : String(err)
-        await db.insert(migratedMessages).values({
-          migrationId: job.id,
-          graphMessageId: msg.id,
-          internetMessageId: msg.internetMessageId ?? null,
-          subject: sanitize(msg.subject),
-          receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
-          status: 'error',
-          errorDetails,
-        }).onDuplicateKeyUpdate({
-          set: { status: 'error', errorDetails, subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
-        })
+        const errorDetails = sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
+        try {
+          await db.insert(migratedMessages).values({
+            migrationId: job.id,
+            graphMessageId: msg.id,
+            internetMessageId: msg.internetMessageId ?? null,
+            subject: sanitize(msg.subject),
+            receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
+            status: 'error',
+            errorDetails,
+          }).onDuplicateKeyUpdate({
+            set: { status: 'error', errorDetails, subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
+          })
+        } catch (dbErr) {
+          console.error(`[mail] DB write failed for error record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+        }
         failed++
         console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
       }
@@ -283,32 +291,33 @@ async function processUserCalendar(job: Migration) {
       try {
         const result = await googleCalendarImportEvent(job.gohUpn, ev)
         if (!result) {
-          await db.insert(migratedEvents).values({
-            migrationId: job.id,
-            graphEventId: ev.id,
-            iCalUid: ev.iCalUId ?? null,
-            status: 'skipped',
-            errorDetails: 'event sans start/end',
-          }).onDuplicateKeyUpdate({ set: { status: 'skipped', errorDetails: 'event sans start/end' } })
+          try {
+            await db.insert(migratedEvents).values({
+              migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
+              status: 'skipped', errorDetails: 'event sans start/end',
+            }).onDuplicateKeyUpdate({ set: { status: 'skipped', errorDetails: 'event sans start/end' } })
+          } catch { /* db write fail */ }
           continue
         }
-        await db.insert(migratedEvents).values({
-          migrationId: job.id,
-          graphEventId: ev.id,
-          iCalUid: ev.iCalUId ?? null,
-          googleEventId: result.id,
-          status: 'success',
-        }).onDuplicateKeyUpdate({ set: { googleEventId: result.id, status: 'success', errorDetails: null } })
+        try {
+          await db.insert(migratedEvents).values({
+            migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
+            googleEventId: result.id, status: 'success',
+          }).onDuplicateKeyUpdate({ set: { googleEventId: result.id, status: 'success', errorDetails: null } })
+        } catch (dbErr) {
+          console.error(`[calendar] DB write failed for ${ev.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+        }
         migrated++
       } catch (err) {
-        const errorDetails = err instanceof Error ? err.message : String(err)
-        await db.insert(migratedEvents).values({
-          migrationId: job.id,
-          graphEventId: ev.id,
-          iCalUid: ev.iCalUId ?? null,
-          status: 'error',
-          errorDetails,
-        }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
+        const errorDetails = sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
+        try {
+          await db.insert(migratedEvents).values({
+            migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
+            status: 'error', errorDetails,
+          }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
+        } catch (dbErr) {
+          console.error(`[calendar] DB write failed for error ${ev.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+        }
         failed++
         console.warn(`[calendar] event ${ev.id} error:`, errorDetails.slice(0, 200))
       }
@@ -380,21 +389,25 @@ async function processUserContacts(job: Migration) {
 
       try {
         const result = await googlePeopleCreateContact(job.gohUpn, ct)
-        await db.insert(migratedContacts).values({
-          migrationId: job.id,
-          graphContactId: ct.id,
-          googleResourceName: result.resourceName,
-          status: 'success',
-        }).onDuplicateKeyUpdate({ set: { googleResourceName: result.resourceName, status: 'success', errorDetails: null } })
+        try {
+          await db.insert(migratedContacts).values({
+            migrationId: job.id, graphContactId: ct.id,
+            googleResourceName: result.resourceName, status: 'success',
+          }).onDuplicateKeyUpdate({ set: { googleResourceName: result.resourceName, status: 'success', errorDetails: null } })
+        } catch (dbErr) {
+          console.error(`[contacts] DB write failed for ${ct.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+        }
         migrated++
       } catch (err) {
-        const errorDetails = err instanceof Error ? err.message : String(err)
-        await db.insert(migratedContacts).values({
-          migrationId: job.id,
-          graphContactId: ct.id,
-          status: 'error',
-          errorDetails,
-        }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
+        const errorDetails = sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
+        try {
+          await db.insert(migratedContacts).values({
+            migrationId: job.id, graphContactId: ct.id,
+            status: 'error', errorDetails,
+          }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
+        } catch (dbErr) {
+          console.error(`[contacts] DB write failed for error ${ct.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+        }
         failed++
         console.warn(`[contacts] ct ${ct.id} error:`, errorDetails.slice(0, 200))
       }
