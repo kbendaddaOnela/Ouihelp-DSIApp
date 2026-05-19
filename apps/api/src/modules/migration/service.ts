@@ -7,8 +7,8 @@ interface TokenCache {
 
 const tokenCache = new Map<string, TokenCache>()
 
-async function getAccessToken(tenantId: string, clientId: string, clientSecret: string): Promise<string> {
-  const cacheKey = `${tenantId}:${clientId}`
+async function getAccessToken(tenantId: string, clientId: string, clientSecret: string, scope = 'https://graph.microsoft.com/.default'): Promise<string> {
+  const cacheKey = `${tenantId}:${clientId}:${scope}`
   const cached = tokenCache.get(cacheKey)
   if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token
 
@@ -19,13 +19,13 @@ async function getAccessToken(tenantId: string, clientId: string, clientSecret: 
       grant_type: 'client_credentials',
       client_id: clientId,
       client_secret: clientSecret,
-      scope: 'https://graph.microsoft.com/.default',
+      scope,
     }),
   })
 
   if (!res.ok) {
     const err = await res.text()
-    throw new Error(`Graph token error (${res.status}): ${err}`)
+    throw new Error(`Token error (${res.status}): ${err}`)
   }
 
   const data = (await res.json()) as { access_token: string; expires_in: number }
@@ -85,64 +85,59 @@ export async function searchOnelaUsers(query: string): Promise<GraphUser[]> {
   return res.value
 }
 
-// Active le forwarding SMTP sur la boîte Exchange ONELA vers l'adresse @mig.onela.com
-// Utilise une inbox rule Graph (messageRules) car forwardingSmtpAddress n'est pas exposé dans Graph
-export async function setOnelaMailForwarding(onelaUserId: string, forwardTo: string): Promise<void> {
-  const token = await onelaToken()
-  const ruleName = 'DSI Migration Forwarding'
+// ── Exchange Admin REST API (ForwardingSMTPAddress) ──────────────────────────
+// Uses the same API as Exchange Admin Center to set the real transport-level forwarding
 
-  // Supprimer une éventuelle règle existante avec le même nom
-  const existing = await graphRequest<{ value: Array<{ id: string; displayName: string }> }>(
-    token, 'GET',
-    `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules?$select=id,displayName`
-  )
-  for (const rule of existing.value) {
-    if (rule.displayName === ruleName) {
-      await graphRequest<void>(token, 'DELETE', `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules/${rule.id}`)
-    }
-  }
+async function onelaExchangeToken(): Promise<string> {
+  const tid = process.env['ONELA_TENANT_ID']
+  const cid = process.env['ONELA_CLIENT_ID']
+  const sec = process.env['ONELA_CLIENT_SECRET']
+  if (!tid || !cid || !sec) throw new Error('ONELA credentials manquantes')
+  return getAccessToken(tid, cid, sec, 'https://outlook.office365.com/.default')
+}
 
-  // Créer la règle de forwarding
-  await graphRequest<unknown>(token, 'POST', `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules`, {
-    displayName: ruleName,
-    sequence: 1,
-    isEnabled: true,
-    conditions: {},
-    actions: {
-      forwardTo: [{ emailAddress: { address: forwardTo } }],
-      stopProcessingRules: true,
+async function exchangeAdminRequest<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
+  const tid = process.env['ONELA_TENANT_ID']
+  const res = await fetch(`https://outlook.office365.com/adminapi/beta/${tid}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
     },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Exchange Admin ${res.status} on ${method} ${path}: ${err}`)
+  }
+  if (res.status === 204) return undefined as T
+  return res.json() as Promise<T>
+}
+
+export async function setOnelaMailForwarding(onelaUpn: string, forwardTo: string): Promise<void> {
+  const token = await onelaExchangeToken()
+  await exchangeAdminRequest<void>(token, 'PATCH', `/Mailbox('${encodeURIComponent(onelaUpn)}')`, {
+    ForwardingSmtpAddress: `smtp:${forwardTo}`,
+    DeliverToMailboxAndForward: true,
   })
 }
 
-// Désactive le forwarding SMTP (supprime la règle)
-export async function removeOnelaMailForwarding(onelaUserId: string): Promise<void> {
-  const token = await onelaToken()
-  const existing = await graphRequest<{ value: Array<{ id: string; displayName: string }> }>(
-    token, 'GET',
-    `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules?$select=id,displayName`
-  )
-  for (const rule of existing.value) {
-    if (rule.displayName === 'DSI Migration Forwarding') {
-      await graphRequest<void>(token, 'DELETE', `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules/${rule.id}`)
-    }
-  }
+export async function removeOnelaMailForwarding(onelaUpn: string): Promise<void> {
+  const token = await onelaExchangeToken()
+  await exchangeAdminRequest<void>(token, 'PATCH', `/Mailbox('${encodeURIComponent(onelaUpn)}')`, {
+    ForwardingSmtpAddress: null,
+    DeliverToMailboxAndForward: false,
+  })
 }
 
-// Vérifie si le forwarding est actif
-export async function checkOnelaMailForwarding(onelaUserId: string): Promise<{ active: boolean; forwardTo: string | null }> {
-  const token = await onelaToken()
-  const existing = await graphRequest<{ value: Array<{ id: string; displayName: string; isEnabled: boolean; actions: { forwardTo?: Array<{ emailAddress: { address: string } }> } }> }>(
-    token, 'GET',
-    `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules?$select=id,displayName,isEnabled,actions`
-  )
-  for (const rule of existing.value) {
-    if (rule.displayName === 'DSI Migration Forwarding' && rule.isEnabled) {
-      const addr = rule.actions.forwardTo?.[0]?.emailAddress?.address ?? null
-      return { active: true, forwardTo: addr }
-    }
-  }
-  return { active: false, forwardTo: null }
+export async function checkOnelaMailForwarding(onelaUpn: string): Promise<{ active: boolean; forwardTo: string | null }> {
+  const token = await onelaExchangeToken()
+  const mailbox = await exchangeAdminRequest<{
+    ForwardingSmtpAddress: string | null
+    DeliverToMailboxAndForward: boolean
+  }>(token, 'GET', `/Mailbox('${encodeURIComponent(onelaUpn)}')?$select=ForwardingSmtpAddress,DeliverToMailboxAndForward`)
+  const addr = mailbox.ForwardingSmtpAddress?.replace(/^smtp:/i, '') ?? null
+  return { active: !!addr, forwardTo: addr }
 }
 
 // ── GOH tenant (read-write) ───────────────────────────────────────────────────
