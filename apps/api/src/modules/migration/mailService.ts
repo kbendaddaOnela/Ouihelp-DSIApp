@@ -292,18 +292,19 @@ export async function buildLabelResolver(
 // Corrige les MIME malformés qui ont des headers dupliqués (From, Date, Subject…)
 // Gmail refuse les mails avec plusieurs headers From → on ne garde que le premier
 function fixDuplicateHeaders(mime: string): string {
-  const headerEnd = mime.indexOf('\r\n\r\n')
+  // Détecte le séparateur de ligne (\r\n ou \n)
+  const eol = mime.includes('\r\n') ? '\r\n' : '\n'
+  const headerEnd = mime.indexOf(eol + eol)
   if (headerEnd === -1) return mime
   const headerPart = mime.slice(0, headerEnd)
   const body = mime.slice(headerEnd)
 
   const seen = new Set<string>()
-  const lines = headerPart.split('\r\n')
+  const lines = headerPart.split(eol)
   const fixed: string[] = []
   let skipContinuation = false
 
   for (const line of lines) {
-    // Continuation line (starts with space/tab) → belongs to previous header
     if (/^[ \t]/.test(line)) {
       if (!skipContinuation) fixed.push(line)
       continue
@@ -321,7 +322,7 @@ function fixDuplicateHeaders(mime: string): string {
     fixed.push(line)
   }
 
-  return fixed.join('\r\n') + body
+  return fixed.join(eol) + body
 }
 
 export async function gmailImportMime(params: {
@@ -334,6 +335,9 @@ export async function gmailImportMime(params: {
   const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
 
   const sanitizedMime = fixDuplicateHeaders(params.rawMime)
+  if (sanitizedMime !== params.rawMime) {
+    console.log('[mail] fixDuplicateHeaders: headers corrigés')
+  }
 
   // Encoding base64url pour Gmail API
   const raw = Buffer.from(sanitizedMime, 'utf-8').toString('base64')
@@ -361,6 +365,14 @@ export async function gmailImportMime(params: {
 
   if (!res.ok) {
     const err = await res.text()
+    if (err.includes('From') || err.includes('header')) {
+      // Log les premiers headers pour diagnostic
+      const eol = sanitizedMime.includes('\r\n') ? '\r\n' : '\n'
+      const headerEnd = sanitizedMime.indexOf(eol + eol)
+      const headers = sanitizedMime.slice(0, Math.min(headerEnd, 2000))
+      const fromHeaders = headers.split(eol).filter(l => /^from\s*:/i.test(l))
+      console.error(`[mail] Gmail 400 From header — found ${fromHeaders.length} From headers:`, fromHeaders)
+    }
     throw new Error(`Gmail import error (${res.status}): ${err}`)
   }
   return (await res.json()) as { id: string }
