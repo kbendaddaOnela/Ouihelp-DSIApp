@@ -8,7 +8,12 @@ const GMAIL_SCOPE = 'https://mail.google.com/'
 
 // ── Microsoft Graph (lecture mail ONELA) ──────────────────────────────────────
 
+let _cachedToken: { token: string; expiresAt: number } | null = null
+const TOKEN_MARGIN_MS = 5 * 60 * 1000 // renouveler 5min avant expiration
+
 async function onelaToken(): Promise<string> {
+  if (_cachedToken && Date.now() < _cachedToken.expiresAt) return _cachedToken.token
+
   const tid = process.env['ONELA_TENANT_ID']
   const cid = process.env['ONELA_CLIENT_ID']
   const sec = process.env['ONELA_CLIENT_SECRET']
@@ -25,7 +30,9 @@ async function onelaToken(): Promise<string> {
     }),
   })
   if (!res.ok) throw new Error(`ONELA token error (${res.status}): ${await res.text()}`)
-  const data = (await res.json()) as { access_token: string }
+  const data = (await res.json()) as { access_token: string; expires_in?: number }
+  const expiresIn = (data.expires_in ?? 3600) * 1000
+  _cachedToken = { token: data.access_token, expiresAt: Date.now() + expiresIn - TOKEN_MARGIN_MS }
   return data.access_token
 }
 
@@ -119,12 +126,11 @@ export async function* iterateOnelaMessages(
   userId: string,
   since?: Date | null
 ): AsyncGenerator<GraphMessageMeta> {
-  const token = await onelaToken()
   const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime`
-  // Delta sync : on filtre sur receivedDateTime > since (les mails ne changent pas après réception)
   const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
   let url: string | null = base + filter
   while (url) {
+    const token = await onelaToken()
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph messages error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphMessageMeta[]; '@odata.nextLink'?: string }
