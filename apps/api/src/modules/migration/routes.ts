@@ -609,7 +609,7 @@ migrationRouter.post('/:id/forwarding', requirePermission('migration:write'), as
   if (!row.gohUpn) return c.json({ error: 'Pas de compte GOH' }, 400)
 
   try {
-    await setOnelaMailForwarding(row.onelaUserId, row.gohUpn)
+    await setOnelaMailForwarding(row.onelaUpn, row.gohUpn)
     return c.json({ success: true, forwardTo: row.gohUpn })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -624,7 +624,7 @@ migrationRouter.delete('/:id/forwarding', requirePermission('migration:write'), 
   if (!row) return c.json({ error: 'Not Found' }, 404)
 
   try {
-    await removeOnelaMailForwarding(row.onelaUserId)
+    await removeOnelaMailForwarding(row.onelaUpn)
     return c.json({ success: true })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -638,7 +638,7 @@ migrationRouter.get('/:id/forwarding', requirePermission('migration:read'), asyn
   if (!row) return c.json({ error: 'Not Found' }, 404)
 
   try {
-    const status = await checkOnelaMailForwarding(row.onelaUserId)
+    const status = await checkOnelaMailForwarding(row.onelaUpn)
     return c.json(status)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
