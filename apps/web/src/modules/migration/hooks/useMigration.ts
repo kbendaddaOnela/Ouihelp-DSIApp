@@ -165,6 +165,37 @@ export function useMoveOu() {
   })
 }
 
+export function useSetForwarding() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.setForwarding(id),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: ['migration-history'] })
+      qc.invalidateQueries({ queryKey: ['forwarding-status', id] })
+    },
+  })
+}
+
+export function useRemoveForwarding() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.removeForwarding(id),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: ['migration-history'] })
+      qc.invalidateQueries({ queryKey: ['forwarding-status', id] })
+    },
+  })
+}
+
+export function useForwardingStatus(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['forwarding-status', id],
+    queryFn: () => migrationApi.checkForwarding(id),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
 export function useMigrationStats() {
   return useQuery({
     queryKey: ['migration-stats'],

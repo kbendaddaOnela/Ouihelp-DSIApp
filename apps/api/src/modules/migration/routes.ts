@@ -11,6 +11,9 @@ import {
   createGohUser,
   setGohUserAttributes,
   checkGohUserExists,
+  setOnelaMailForwarding,
+  removeOnelaMailForwarding,
+  checkOnelaMailForwarding,
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration } from './mailWorker'
@@ -596,6 +599,51 @@ migrationRouter.get('/:id/errors/:phase/download', requirePermission('migration:
   c.header('Content-Type', 'text/csv; charset=utf-8')
   c.header('Content-Disposition', `attachment; filename="${filename}"`)
   return c.body(csvLines.join('\n'))
+})
+
+// ── Forwarding Exchange ONELA → mig.onela.com ──────────────────────────────
+migrationRouter.post('/:id/forwarding', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte GOH' }, 400)
+
+  try {
+    await setOnelaMailForwarding(row.onelaUserId, row.gohUpn)
+    return c.json({ success: true, forwardTo: row.gohUpn })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[forwarding] set error for ${row.onelaUpn}:`, msg)
+    return c.json({ error: 'Forwarding error', message: msg }, 502)
+  }
+})
+
+migrationRouter.delete('/:id/forwarding', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+
+  try {
+    await removeOnelaMailForwarding(row.onelaUserId)
+    return c.json({ success: true })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return c.json({ error: 'Forwarding error', message: msg }, 502)
+  }
+})
+
+migrationRouter.get('/:id/forwarding', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+
+  try {
+    const status = await checkOnelaMailForwarding(row.onelaUserId)
+    return c.json(status)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return c.json({ error: 'Check forwarding error', message: msg }, 502)
+  }
 })
 
 // ── Détail d'une migration ────────────────────────────────────────────────────

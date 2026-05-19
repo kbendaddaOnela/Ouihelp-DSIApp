@@ -64,6 +64,15 @@ export const migrationApi = {
 
   moveOu: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/move-ou`).then((r) => r.data),
+
+  setForwarding: (id: string) =>
+    apiClient.post<{ success: boolean; forwardTo: string }>(`/migration/${id}/forwarding`).then((r) => r.data),
+
+  removeForwarding: (id: string) =>
+    apiClient.delete<{ success: boolean }>(`/migration/${id}/forwarding`).then((r) => r.data),
+
+  checkForwarding: (id: string) =>
+    apiClient.get<{ active: boolean; forwardTo: string | null }>(`/migration/${id}/forwarding`).then((r) => r.data),
 }
 
 export interface MigrationStats {
