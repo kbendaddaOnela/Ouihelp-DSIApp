@@ -289,6 +289,41 @@ export async function buildLabelResolver(
 }
 
 // Import d'un message dans Gmail à partir du MIME brut
+// Corrige les MIME malformés qui ont des headers dupliqués (From, Date, Subject…)
+// Gmail refuse les mails avec plusieurs headers From → on ne garde que le premier
+function fixDuplicateHeaders(mime: string): string {
+  const headerEnd = mime.indexOf('\r\n\r\n')
+  if (headerEnd === -1) return mime
+  const headerPart = mime.slice(0, headerEnd)
+  const body = mime.slice(headerEnd)
+
+  const seen = new Set<string>()
+  const lines = headerPart.split('\r\n')
+  const fixed: string[] = []
+  let skipContinuation = false
+
+  for (const line of lines) {
+    // Continuation line (starts with space/tab) → belongs to previous header
+    if (/^[ \t]/.test(line)) {
+      if (!skipContinuation) fixed.push(line)
+      continue
+    }
+    const match = line.match(/^(From|Date|Subject|Message-ID|MIME-Version):/i)
+    if (match) {
+      const key = match[1]!.toLowerCase()
+      if (seen.has(key)) {
+        skipContinuation = true
+        continue
+      }
+      seen.add(key)
+    }
+    skipContinuation = false
+    fixed.push(line)
+  }
+
+  return fixed.join('\r\n') + body
+}
+
 export async function gmailImportMime(params: {
   userEmail: string
   rawMime: string
@@ -298,8 +333,10 @@ export async function gmailImportMime(params: {
 }): Promise<{ id: string }> {
   const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
 
+  const sanitizedMime = fixDuplicateHeaders(params.rawMime)
+
   // Encoding base64url pour Gmail API
-  const raw = Buffer.from(params.rawMime, 'utf-8').toString('base64')
+  const raw = Buffer.from(sanitizedMime, 'utf-8').toString('base64')
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 
   // Si non lu, on n'inclut pas le label UNREAD car il y est par défaut.
