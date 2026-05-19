@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Download, Loader2, CheckCircle2, Clock } from 'lucide-react'
+import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
@@ -15,11 +15,13 @@ import {
   useDeleteMigration,
   useMoveOu,
   useCheckGoogle,
+  useSetForwarding,
+  useRemoveForwarding,
+  useForwardingStatus,
 } from '../hooks/useMigration'
 
 export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationRecord; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
-  const [psExpanded, setPsExpanded] = useState(false)
   const [aliasMessage, setAliasMessage] = useState<string | null>(null)
   const [ouMessage, setOuMessage] = useState<string | null>(null)
   const [aliasInput, setAliasInput] = useState(m.onelaUpn)
@@ -32,9 +34,15 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   const { mutate: unarchive, isPending: isUnarchiving } = useUnarchiveMigration()
   const { mutate: removeMigration, isPending: isDeleting } = useDeleteMigration()
   const { mutate: moveOu, isPending: isMovingOu } = useMoveOu()
+  const { mutate: setForwarding, isPending: isSettingFwd } = useSetForwarding()
+  const { mutate: removeForwarding, isPending: isRemovingFwd } = useRemoveForwarding()
+  const [fwdMessage, setFwdMessage] = useState<string | null>(null)
 
   const hasError = m.stepCreateAccount === 'error'
   const accountReady = m.stepCreateAccount === 'success' || m.stepCreateAccount === 'skipped'
+
+  const fwdCheckEnabled = accountReady && !!m.onelaUserId && expanded
+  const { data: fwdStatus, isFetching: isCheckingFwd } = useForwardingStatus(m.id, fwdCheckEnabled)
 
   // Polling Google toutes les 30s pour vérifier si le compte est provisionné par SCIM
   // Actif si : compte Entra créé (pas skipped), aucune migration data n'a encore réussi
@@ -291,22 +299,64 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                 </StepBlock>
               </div>
 
-              {/* Ligne 3 : SMTP (pleine largeur) */}
-              <StepBlock number={7} label="Transfert SMTP Exchange">
-                {m.exchangePsScript ? (
-                  <div>
-                    <button onClick={() => setPsExpanded((v) => !v)}
-                      className="flex items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900">
-                      {psExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                      Script PowerShell (ForwardingSMTPAddress)
-                    </button>
-                    {psExpanded && (
-                      <div className="mt-2 rounded border border-gray-200 bg-gray-50">
-                        <div className="flex justify-end border-b border-gray-200 px-3 py-1">
-                          <CopyButton text={m.exchangePsScript} />
-                        </div>
-                        <pre className="overflow-x-auto p-3 text-xs text-gray-700">{m.exchangePsScript}</pre>
+              {/* Ligne 3 : Redirection Exchange (pleine largeur) */}
+              <StepBlock number={7} label="Redirection Exchange">
+                {accountReady && m.onelaUserId ? (
+                  <div className="space-y-2">
+                    {isCheckingFwd && !fwdStatus ? (
+                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Vérification...
                       </div>
+                    ) : fwdStatus?.active ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 rounded bg-green-50 px-2.5 py-1.5 text-xs text-green-700">
+                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                          <span>Redirection active vers <strong>{fwdStatus.forwardTo}</strong></span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setFwdMessage(null)
+                            removeForwarding(m.id, {
+                              onError: (err: unknown) => {
+                                const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+                                  ?? (err instanceof Error ? err.message : 'Erreur inconnue')
+                                setFwdMessage(msg)
+                              },
+                            })
+                          }}
+                          disabled={isRemovingFwd}
+                          className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
+                        >
+                          <XCircle className={cn('h-3.5 w-3.5', isRemovingFwd && 'animate-spin')} />
+                          {isRemovingFwd ? 'Désactivation...' : 'Désactiver la redirection'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-xs text-gray-500">
+                          Active une règle de transfert sur la boîte Exchange ONELA vers <strong>{m.gohUpn}</strong>
+                        </p>
+                        <button
+                          onClick={() => {
+                            setFwdMessage(null)
+                            setForwarding(m.id, {
+                              onError: (err: unknown) => {
+                                const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+                                  ?? (err instanceof Error ? err.message : 'Erreur inconnue')
+                                setFwdMessage(msg)
+                              },
+                            })
+                          }}
+                          disabled={isSettingFwd}
+                          className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+                        >
+                          <Send className={cn('h-3.5 w-3.5', isSettingFwd && 'animate-spin')} />
+                          {isSettingFwd ? 'Activation...' : 'Activer la redirection'}
+                        </button>
+                      </div>
+                    )}
+                    {fwdMessage && (
+                      <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{fwdMessage}</p>
                     )}
                   </div>
                 ) : (

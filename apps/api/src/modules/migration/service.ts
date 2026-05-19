@@ -85,6 +85,66 @@ export async function searchOnelaUsers(query: string): Promise<GraphUser[]> {
   return res.value
 }
 
+// Active le forwarding SMTP sur la boîte Exchange ONELA vers l'adresse @mig.onela.com
+// Utilise une inbox rule Graph (messageRules) car forwardingSmtpAddress n'est pas exposé dans Graph
+export async function setOnelaMailForwarding(onelaUserId: string, forwardTo: string): Promise<void> {
+  const token = await onelaToken()
+  const ruleName = 'DSI Migration Forwarding'
+
+  // Supprimer une éventuelle règle existante avec le même nom
+  const existing = await graphRequest<{ value: Array<{ id: string; displayName: string }> }>(
+    token, 'GET',
+    `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules?$select=id,displayName`
+  )
+  for (const rule of existing.value) {
+    if (rule.displayName === ruleName) {
+      await graphRequest<void>(token, 'DELETE', `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules/${rule.id}`)
+    }
+  }
+
+  // Créer la règle de forwarding
+  await graphRequest<unknown>(token, 'POST', `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules`, {
+    displayName: ruleName,
+    sequence: 1,
+    isEnabled: true,
+    conditions: {},
+    actions: {
+      forwardTo: [{ emailAddress: { address: forwardTo } }],
+      stopProcessingRules: true,
+    },
+  })
+}
+
+// Désactive le forwarding SMTP (supprime la règle)
+export async function removeOnelaMailForwarding(onelaUserId: string): Promise<void> {
+  const token = await onelaToken()
+  const existing = await graphRequest<{ value: Array<{ id: string; displayName: string }> }>(
+    token, 'GET',
+    `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules?$select=id,displayName`
+  )
+  for (const rule of existing.value) {
+    if (rule.displayName === 'DSI Migration Forwarding') {
+      await graphRequest<void>(token, 'DELETE', `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules/${rule.id}`)
+    }
+  }
+}
+
+// Vérifie si le forwarding est actif
+export async function checkOnelaMailForwarding(onelaUserId: string): Promise<{ active: boolean; forwardTo: string | null }> {
+  const token = await onelaToken()
+  const existing = await graphRequest<{ value: Array<{ id: string; displayName: string; isEnabled: boolean; actions: { forwardTo?: Array<{ emailAddress: { address: string } }> } }> }>(
+    token, 'GET',
+    `/users/${encodeURIComponent(onelaUserId)}/mailFolders/inbox/messageRules?$select=id,displayName,isEnabled,actions`
+  )
+  for (const rule of existing.value) {
+    if (rule.displayName === 'DSI Migration Forwarding' && rule.isEnabled) {
+      const addr = rule.actions.forwardTo?.[0]?.emailAddress?.address ?? null
+      return { active: true, forwardTo: addr }
+    }
+  }
+  return { active: false, forwardTo: null }
+}
+
 // ── GOH tenant (read-write) ───────────────────────────────────────────────────
 
 async function gohToken(): Promise<string> {
