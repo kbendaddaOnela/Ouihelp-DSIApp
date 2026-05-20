@@ -26,6 +26,20 @@ const MAX_CONCURRENT = 3
 const POLL_INTERVAL_MS = 5000
 const RUNNING = new Map<string, 'mail' | 'calendar' | 'contacts'>()
 
+// Nombre d'items traités en parallèle dans chaque phase (mail, calendar, contacts)
+const BATCH_CONCURRENCY = 10
+
+/** Collecte `count` items d'un AsyncGenerator (ou moins si épuisé) */
+async function collectBatch<T>(gen: AsyncGenerator<T>, count: number): Promise<T[]> {
+  const batch: T[] = []
+  for (let i = 0; i < count; i++) {
+    const { value, done } = await gen.next()
+    if (done) break
+    batch.push(value)
+  }
+  return batch
+}
+
 let workerStarted = false
 
 export function startMailWorker() {
@@ -154,77 +168,96 @@ async function processUserMail(job: Migration) {
 
     let skipped = 0
     const syncStartedAt = new Date()
-    for await (const msg of iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)) {
-      if (!preCountSet) total++
-      if (skipSet.has(msg.id)) {
-        skipped++
-        if (skipped % 500 === 0) console.log(`[mail] ${job.id}: skipped ${skipped}/${skipSet.size} déjà migrés...`)
-        continue
-      }
+    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
 
-      try {
-        const rawMime = await fetchOnelaMessageMime(job.onelaUserId, msg.id)
-        const folder = msg.parentFolderId ? folderById.get(msg.parentFolderId) : undefined
-        const folderLabels = folder ? await resolver.resolve(folder) : ['INBOX']
-        // Catégories Outlook → labels Gmail supplémentaires
-        const categoryLabels = msg.categories?.length
-          ? await resolver.resolveCategories(msg.categories)
-          : []
-        const mergedLabels = [...new Set([...folderLabels, ...categoryLabels])]
-        const finalLabels = msg.isDraft ? ['DRAFT'] : mergedLabels
+    // Traitement par batch de BATCH_CONCURRENCY messages en parallèle
+    let batch = await collectBatch(msgIterator, BATCH_CONCURRENCY)
+    while (batch.length > 0) {
+      // Filtrer les messages déjà migrés
+      const toProcess = batch.filter((msg) => {
+        if (!preCountSet) total++
+        if (skipSet.has(msg.id)) {
+          skipped++
+          if (skipped % 500 === 0) console.log(`[mail] ${job.id}: skipped ${skipped}/${skipSet.size} déjà migrés...`)
+          return false
+        }
+        return true
+      })
 
-        const result = await gmailImportMime({
-          userEmail: job.gohUpn,
-          rawMime,
-          labelIds: finalLabels,
-          isDraft: msg.isDraft,
-          isRead: msg.isRead,
+      // Traiter le batch en parallèle
+      const results = await Promise.allSettled(
+        toProcess.map(async (msg) => {
+          const rawMime = await fetchOnelaMessageMime(job.onelaUserId, msg.id)
+          const folder = msg.parentFolderId ? folderById.get(msg.parentFolderId) : undefined
+          const folderLabels = folder ? await resolver.resolve(folder) : ['INBOX']
+          const categoryLabels = msg.categories?.length
+            ? await resolver.resolveCategories(msg.categories)
+            : []
+          const mergedLabels = [...new Set([...folderLabels, ...categoryLabels])]
+          const finalLabels = msg.isDraft ? ['DRAFT'] : mergedLabels
+
+          const result = await gmailImportMime({
+            userEmail: job.gohUpn!,
+            rawMime,
+            labelIds: finalLabels,
+            isDraft: msg.isDraft,
+            isRead: msg.isRead,
+          })
+          return { msg, result }
         })
+      )
 
-        const isRetry = errorSet.has(msg.id)
-        try {
-          await db.insert(migratedMessages).values({
-            migrationId: job.id,
-            graphMessageId: msg.id,
-            internetMessageId: msg.internetMessageId ?? null,
-            gmailMessageId: result.id,
-            subject: sanitize(msg.subject),
-            receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
-            status: 'success',
-          }).onDuplicateKeyUpdate({
-            set: { gmailMessageId: result.id, status: 'success', subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
-          })
-        } catch (dbErr) {
-          console.error(`[mail] DB write failed for success record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+      // Écrire les résultats en DB
+      for (let i = 0; i < results.length; i++) {
+        const msg = toProcess[i]!
+        const res = results[i]!
+        if (res.status === 'fulfilled') {
+          const isRetry = errorSet.has(msg.id)
+          try {
+            await db.insert(migratedMessages).values({
+              migrationId: job.id,
+              graphMessageId: msg.id,
+              internetMessageId: msg.internetMessageId ?? null,
+              gmailMessageId: res.value.result.id,
+              subject: sanitize(msg.subject),
+              receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
+              status: 'success',
+            }).onDuplicateKeyUpdate({
+              set: { gmailMessageId: res.value.result.id, status: 'success', subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
+            })
+          } catch (dbErr) {
+            console.error(`[mail] DB write failed for success record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+          }
+          migrated++
+          if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
+        } else {
+          const errorDetails = sanitize(res.reason instanceof Error ? res.reason.message : String(res.reason), 2000) ?? 'unknown'
+          try {
+            await db.insert(migratedMessages).values({
+              migrationId: job.id,
+              graphMessageId: msg.id,
+              internetMessageId: msg.internetMessageId ?? null,
+              subject: sanitize(msg.subject),
+              receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
+              status: 'error',
+              errorDetails,
+            }).onDuplicateKeyUpdate({
+              set: { status: 'error', errorDetails, subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
+            })
+          } catch (dbErr) {
+            console.error(`[mail] DB write failed for error record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+          }
+          failed++
+          console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
         }
-        migrated++
-        if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
-      } catch (err) {
-        const errorDetails = sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
-        try {
-          await db.insert(migratedMessages).values({
-            migrationId: job.id,
-            graphMessageId: msg.id,
-            internetMessageId: msg.internetMessageId ?? null,
-            subject: sanitize(msg.subject),
-            receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null,
-            status: 'error',
-            errorDetails,
-          }).onDuplicateKeyUpdate({
-            set: { status: 'error', errorDetails, subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
-          })
-        } catch (dbErr) {
-          console.error(`[mail] DB write failed for error record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
-        }
-        failed++
-        console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
       }
 
-      if ((migrated + failed) % 25 === 0) {
-        await db.update(migrations)
-          .set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed })
-          .where(eq(migrations.id, job.id))
-      }
+      // Mettre à jour la progression après chaque batch
+      await db.update(migrations)
+        .set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed })
+        .where(eq(migrations.id, job.id))
+
+      batch = await collectBatch(msgIterator, BATCH_CONCURRENCY)
     }
 
     const success = failed === 0
@@ -284,49 +317,64 @@ async function processUserCalendar(job: Migration) {
     }
 
     const calSyncStart = new Date()
-    for await (const ev of iterateOnelaEvents(job.onelaUserId, job.calLastSyncAt)) {
-      if (!preCountSet) total++
-      if (skipSet.has(ev.id)) continue
+    const evIterator = iterateOnelaEvents(job.onelaUserId, job.calLastSyncAt)
 
-      try {
-        const result = await googleCalendarImportEvent(job.gohUpn, ev)
-        if (!result) {
+    let evBatch = await collectBatch(evIterator, BATCH_CONCURRENCY)
+    while (evBatch.length > 0) {
+      const toProcess = evBatch.filter((ev) => {
+        if (!preCountSet) total++
+        return !skipSet.has(ev.id)
+      })
+
+      const results = await Promise.allSettled(
+        toProcess.map(async (ev) => {
+          const result = await googleCalendarImportEvent(job.gohUpn!, ev)
+          return { ev, result }
+        })
+      )
+
+      for (let i = 0; i < results.length; i++) {
+        const ev = toProcess[i]!
+        const res = results[i]!
+        if (res.status === 'fulfilled') {
+          if (!res.value.result) {
+            try {
+              await db.insert(migratedEvents).values({
+                migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
+                status: 'skipped', errorDetails: 'event sans start/end',
+              }).onDuplicateKeyUpdate({ set: { status: 'skipped', errorDetails: 'event sans start/end' } })
+            } catch { /* db write fail */ }
+            continue
+          }
           try {
             await db.insert(migratedEvents).values({
               migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
-              status: 'skipped', errorDetails: 'event sans start/end',
-            }).onDuplicateKeyUpdate({ set: { status: 'skipped', errorDetails: 'event sans start/end' } })
-          } catch { /* db write fail */ }
-          continue
+              googleEventId: res.value.result.id, status: 'success',
+            }).onDuplicateKeyUpdate({ set: { googleEventId: res.value.result.id, status: 'success', errorDetails: null } })
+          } catch (dbErr) {
+            console.error(`[calendar] DB write failed for ${ev.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+          }
+          migrated++
+        } else {
+          const errorDetails = sanitize(res.reason instanceof Error ? res.reason.message : String(res.reason), 2000) ?? 'unknown'
+          try {
+            await db.insert(migratedEvents).values({
+              migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
+              status: 'error', errorDetails,
+            }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
+          } catch (dbErr) {
+            console.error(`[calendar] DB write failed for error ${ev.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+          }
+          failed++
+          console.warn(`[calendar] event ${ev.id} error:`, errorDetails.slice(0, 200))
         }
-        try {
-          await db.insert(migratedEvents).values({
-            migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
-            googleEventId: result.id, status: 'success',
-          }).onDuplicateKeyUpdate({ set: { googleEventId: result.id, status: 'success', errorDetails: null } })
-        } catch (dbErr) {
-          console.error(`[calendar] DB write failed for ${ev.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
-        }
-        migrated++
-      } catch (err) {
-        const errorDetails = sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
-        try {
-          await db.insert(migratedEvents).values({
-            migrationId: job.id, graphEventId: ev.id, iCalUid: ev.iCalUId ?? null,
-            status: 'error', errorDetails,
-          }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
-        } catch (dbErr) {
-          console.error(`[calendar] DB write failed for error ${ev.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
-        }
-        failed++
-        console.warn(`[calendar] event ${ev.id} error:`, errorDetails.slice(0, 200))
       }
 
-      if ((migrated + failed) % 25 === 0) {
-        await db.update(migrations)
-          .set({ calTotal: total, calMigrated: migrated, calFailed: failed })
-          .where(eq(migrations.id, job.id))
-      }
+      await db.update(migrations)
+        .set({ calTotal: total, calMigrated: migrated, calFailed: failed })
+        .where(eq(migrations.id, job.id))
+
+      evBatch = await collectBatch(evIterator, BATCH_CONCURRENCY)
     }
 
     const calAllOk = failed === 0
@@ -383,40 +431,55 @@ async function processUserContacts(job: Migration) {
     }
 
     const ctSyncStart = new Date()
-    for await (const ct of iterateOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)) {
-      if (!preCountSet) total++
-      if (skipSet.has(ct.id)) continue
+    const ctIterator = iterateOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)
 
-      try {
-        const result = await googlePeopleCreateContact(job.gohUpn, ct)
-        try {
-          await db.insert(migratedContacts).values({
-            migrationId: job.id, graphContactId: ct.id,
-            googleResourceName: result.resourceName, status: 'success',
-          }).onDuplicateKeyUpdate({ set: { googleResourceName: result.resourceName, status: 'success', errorDetails: null } })
-        } catch (dbErr) {
-          console.error(`[contacts] DB write failed for ${ct.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+    let ctBatch = await collectBatch(ctIterator, BATCH_CONCURRENCY)
+    while (ctBatch.length > 0) {
+      const toProcess = ctBatch.filter((ct) => {
+        if (!preCountSet) total++
+        return !skipSet.has(ct.id)
+      })
+
+      const results = await Promise.allSettled(
+        toProcess.map(async (ct) => {
+          const result = await googlePeopleCreateContact(job.gohUpn!, ct)
+          return { ct, result }
+        })
+      )
+
+      for (let i = 0; i < results.length; i++) {
+        const ct = toProcess[i]!
+        const res = results[i]!
+        if (res.status === 'fulfilled') {
+          try {
+            await db.insert(migratedContacts).values({
+              migrationId: job.id, graphContactId: ct.id,
+              googleResourceName: res.value.result.resourceName, status: 'success',
+            }).onDuplicateKeyUpdate({ set: { googleResourceName: res.value.result.resourceName, status: 'success', errorDetails: null } })
+          } catch (dbErr) {
+            console.error(`[contacts] DB write failed for ${ct.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+          }
+          migrated++
+        } else {
+          const errorDetails = sanitize(res.reason instanceof Error ? res.reason.message : String(res.reason), 2000) ?? 'unknown'
+          try {
+            await db.insert(migratedContacts).values({
+              migrationId: job.id, graphContactId: ct.id,
+              status: 'error', errorDetails,
+            }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
+          } catch (dbErr) {
+            console.error(`[contacts] DB write failed for error ${ct.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
+          }
+          failed++
+          console.warn(`[contacts] ct ${ct.id} error:`, errorDetails.slice(0, 200))
         }
-        migrated++
-      } catch (err) {
-        const errorDetails = sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
-        try {
-          await db.insert(migratedContacts).values({
-            migrationId: job.id, graphContactId: ct.id,
-            status: 'error', errorDetails,
-          }).onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
-        } catch (dbErr) {
-          console.error(`[contacts] DB write failed for error ${ct.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
-        }
-        failed++
-        console.warn(`[contacts] ct ${ct.id} error:`, errorDetails.slice(0, 200))
       }
 
-      if ((migrated + failed) % 25 === 0) {
-        await db.update(migrations)
-          .set({ contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed })
-          .where(eq(migrations.id, job.id))
-      }
+      await db.update(migrations)
+        .set({ contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed })
+        .where(eq(migrations.id, job.id))
+
+      ctBatch = await collectBatch(ctIterator, BATCH_CONCURRENCY)
     }
 
     const ctAllOk = failed === 0
