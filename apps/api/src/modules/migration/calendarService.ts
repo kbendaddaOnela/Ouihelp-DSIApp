@@ -228,7 +228,8 @@ function buildGoogleEvent(g: GraphEvent): GoogleCalendarEvent | null {
       .filter((a) => !!a.emailAddress?.address)
       .map((a) => ({
         email: a.emailAddress.address,
-        displayName: a.emailAddress.name,
+        // Pas de displayName : on laisse Google Calendar résoudre le nom depuis son annuaire
+        // pour éviter les noms fantômes d'Exchange (contacts personnels de l'organisateur)
         optional: a.type === 'optional',
         responseStatus:
           a.status?.response === 'accepted' ? 'accepted'
