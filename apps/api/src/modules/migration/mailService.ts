@@ -216,7 +216,7 @@ export async function* iterateOnelaMessages(
 // Retry sur 429/503/504 (transitoires côté Graph) avec backoff exponentiel
 export async function fetchOnelaMessageMime(userId: string, messageId: string): Promise<string> {
   const RETRYABLE = new Set([429, 503, 504])
-  const MAX_ATTEMPTS = 4
+  const MAX_ATTEMPTS = 5
   let delay = 2000
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -231,9 +231,15 @@ export async function fetchOnelaMessageMime(userId: string, messageId: string): 
     if (!RETRYABLE.has(res.status) || attempt === MAX_ATTEMPTS) {
       throw new Error(`Graph $value error (${res.status}): ${body}`)
     }
-    console.warn(`[mail] $value ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${delay / 1000}s`)
-    await new Promise((r) => setTimeout(r, delay))
-    delay *= 2
+    // Respecter le header Retry-After de Graph (en secondes)
+    const retryAfter = res.headers.get('Retry-After')
+    const waitMs = retryAfter ? Math.max(parseInt(retryAfter, 10) * 1000, 1000) : delay
+    if (attempt <= 2) {
+      // Log seulement les premiers retries pour éviter le spam
+      console.warn(`[mail] $value ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs / 1000}s`)
+    }
+    await new Promise((r) => setTimeout(r, waitMs))
+    delay = Math.min(delay * 2, 16000) // cap à 16s
   }
   throw new Error('fetchOnelaMessageMime: unreachable')
 }
