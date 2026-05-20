@@ -114,11 +114,10 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
     }
   }
 
-  // Crawl depuis les top-level folders (sauf well-known system folders)
+  // Crawl depuis tous les top-level folders (y compris well-known comme inbox)
+  // Les sous-dossiers de la Boîte de réception (AGENCE, DSI, etc.) sont des childFolders d'inbox
   for (const folder of [...folderById.values()]) {
-    if (!wellKnownIds.has(folder.id)) {
-      await crawlChildren(folder.id, folder.displayName)
-    }
+    await crawlChildren(folder.id, folder.path)
   }
 
   return [...folderById.values()]
