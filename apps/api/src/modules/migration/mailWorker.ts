@@ -26,8 +26,12 @@ const MAX_CONCURRENT = 3
 const POLL_INTERVAL_MS = 5000
 const RUNNING = new Map<string, 'mail' | 'calendar' | 'contacts'>()
 
-// Nombre d'items traités en parallèle dans chaque phase (mail, calendar, contacts)
-const BATCH_CONCURRENCY = 10
+// Nombre d'items traités en parallèle dans chaque phase
+// Mail : 5 (Graph $value est agressivement throttlé)
+// Calendar/Contacts : 8 (moins de données par requête)
+const MAIL_CONCURRENCY = 5
+const CAL_CONCURRENCY = 8
+const CONTACTS_CONCURRENCY = 8
 
 /** Collecte `count` items d'un AsyncGenerator (ou moins si épuisé) */
 async function collectBatch<T>(gen: AsyncGenerator<T>, count: number): Promise<T[]> {
@@ -38,6 +42,12 @@ async function collectBatch<T>(gen: AsyncGenerator<T>, count: number): Promise<T
     batch.push(value)
   }
   return batch
+}
+
+/** Délai adaptatif : augmente quand on détecte du throttling (429), diminue sinon */
+function adaptiveThrottle(had429: boolean, currentDelay: number): number {
+  if (had429) return Math.min(currentDelay + 500, 3000) // augmenter jusqu'à 3s max
+  return Math.max(currentDelay - 200, 0) // réduire progressivement
 }
 
 let workerStarted = false
@@ -167,11 +177,12 @@ async function processUserMail(job: Migration) {
     }
 
     let skipped = 0
+    let batchDelay = 0 // délai adaptatif entre les batches (ms)
     const syncStartedAt = new Date()
     const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
 
-    // Traitement par batch de BATCH_CONCURRENCY messages en parallèle
-    let batch = await collectBatch(msgIterator, BATCH_CONCURRENCY)
+    // Traitement par batch de MAIL_CONCURRENCY messages en parallèle
+    let batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
     while (batch.length > 0) {
       // Filtrer les messages déjà migrés
       const toProcess = batch.filter((msg) => {
@@ -257,7 +268,12 @@ async function processUserMail(job: Migration) {
         .set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed })
         .where(eq(migrations.id, job.id))
 
-      batch = await collectBatch(msgIterator, BATCH_CONCURRENCY)
+      // Throttle adaptatif : ralentir si Graph throttle, accélérer sinon
+      const had429 = results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('429'))
+      batchDelay = adaptiveThrottle(had429, batchDelay)
+      if (batchDelay > 0) await new Promise((r) => setTimeout(r, batchDelay))
+
+      batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
     }
 
     const success = failed === 0
@@ -319,7 +335,7 @@ async function processUserCalendar(job: Migration) {
     const calSyncStart = new Date()
     const evIterator = iterateOnelaEvents(job.onelaUserId, job.calLastSyncAt)
 
-    let evBatch = await collectBatch(evIterator, BATCH_CONCURRENCY)
+    let evBatch = await collectBatch(evIterator, CAL_CONCURRENCY)
     while (evBatch.length > 0) {
       const toProcess = evBatch.filter((ev) => {
         if (!preCountSet) total++
@@ -374,7 +390,7 @@ async function processUserCalendar(job: Migration) {
         .set({ calTotal: total, calMigrated: migrated, calFailed: failed })
         .where(eq(migrations.id, job.id))
 
-      evBatch = await collectBatch(evIterator, BATCH_CONCURRENCY)
+      evBatch = await collectBatch(evIterator, CAL_CONCURRENCY)
     }
 
     const calAllOk = failed === 0
@@ -433,7 +449,7 @@ async function processUserContacts(job: Migration) {
     const ctSyncStart = new Date()
     const ctIterator = iterateOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)
 
-    let ctBatch = await collectBatch(ctIterator, BATCH_CONCURRENCY)
+    let ctBatch = await collectBatch(ctIterator, CONTACTS_CONCURRENCY)
     while (ctBatch.length > 0) {
       const toProcess = ctBatch.filter((ct) => {
         if (!preCountSet) total++
@@ -479,7 +495,7 @@ async function processUserContacts(job: Migration) {
         .set({ contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed })
         .where(eq(migrations.id, job.id))
 
-      ctBatch = await collectBatch(ctIterator, BATCH_CONCURRENCY)
+      ctBatch = await collectBatch(ctIterator, CONTACTS_CONCURRENCY)
     }
 
     const ctAllOk = failed === 0
