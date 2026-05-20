@@ -83,7 +83,7 @@ export async function countOnelaEvents(userId: string, since?: Date | null): Pro
   if (since) filter += ` and lastModifiedDateTime gt ${since.toISOString()}`
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$count=true&$top=1&$filter=${encodeURIComponent(filter)}`
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual', Prefer: 'outlook.timezone="UTC"' },
+    headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
   })
   if (!res.ok) throw new Error(`Graph events count error (${res.status}): ${await res.text()}`)
   const data = (await res.json()) as { '@odata.count'?: number }
@@ -101,7 +101,7 @@ export async function* iterateOnelaEvents(
   while (url) {
     const token = await onelaToken()
     const res: Response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="UTC"' },
+      headers: { Authorization: `Bearer ${token}` },
     })
     if (!res.ok) throw new Error(`Graph events error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphEvent[]; '@odata.nextLink'?: string }
@@ -198,16 +198,21 @@ interface GoogleCalendarEvent {
 function buildGoogleEvent(g: GraphEvent): GoogleCalendarEvent | null {
   if (!g.start || !g.end) return null
 
+  // Graph retourne les dates dans la timezone originale de l'événement (sans le header Prefer)
+  // On la passe telle quelle à Google Calendar pour éviter les décalages horaires
+  const startTz = g.start.timeZone || 'Europe/Paris'
+  const endTz = g.end.timeZone || 'Europe/Paris'
+
   const ev: GoogleCalendarEvent = {
     summary: g.subject ?? '(sans titre)',
     description: g.body?.content ?? g.bodyPreview ?? undefined,
     location: g.location?.displayName ?? undefined,
     start: g.isAllDay
       ? { date: g.start.dateTime.slice(0, 10) }
-      : { dateTime: g.start.dateTime.endsWith('Z') || g.start.dateTime.includes('+') ? g.start.dateTime : g.start.dateTime + 'Z', timeZone: g.start.timeZone },
+      : { dateTime: g.start.dateTime.replace(/Z$/, ''), timeZone: startTz },
     end: g.isAllDay
       ? { date: g.end.dateTime.slice(0, 10) }
-      : { dateTime: g.end.dateTime.endsWith('Z') || g.end.dateTime.includes('+') ? g.end.dateTime : g.end.dateTime + 'Z', timeZone: g.end.timeZone },
+      : { dateTime: g.end.dateTime.replace(/Z$/, ''), timeZone: endTz },
     iCalUID: g.iCalUId,
     status: g.isCancelled ? 'cancelled' : 'confirmed',
     reminders: { useDefault: true },
