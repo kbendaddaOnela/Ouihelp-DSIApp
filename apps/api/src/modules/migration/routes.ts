@@ -16,7 +16,7 @@ import {
   checkOnelaMailForwarding,
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
-import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration } from './mailWorker'
+import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop } from './mailWorker'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -411,22 +411,21 @@ migrationRouter.post('/:id/stop/:phase', requirePermission('migration:write'), a
   if (!row) return c.json({ error: 'Not Found' }, 404)
 
   if (phase === 'mail' && (row.stepMailMigration === 'running' || row.stepMailMigration === 'pending')) {
+    // Signaler au worker de s'arrêter au prochain batch
+    signalStop(id, 'mail')
+    // Marquer immédiatement en DB pour le frontend
     await db.update(migrations).set({
-      stepMailMigration: 'error',
-      mailError: 'Arrêt forcé par l\'utilisateur',
-      mailFinishedAt: new Date(),
+      mailError: 'Arrêt en cours…',
     }).where(eq(migrations.id, id))
   } else if (phase === 'calendar' && (row.stepCalendarMigration === 'running' || row.stepCalendarMigration === 'pending')) {
+    signalStop(id, 'calendar')
     await db.update(migrations).set({
-      stepCalendarMigration: 'error',
-      calError: 'Arrêt forcé par l\'utilisateur',
-      calFinishedAt: new Date(),
+      calError: 'Arrêt en cours…',
     }).where(eq(migrations.id, id))
   } else if (phase === 'contacts' && (row.stepContactsMigration === 'running' || row.stepContactsMigration === 'pending')) {
+    signalStop(id, 'contacts')
     await db.update(migrations).set({
-      stepContactsMigration: 'error',
-      contactsError: 'Arrêt forcé par l\'utilisateur',
-      contactsFinishedAt: new Date(),
+      contactsError: 'Arrêt en cours…',
     }).where(eq(migrations.id, id))
   } else {
     return c.json({ error: 'Phase non en cours' }, 400)

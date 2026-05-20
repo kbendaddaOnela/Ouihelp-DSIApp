@@ -26,6 +26,22 @@ const MAX_CONCURRENT = 3
 const POLL_INTERVAL_MS = 5000
 const RUNNING = new Map<string, 'mail' | 'calendar' | 'contacts'>()
 
+// Signaux d'arrêt : quand l'utilisateur clique "Arrêter", on ajoute la clé ici
+// Le worker vérifie entre chaque batch et s'arrête proprement
+const STOP_SIGNALS = new Set<string>()
+
+export function signalStop(migrationId: string, phase: 'mail' | 'calendar' | 'contacts') {
+  STOP_SIGNALS.add(`${migrationId}-${phase}`)
+}
+
+function isStopRequested(migrationId: string, phase: 'mail' | 'calendar' | 'contacts'): boolean {
+  return STOP_SIGNALS.has(`${migrationId}-${phase}`)
+}
+
+function clearStopSignal(migrationId: string, phase: 'mail' | 'calendar' | 'contacts') {
+  STOP_SIGNALS.delete(`${migrationId}-${phase}`)
+}
+
 // Nombre d'items traités en parallèle dans chaque phase
 // Mail : 5 (Graph $value est agressivement throttlé)
 // Calendar/Contacts : 8 (moins de données par requête)
@@ -276,6 +292,22 @@ async function processUserMail(job: Migration) {
         .set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed })
         .where(eq(migrations.id, job.id))
 
+      // Vérifier si l'utilisateur a demandé l'arrêt
+      if (isStopRequested(job.id, 'mail')) {
+        console.log(`[mail] ${job.id}: arrêt demandé — ${migrated} migrés, ${failed} erreurs`)
+        clearStopSignal(job.id, 'mail')
+        await db.update(migrations)
+          .set({
+            stepMailMigration: 'error',
+            mailTotal: total, mailMigrated: migrated, mailFailed: failed,
+            mailFinishedAt: new Date(),
+            mailLastSyncAt: syncStartedAt,
+            mailError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+          })
+          .where(eq(migrations.id, job.id))
+        return
+      }
+
       // Throttle adaptatif : ralentir si Graph throttle, accélérer sinon
       const had429 = results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('429'))
       batchDelay = adaptiveThrottle(had429, batchDelay)
@@ -398,6 +430,20 @@ async function processUserCalendar(job: Migration) {
         .set({ calTotal: total, calMigrated: migrated, calFailed: failed })
         .where(eq(migrations.id, job.id))
 
+      if (isStopRequested(job.id, 'calendar')) {
+        console.log(`[calendar] ${job.id}: arrêt demandé — ${migrated} migrés, ${failed} erreurs`)
+        clearStopSignal(job.id, 'calendar')
+        await db.update(migrations)
+          .set({
+            stepCalendarMigration: 'error',
+            calTotal: total, calMigrated: migrated, calFailed: failed,
+            calFinishedAt: new Date(), calLastSyncAt: calSyncStart,
+            calError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+          })
+          .where(eq(migrations.id, job.id))
+        return
+      }
+
       evBatch = await collectBatch(evIterator, CAL_CONCURRENCY)
     }
 
@@ -502,6 +548,20 @@ async function processUserContacts(job: Migration) {
       await db.update(migrations)
         .set({ contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed })
         .where(eq(migrations.id, job.id))
+
+      if (isStopRequested(job.id, 'contacts')) {
+        console.log(`[contacts] ${job.id}: arrêt demandé — ${migrated} migrés, ${failed} erreurs`)
+        clearStopSignal(job.id, 'contacts')
+        await db.update(migrations)
+          .set({
+            stepContactsMigration: 'error',
+            contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed,
+            contactsFinishedAt: new Date(), contactsLastSyncAt: ctSyncStart,
+            contactsError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+          })
+          .where(eq(migrations.id, job.id))
+        return
+      }
 
       ctBatch = await collectBatch(ctIterator, CONTACTS_CONCURRENCY)
     }
