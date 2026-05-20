@@ -43,11 +43,14 @@ function clearStopSignal(migrationId: string, phase: 'mail' | 'calendar' | 'cont
 }
 
 // Nombre d'items traités en parallèle dans chaque phase
-// Mail : 5 (Graph $value est agressivement throttlé)
-// Calendar/Contacts : 8 (moins de données par requête)
-const MAIL_CONCURRENCY = 5
-const CAL_CONCURRENCY = 8
-const CONTACTS_CONCURRENCY = 8
+// Mail : 2 (Graph $value est TRÈS agressivement throttlé, surtout avec plusieurs jobs)
+// Calendar/Contacts : 5 (moins de données par requête)
+const MAIL_CONCURRENCY = 2
+const CAL_CONCURRENCY = 5
+const CONTACTS_CONCURRENCY = 5
+
+// On limite à 1 seul job mail à la fois pour éviter de saturer le rate limit Graph $value
+const MAX_CONCURRENT_MAIL = 1
 
 /** Collecte `count` items d'un AsyncGenerator (ou moins si épuisé) */
 async function collectBatch<T>(gen: AsyncGenerator<T>, count: number): Promise<T[]> {
@@ -62,8 +65,8 @@ async function collectBatch<T>(gen: AsyncGenerator<T>, count: number): Promise<T
 
 /** Délai adaptatif : augmente quand on détecte du throttling (429), diminue sinon */
 function adaptiveThrottle(had429: boolean, currentDelay: number): number {
-  if (had429) return Math.min(currentDelay + 500, 3000) // augmenter jusqu'à 3s max
-  return Math.max(currentDelay - 200, 0) // réduire progressivement
+  if (had429) return Math.min(currentDelay + 1500, 8000) // augmenter agressivement jusqu'à 8s max
+  return Math.max(currentDelay - 500, 500) // réduire progressivement, minimum 500ms entre batches
 }
 
 let workerStarted = false
@@ -110,8 +113,11 @@ async function pollAndProcess() {
       }
     }
 
+    // Compter combien de jobs mail sont déjà en cours
+    const runningMailCount = [...RUNNING.values()].filter((p) => p === 'mail').length
+
     const key = `${job.id}-mail`
-    if (job.stepMailMigration === 'pending' && !RUNNING.has(key)) {
+    if (job.stepMailMigration === 'pending' && !RUNNING.has(key) && runningMailCount + pending.filter((p) => p.phase === 'mail').length < MAX_CONCURRENT_MAIL) {
       pending.push({ job, phase: 'mail' })
     }
     const keyC = `${job.id}-calendar`
@@ -201,7 +207,7 @@ async function processUserMail(job: Migration) {
     }
 
     let skipped = 0
-    let batchDelay = 0 // délai adaptatif entre les batches (ms)
+    let batchDelay = 500 // délai adaptatif entre les batches (ms), commence à 500ms pour éviter le burst initial
     const syncStartedAt = new Date()
     const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
 
