@@ -58,10 +58,27 @@ interface GraphMessageMeta {
 // l'API /v1.0 standard pour les folders custom. wellKnownName n'est pas exposé sur /v1.0.
 const WELL_KNOWN_ALIASES = ['inbox', 'sentitems', 'drafts', 'deleteditems', 'junkemail', 'archive'] as const
 
+// Dossiers système Exchange à ne PAS migrer (ni eux, ni leurs enfants)
+const SKIP_WELL_KNOWN = new Set(['outbox', 'syncissues', 'rssfeed', 'conversationhistory', 'clutter', 'scheduled', 'recoverableitemsdeletions'])
+
+// displayName français/anglais des dossiers système à ignorer (fallback quand wellKnownName absent)
+const SKIP_DISPLAY_NAMES = new Set([
+  // FR
+  'boîte d\'envoi', 'problèmes de synchronisation', 'conflits',
+  'défaillances du serveur', 'défaillances locales', 'flux rss',
+  'historique des conversations', 'courrier indésirable',
+  // EN
+  'outbox', 'sync issues', 'conflicts', 'server failures',
+  'local failures', 'rss feeds', 'conversation history', 'clutter',
+])
+
 export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   const token = await onelaToken()
   const folderById = new Map<string, GraphFolder>()
   const wellKnownIds = new Set<string>()
+
+  // IDs des dossiers à ignorer complètement (système Exchange)
+  const skipIds = new Set<string>()
 
   // 1. Récupérer les folders well-known via leur alias pour récupérer leur ID réel
   for (const alias of WELL_KNOWN_ALIASES) {
@@ -78,6 +95,20 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
     } catch { /* alias absent (ex: Archive non créée) — on ignore */ }
   }
 
+  // 1b. Détecter les dossiers système à ignorer via well-known aliases
+  for (const alias of SKIP_WELL_KNOWN) {
+    try {
+      const res = await fetch(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      if (res.ok) {
+        const f = (await res.json()) as { id: string }
+        skipIds.add(f.id)
+      }
+    } catch { /* absent — on ignore */ }
+  }
+
   // 2. Lister les folders top-level du user
   let url: string | null =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName`
@@ -86,7 +117,12 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
     if (!res.ok) throw new Error(`Graph folders error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
     for (const f of data.value) {
-      if (!folderById.has(f.id)) {
+      if (!folderById.has(f.id) && !skipIds.has(f.id)) {
+        // Exclure aussi par displayName (fallback si l'alias well-known n'a pas été résolu)
+        if (SKIP_DISPLAY_NAMES.has(f.displayName.toLowerCase())) {
+          skipIds.add(f.id)
+          continue
+        }
         folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName })
       }
     }
@@ -94,7 +130,9 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   }
 
   // 3. Récursion complète sur les sous-dossiers (chemin hiérarchique parent/child/...)
-  async function crawlChildren(parentId: string, parentPath: string): Promise<void> {
+  // parentLabelPath = null signifie que les enfants directs utilisent juste leur displayName
+  // (c'est le cas pour les dossiers well-known comme inbox, sent, etc.)
+  async function crawlChildren(parentId: string, parentLabelPath: string | null): Promise<void> {
     let childUrl: string | null =
       `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName`
     while (childUrl) {
@@ -103,8 +141,14 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
         if (!res.ok) break
         const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
         for (const f of data.value) {
+          // Ignorer les sous-dossiers système (ex: enfants de "Problèmes de synchronisation")
+          if (skipIds.has(f.id) || SKIP_DISPLAY_NAMES.has(f.displayName.toLowerCase())) {
+            skipIds.add(f.id)
+            continue
+          }
           if (!folderById.has(f.id)) {
-            const childPath = `${parentPath}/${f.displayName}`
+            // Si parentLabelPath est null, le sous-dossier devient un label racine (ex: inbox/Acer → "Acer")
+            const childPath = parentLabelPath ? `${parentLabelPath}/${f.displayName}` : f.displayName
             folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath })
             await crawlChildren(f.id, childPath)
           }
@@ -115,9 +159,13 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   }
 
   // Crawl depuis tous les top-level folders (y compris well-known comme inbox)
-  // Les sous-dossiers de la Boîte de réception (AGENCE, DSI, etc.) sont des childFolders d'inbox
+  // Pour les dossiers well-known mappés vers un label système (inbox→INBOX, sent→SENT...),
+  // les sous-dossiers deviennent des labels racine (sans préfixe "Boîte de réception/")
   for (const folder of [...folderById.values()]) {
-    await crawlChildren(folder.id, folder.path)
+    if (skipIds.has(folder.id)) continue
+    const isWellKnown = folder.wellKnownName && SYSTEM_LABEL_MAP[folder.wellKnownName]
+    // well-known → enfants sans préfixe ; custom → enfants avec préfixe hiérarchique
+    await crawlChildren(folder.id, isWellKnown ? null : folder.path)
   }
 
   return [...folderById.values()]
