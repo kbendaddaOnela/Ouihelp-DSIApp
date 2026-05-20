@@ -39,6 +39,7 @@ async function onelaToken(): Promise<string> {
 interface GraphFolder {
   id: string
   displayName: string
+  path: string
   wellKnownName?: string
 }
 
@@ -60,6 +61,7 @@ const WELL_KNOWN_ALIASES = ['inbox', 'sentitems', 'drafts', 'deleteditems', 'jun
 export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   const token = await onelaToken()
   const folderById = new Map<string, GraphFolder>()
+  const wellKnownIds = new Set<string>()
 
   // 1. Récupérer les folders well-known via leur alias pour récupérer leur ID réel
   for (const alias of WELL_KNOWN_ALIASES) {
@@ -70,39 +72,52 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
       )
       if (res.ok) {
         const f = (await res.json()) as { id: string; displayName: string }
-        folderById.set(f.id, { id: f.id, displayName: f.displayName, wellKnownName: alias })
+        folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName, wellKnownName: alias })
+        wellKnownIds.add(f.id)
       }
     } catch { /* alias absent (ex: Archive non créée) — on ignore */ }
   }
 
-  // 2. Lister tous les folders du user (sans wellKnownName)
+  // 2. Lister les folders top-level du user
   let url: string | null =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName`
   while (url) {
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph folders error (${res.status}): ${await res.text()}`)
-    const data = (await res.json()) as { value: GraphFolder[]; '@odata.nextLink'?: string }
+    const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
     for (const f of data.value) {
-      if (!folderById.has(f.id)) folderById.set(f.id, { id: f.id, displayName: f.displayName })
+      if (!folderById.has(f.id)) {
+        folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName })
+      }
     }
     url = data['@odata.nextLink'] ?? null
   }
 
-  // 3. Lister récursivement les sous-folders (1 niveau de profondeur suffit pour la v1)
-  const topFolders = [...folderById.values()]
-  for (const parent of topFolders) {
+  // 3. Récursion complète sur les sous-dossiers (chemin hiérarchique parent/child/...)
+  async function crawlChildren(parentId: string, parentPath: string): Promise<void> {
     let childUrl: string | null =
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parent.id}/childFolders?$top=100&$select=id,displayName`
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName`
     while (childUrl) {
       try {
         const res: Response = await fetch(childUrl, { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) break
-        const data = (await res.json()) as { value: GraphFolder[]; '@odata.nextLink'?: string }
+        const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
         for (const f of data.value) {
-          if (!folderById.has(f.id)) folderById.set(f.id, { id: f.id, displayName: f.displayName })
+          if (!folderById.has(f.id)) {
+            const childPath = `${parentPath}/${f.displayName}`
+            folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath })
+            await crawlChildren(f.id, childPath)
+          }
         }
         childUrl = data['@odata.nextLink'] ?? null
       } catch { break }
+    }
+  }
+
+  // Crawl depuis les top-level folders (sauf well-known system folders)
+  for (const folder of [...folderById.values()]) {
+    if (!wellKnownIds.has(folder.id)) {
+      await crawlChildren(folder.id, folder.displayName)
     }
   }
 
@@ -233,8 +248,8 @@ export async function buildLabelResolver(
       folderToLabelIds.set(f.id, [SYSTEM_LABEL_MAP[wkn]])
       continue
     }
-    // Folder custom → label Gmail au même nom
-    const labelName = f.displayName
+    // Folder custom → label Gmail avec le chemin hiérarchique (parent/child → "parent/child" dans Gmail)
+    const labelName = f.path
     let labelId = byName.get(labelName.toLowerCase())
     if (!labelId) {
       try {
