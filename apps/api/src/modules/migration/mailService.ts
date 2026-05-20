@@ -159,7 +159,9 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
           }
           if (!folderById.has(f.id)) {
             // Si parentLabelPath est null, le sous-dossier devient un label racine (ex: inbox/Acer → "Acer")
-            const childPath = parentLabelPath ? `${parentLabelPath}/${f.displayName}` : f.displayName
+            // Trim les espaces des noms de dossiers Exchange (certains ont des espaces en fin)
+            const cleanName = f.displayName.trim()
+            const childPath = parentLabelPath ? `${parentLabelPath}/${cleanName}` : cleanName
             folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath })
             await crawlChildren(f.id, childPath)
           }
@@ -291,6 +293,18 @@ const SYSTEM_LABEL_MAP: Record<string, string> = {
   archive: 'INBOX', // Pas d'équivalent Archive Gmail, on garde dans INBOX (Gmail "All Mail" est implicite)
 }
 
+// Noms de labels réservés par Gmail (en toutes langues) — on ne peut pas les créer comme label custom
+// On mappe vers le label système correspondant
+const GMAIL_RESERVED_NAMES: Record<string, string> = {
+  // FR
+  'boîte de réception': 'INBOX', 'éléments envoyés': 'SENT', 'brouillons': 'DRAFT',
+  'corbeille': 'TRASH', 'spam': 'SPAM', 'courrier indésirable': 'SPAM',
+  'éléments supprimés': 'TRASH', 'important': 'IMPORTANT', 'favoris': 'STARRED',
+  // EN
+  'inbox': 'INBOX', 'sent': 'SENT', 'sent mail': 'SENT', 'drafts': 'DRAFT',
+  'draft': 'DRAFT', 'trash': 'TRASH', 'junk': 'SPAM', 'starred': 'STARRED',
+}
+
 export interface LabelResolver {
   resolve(folder: GraphFolder): Promise<string[]>
   /** Résout les catégories Outlook en IDs de labels Gmail (crée les labels à la volée si besoin) */
@@ -312,8 +326,22 @@ export async function buildLabelResolver(
       folderToLabelIds.set(f.id, [SYSTEM_LABEL_MAP[wkn]])
       continue
     }
-    // Folder custom → label Gmail avec le chemin hiérarchique (parent/child → "parent/child" dans Gmail)
-    const labelName = f.path
+
+    // Nettoyer le nom du label : trim espaces, supprimer les "/" en fin
+    const labelName = f.path.replace(/\s+\//g, '/').replace(/\/\s+/g, '/').replace(/\s+$/gm, '').trim()
+    if (!labelName) {
+      folderToLabelIds.set(f.id, ['INBOX'])
+      continue
+    }
+
+    // Vérifier si c'est un nom réservé par Gmail (ex: "Brouillons", "Éléments supprimés")
+    const reservedLabel = GMAIL_RESERVED_NAMES[labelName.toLowerCase()]
+    if (reservedLabel) {
+      folderToLabelIds.set(f.id, [reservedLabel])
+      continue
+    }
+
+    // Chercher un label existant (par nom exact ou trimé)
     let labelId = byName.get(labelName.toLowerCase())
     if (!labelId) {
       try {
@@ -321,8 +349,19 @@ export async function buildLabelResolver(
         labelId = created.id
         byName.set(labelName.toLowerCase(), labelId)
       } catch (err) {
-        console.error(`[mail] create label "${labelName}" échoué:`, err instanceof Error ? err.message : err)
-        labelId = 'INBOX' // fallback
+        const errMsg = err instanceof Error ? err.message : String(err)
+        // 409 = label existe déjà → rafraîchir la liste et chercher par nom
+        if (errMsg.includes('409')) {
+          try {
+            const freshLabels = await listGmailLabels(userEmail)
+            for (const l of freshLabels) byName.set(l.name.toLowerCase(), l.id)
+            labelId = byName.get(labelName.toLowerCase())
+          } catch { /* ignore refresh failure */ }
+        }
+        if (!labelId) {
+          console.error(`[mail] create label "${labelName}" échoué:`, errMsg.slice(0, 200))
+          labelId = 'INBOX' // fallback ultime
+        }
       }
     }
     folderToLabelIds.set(f.id, [labelId])
