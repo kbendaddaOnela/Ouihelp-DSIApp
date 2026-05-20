@@ -80,8 +80,8 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   // IDs des dossiers à ignorer complètement (système Exchange)
   const skipIds = new Set<string>()
 
-  // 1. Récupérer les folders well-known via leur alias pour récupérer leur ID réel
-  for (const alias of WELL_KNOWN_ALIASES) {
+  // 1. Récupérer en parallèle les folders well-known + ceux à ignorer
+  const wellKnownPromises = WELL_KNOWN_ALIASES.map(async (alias) => {
     try {
       const res = await fetch(
         `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName`,
@@ -89,14 +89,13 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
       )
       if (res.ok) {
         const f = (await res.json()) as { id: string; displayName: string }
-        folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName, wellKnownName: alias })
-        wellKnownIds.add(f.id)
+        return { type: 'keep' as const, alias, id: f.id, displayName: f.displayName }
       }
-    } catch { /* alias absent (ex: Archive non créée) — on ignore */ }
-  }
+    } catch { /* alias absent */ }
+    return null
+  })
 
-  // 1b. Détecter les dossiers système à ignorer via well-known aliases
-  for (const alias of SKIP_WELL_KNOWN) {
+  const skipPromises = [...SKIP_WELL_KNOWN].map(async (alias) => {
     try {
       const res = await fetch(
         `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id`,
@@ -104,9 +103,21 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
       )
       if (res.ok) {
         const f = (await res.json()) as { id: string }
-        skipIds.add(f.id)
+        return { type: 'skip' as const, id: f.id }
       }
-    } catch { /* absent — on ignore */ }
+    } catch { /* absent */ }
+    return null
+  })
+
+  const allResults = await Promise.all([...wellKnownPromises, ...skipPromises])
+  for (const r of allResults) {
+    if (!r) continue
+    if (r.type === 'keep') {
+      folderById.set(r.id, { id: r.id, displayName: r.displayName, path: r.displayName, wellKnownName: r.alias })
+      wellKnownIds.add(r.id)
+    } else {
+      skipIds.add(r.id)
+    }
   }
 
   // 2. Lister les folders top-level du user
