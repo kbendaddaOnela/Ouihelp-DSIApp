@@ -160,6 +160,14 @@ async function processUserMail(job: Migration) {
     const folderById = new Map<string, GraphFolder>(folders.map((f) => [f.id, f]))
     const resolver = await buildLabelResolver(job.gohUpn, folders)
 
+    // Log diagnostic : lister les dossiers découverts et leurs labels Gmail
+    const customFolders = folders.filter((f) => !f.wellKnownName)
+    console.log(`[mail] ${job.id}: ${folders.length} dossiers Exchange (${customFolders.length} custom)`)
+    for (const f of customFolders.slice(0, 20)) {
+      const labels = await resolver.resolve(f)
+      console.log(`[mail]   folder "${f.path}" (${f.id.slice(0, 16)}…) → labels: ${JSON.stringify(labels)}`)
+    }
+
     let migrated = alreadySuccess
     let failed = 0 // Les erreurs vont être retentées, on ne les compte pas d'avance
     // En delta : total = messages déjà traités (en DB) + nouveaux messages ; en resume : total = tous

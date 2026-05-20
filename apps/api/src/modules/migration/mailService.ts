@@ -430,40 +430,65 @@ export async function gmailImportMime(params: {
   const labelIds = [...params.labelIds]
   if (!params.isRead && !labelIds.includes('UNREAD')) labelIds.push('UNREAD')
 
-  // 1) Essai avec messages.import (préserve les métadonnées, plus strict)
-  const importUrl = new URL(
-    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/import`
+  // 1) Essai avec messages.insert (bypass la classification Gmail → respecte les labels exactement)
+  //    messages.import applique la classification standard de Gmail et peut ignorer les labels custom
+  const insertUrl = new URL(
+    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
   )
-  importUrl.searchParams.set('internalDateSource', 'dateHeader')
-  importUrl.searchParams.set('neverMarkSpam', 'true')
-  importUrl.searchParams.set('processForCalendar', 'false')
-  importUrl.searchParams.set('deleted', 'false')
+  insertUrl.searchParams.set('internalDateSource', 'dateHeader')
+  insertUrl.searchParams.set('deleted', 'false')
 
-  const importRes = await fetch(importUrl.toString(), {
+  const insertRes = await fetch(insertUrl.toString(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ raw, labelIds }),
   })
 
-  if (importRes.ok) return (await importRes.json()) as { id: string }
+  if (insertRes.ok) return (await insertRes.json()) as { id: string }
 
-  const importErr = await importRes.text()
+  const insertErr = await insertRes.text()
 
-  // 2) Si erreur 400 (headers malformés), fallback sur messages.insert (plus tolérant)
-  if (importRes.status === 400) {
-    console.warn(`[mail] import 400, fallback insert: ${importErr.slice(0, 120)}`)
-    const insertUrl = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
-    const insertRes = await fetch(insertUrl, {
+  // 2) Si erreur 400 (headers malformés), fallback sur messages.import (plus tolérant sur le MIME)
+  if (insertRes.status === 400) {
+    console.warn(`[mail] insert 400, fallback import: ${insertErr.slice(0, 120)}`)
+    const importUrl = new URL(
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/import`
+    )
+    importUrl.searchParams.set('internalDateSource', 'dateHeader')
+    importUrl.searchParams.set('neverMarkSpam', 'true')
+    importUrl.searchParams.set('processForCalendar', 'false')
+    importUrl.searchParams.set('deleted', 'false')
+
+    const importRes = await fetch(importUrl.toString(), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw, labelIds, internalDateSource: 'dateHeader' }),
+      body: JSON.stringify({ raw, labelIds }),
     })
-    if (insertRes.ok) return (await insertRes.json()) as { id: string }
-    const insertErr = await insertRes.text()
-    throw new Error(`Gmail insert error (${insertRes.status}): ${insertErr}`)
+
+    if (importRes.ok) {
+      // messages.import peut ignorer les labels custom → on les force avec messages.modify
+      const result = (await importRes.json()) as { id: string; labelIds?: string[] }
+      const appliedLabels = new Set(result.labelIds ?? [])
+      const missingLabels = labelIds.filter((l) => !appliedLabels.has(l))
+      if (missingLabels.length > 0) {
+        try {
+          await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/${result.id}/modify`,
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ addLabelIds: missingLabels }),
+            }
+          )
+        } catch { /* best effort */ }
+      }
+      return result
+    }
+    const importErr = await importRes.text()
+    throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
   }
 
-  throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
+  throw new Error(`Gmail insert error (${insertRes.status}): ${insertErr}`)
 }
 
 export type { GraphFolder, GraphMessageMeta }
