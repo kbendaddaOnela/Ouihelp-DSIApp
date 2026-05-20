@@ -236,8 +236,8 @@ export async function fetchOnelaMessageMime(userId: string, messageId: string): 
     // Respecter le header Retry-After de Graph (en secondes)
     const retryAfter = res.headers.get('Retry-After')
     const waitMs = retryAfter ? Math.max(parseInt(retryAfter, 10) * 1000, 1000) : delay
-    if (attempt <= 2) {
-      // Log seulement les premiers retries pour éviter le spam
+    if (attempt === 1) {
+      // Log seulement le premier retry pour éviter le spam
       console.warn(`[mail] $value ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs / 1000}s`)
     }
     await new Promise((r) => setTimeout(r, waitMs))
@@ -461,34 +461,47 @@ export async function gmailImportMime(params: {
   isDraft?: boolean
   isRead?: boolean
 }): Promise<{ id: string }> {
-  const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
-
   const sanitizedMime = fixDuplicateHeaders(params.rawMime)
   const raw = mimeToBase64Url(sanitizedMime)
 
   const labelIds = [...params.labelIds]
   if (!params.isRead && !labelIds.includes('UNREAD')) labelIds.push('UNREAD')
 
-  // 1) Essai avec messages.insert (bypass la classification Gmail → respecte les labels exactement)
-  //    messages.import applique la classification standard de Gmail et peut ignorer les labels custom
-  const insertUrl = new URL(
-    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
-  )
-  insertUrl.searchParams.set('internalDateSource', 'dateHeader')
-  insertUrl.searchParams.set('deleted', 'false')
+  // Retry sur 502/503/429 Gmail (erreurs transitoires)
+  const GMAIL_RETRYABLE = new Set([429, 502, 503])
+  const MAX_GMAIL_ATTEMPTS = 3
+  let lastError = ''
 
-  const insertRes = await fetch(insertUrl.toString(), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ raw, labelIds }),
-  })
+  for (let attempt = 1; attempt <= MAX_GMAIL_ATTEMPTS; attempt++) {
+    const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
 
-  if (insertRes.ok) return (await insertRes.json()) as { id: string }
+    // 1) Essai avec messages.insert (bypass la classification Gmail → respecte les labels exactement)
+    const insertUrl = new URL(
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
+    )
+    insertUrl.searchParams.set('internalDateSource', 'dateHeader')
+    insertUrl.searchParams.set('deleted', 'false')
 
-  const insertErr = await insertRes.text()
+    const insertRes = await fetch(insertUrl.toString(), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw, labelIds }),
+    })
 
-  // 2) Si erreur 400 (headers malformés), fallback sur messages.import (plus tolérant sur le MIME)
-  if (insertRes.status === 400) {
+    if (insertRes.ok) return (await insertRes.json()) as { id: string }
+
+    const insertErr = await insertRes.text()
+
+    // Retry sur erreurs transitoires Gmail (502, 503, 429)
+    if (GMAIL_RETRYABLE.has(insertRes.status) && attempt < MAX_GMAIL_ATTEMPTS) {
+      const waitMs = insertRes.status === 429 ? 5000 : 2000 * attempt
+      console.warn(`[mail] Gmail insert ${insertRes.status} — retry ${attempt}/${MAX_GMAIL_ATTEMPTS} dans ${waitMs / 1000}s`)
+      await new Promise((r) => setTimeout(r, waitMs))
+      continue
+    }
+
+    // 2) Si erreur 400 (headers malformés), fallback sur messages.import (plus tolérant sur le MIME)
+    if (insertRes.status === 400) {
     console.warn(`[mail] insert 400, fallback import: ${insertErr.slice(0, 120)}`)
     const importUrl = new URL(
       `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/import`
@@ -527,7 +540,11 @@ export async function gmailImportMime(params: {
     throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
   }
 
-  throw new Error(`Gmail insert error (${insertRes.status}): ${insertErr}`)
+    lastError = `Gmail insert error (${insertRes.status}): ${insertErr}`
+    break // Non-retryable error, exit loop
+  }
+
+  throw new Error(lastError || 'Gmail import: all attempts failed')
 }
 
 export type { GraphFolder, GraphMessageMeta }
