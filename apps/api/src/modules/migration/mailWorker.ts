@@ -12,6 +12,7 @@ import {
   listOnelaFolders,
   buildLabelResolver,
   gmailImportMime,
+  gmailModifyLabels,
   type GraphFolder,
 } from './mailService'
 import { countOnelaEvents, iterateOnelaEvents, googleCalendarImportEvent } from './calendarService'
@@ -624,4 +625,109 @@ export async function enqueueContactsMigration(migrationId: string): Promise<voi
   await db.update(migrations)
     .set({ stepContactsMigration: 'pending', contactsError: null, contactsStartedAt: null, contactsFinishedAt: null })
     .where(and(eq(migrations.id, migrationId)))
+}
+
+// ── Re-labelliser les messages déjà migrés ─────────────────────────────────
+// Parcourt les messages Graph, retrouve le gmailMessageId en DB, et applique les bons labels
+// via Gmail messages.modify — SANS re-télécharger les MIME
+const RELABEL_CONCURRENCY = 3
+
+export async function relabelMail(migrationId: string): Promise<{ relabeled: number; errors: number }> {
+  const [job] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
+  if (!job || !job.gohUpn) throw new Error('Migration introuvable ou gohUpn manquant')
+
+  console.log(`[relabel] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
+
+  // Charger les messages migrés avec succès (graphMessageId → gmailMessageId)
+  const migratedRows = await db
+    .select({ graphMessageId: migratedMessages.graphMessageId, gmailMessageId: migratedMessages.gmailMessageId })
+    .from(migratedMessages)
+    .where(and(eq(migratedMessages.migrationId, migrationId), eq(migratedMessages.status, 'success')))
+
+  const graphToGmail = new Map<string, string>()
+  for (const r of migratedRows) {
+    if (r.gmailMessageId) graphToGmail.set(r.graphMessageId, r.gmailMessageId)
+  }
+  console.log(`[relabel] ${graphToGmail.size} messages migrés à re-labelliser`)
+
+  if (graphToGmail.size === 0) return { relabeled: 0, errors: 0 }
+
+  // Construire le resolver de labels (avec la logique corrigée)
+  const folders = await listOnelaFolders(job.onelaUserId)
+  const folderById = new Map<string, GraphFolder>(folders.map((f) => [f.id, f]))
+  const resolver = await buildLabelResolver(job.gohUpn, folders)
+
+  // Labels système Gmail qui ne doivent pas être retirés (UNREAD, IMPORTANT, STARRED, etc.)
+  const KEEP_LABELS = new Set(['UNREAD', 'IMPORTANT', 'STARRED', 'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS'])
+
+  let relabeled = 0
+  let errors = 0
+  let processed = 0
+
+  // Itérer tous les messages Graph pour obtenir leur parentFolderId actuel
+  const msgIterator = iterateOnelaMessages(job.onelaUserId)
+  let batch = await collectBatch(msgIterator, RELABEL_CONCURRENCY)
+
+  while (batch.length > 0) {
+    const toProcess = batch.filter((msg) => graphToGmail.has(msg.id))
+
+    if (toProcess.length > 0) {
+      const results = await Promise.allSettled(
+        toProcess.map(async (msg) => {
+          const gmailId = graphToGmail.get(msg.id)!
+          const folder = msg.parentFolderId ? folderById.get(msg.parentFolderId) : undefined
+          const folderLabels = folder ? await resolver.resolve(folder) : ['INBOX']
+          const categoryLabels = msg.categories?.length
+            ? await resolver.resolveCategories(msg.categories)
+            : []
+          const targetLabels = [...new Set([...folderLabels, ...categoryLabels])]
+          const finalLabels = msg.isDraft ? ['DRAFT'] : targetLabels
+
+          // Ajouter les labels corrects, retirer INBOX si le message ne devrait pas y être
+          const addLabels = finalLabels.filter((l) => l !== 'INBOX') // on ajoute les labels custom
+          const removeLabels: string[] = []
+
+          // Si le message devrait être dans un label custom (pas INBOX), on retire INBOX
+          if (!finalLabels.includes('INBOX') && addLabels.length > 0) {
+            removeLabels.push('INBOX')
+          }
+
+          if (addLabels.length > 0 || removeLabels.length > 0) {
+            await gmailModifyLabels({
+              userEmail: job.gohUpn!,
+              messageId: gmailId,
+              addLabelIds: addLabels,
+              removeLabelIds: removeLabels,
+            })
+          }
+          return true
+        })
+      )
+
+      for (const res of results) {
+        if (res.status === 'fulfilled') relabeled++
+        else {
+          errors++
+          if (errors <= 5) console.warn(`[relabel] error:`, res.reason instanceof Error ? res.reason.message : res.reason)
+        }
+      }
+    }
+
+    processed += batch.length
+    if (processed % 500 === 0) console.log(`[relabel] ${job.id}: ${processed} parcourus, ${relabeled} re-labellisés, ${errors} erreurs`)
+
+    // Vérifier signal d'arrêt
+    if (isStopRequested(migrationId, 'mail')) {
+      console.log(`[relabel] ${job.id}: arrêt demandé — ${relabeled} re-labellisés, ${errors} erreurs`)
+      clearStopSignal(migrationId, 'mail')
+      break
+    }
+
+    // Petit délai pour ne pas saturer les APIs
+    await new Promise((r) => setTimeout(r, 300))
+    batch = await collectBatch(msgIterator, RELABEL_CONCURRENCY)
+  }
+
+  console.log(`[relabel] done ${job.id}: ${relabeled} re-labellisés, ${errors} erreurs sur ${processed} parcourus`)
+  return { relabeled, errors }
 }

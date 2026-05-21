@@ -16,7 +16,7 @@ import {
   checkOnelaMailForwarding,
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
-import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop } from './mailWorker'
+import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -400,6 +400,33 @@ migrationRouter.delete('/:id', requirePermission('migration:write'), async (c) =
   await db.delete(migratedContacts).where(eq(migratedContacts.migrationId, id))
   await db.delete(migrations).where(eq(migrations.id, id))
   return c.json({ deleted: id })
+})
+
+// ── Re-labelliser les messages déjà migrés (corrige les labels sans re-migrer) ──
+migrationRouter.post('/:id/relabel-mail', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé' }, 400)
+
+  // Mettre un statut temporaire pour indiquer que c'est en cours
+  await db.update(migrations).set({ mailError: 'Re-labellisation en cours…' }).where(eq(migrations.id, id))
+
+  // Lancer en background (ne bloque pas la réponse HTTP)
+  relabelMail(id)
+    .then(async (result) => {
+      const msg = result.errors > 0
+        ? `Re-labellisation terminée : ${result.relabeled} OK, ${result.errors} erreurs`
+        : `Re-labellisation terminée : ${result.relabeled} messages corrigés`
+      await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, id))
+    })
+    .catch(async (err) => {
+      const msg = `Re-labellisation échouée : ${err instanceof Error ? err.message : String(err)}`
+      await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, id))
+    })
+
+  return c.json({ message: 'Re-labellisation lancée en background' }, 202)
 })
 
 // ── Forcer l'arrêt d'une phase (running → error) ────────────────────────────

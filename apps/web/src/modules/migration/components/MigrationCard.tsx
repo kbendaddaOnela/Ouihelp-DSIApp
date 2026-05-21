@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle } from 'lucide-react'
+import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle, Tags } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
@@ -18,6 +18,7 @@ import {
   useSetForwarding,
   useRemoveForwarding,
   useForwardingStatus,
+  useRelabelMail,
 } from '../hooks/useMigration'
 
 export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationRecord; defaultExpanded?: boolean }) {
@@ -36,7 +37,9 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   const { mutate: moveOu, isPending: isMovingOu } = useMoveOu()
   const { mutate: setForwarding, isPending: isSettingFwd } = useSetForwarding()
   const { mutate: removeForwarding, isPending: isRemovingFwd } = useRemoveForwarding()
+  const { mutate: relabelMail, isPending: isRelabeling } = useRelabelMail()
   const [fwdMessage, setFwdMessage] = useState<string | null>(null)
+  const [relabelMessage, setRelabelMessage] = useState<string | null>(null)
 
   const hasError = m.stepCreateAccount === 'error'
   const accountReady = m.stepCreateAccount === 'success' || m.stepCreateAccount === 'skipped'
@@ -216,6 +219,34 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                     startedAt={m.mailStartedAt} finishedAt={m.mailFinishedAt}
                     lastSyncAt={m.mailLastSyncAt} color="purple"
                   />
+                  {/* Bouton re-labelliser : visible si des mails ont été migrés et la phase n'est pas en cours */}
+                  {m.mailMigrated > 0 && !['pending', 'running'].includes(m.stepMailMigration) && (
+                    <div className="mt-2 space-y-1">
+                      <button
+                        onClick={() => {
+                          setRelabelMessage(null)
+                          relabelMail(m.id, {
+                            onSuccess: () => setRelabelMessage('Re-labellisation lancée en arrière-plan'),
+                            onError: (err: unknown) => {
+                              const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+                                ?? (err instanceof Error ? err.message : 'Erreur')
+                              setRelabelMessage(msg)
+                            },
+                          })
+                        }}
+                        disabled={isRelabeling}
+                        className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-60"
+                      >
+                        <Tags className={cn('h-3 w-3', isRelabeling && 'animate-spin')} />
+                        {isRelabeling ? 'Lancement...' : 'Re-labelliser les mails'}
+                      </button>
+                      {relabelMessage && (
+                        <p className={cn('rounded px-2 py-1 text-xs',
+                          relabelMessage.includes('lancée') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                        )}>{relabelMessage}</p>
+                      )}
+                    </div>
+                  )}
                 </StepBlock>
 
                 <StepBlock number={2} label="Calendrier">

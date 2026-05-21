@@ -62,6 +62,9 @@ export const migrationApi = {
   reset: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
     apiClient.post<MigrationRecord>(`/migration/${id}/reset/${phase}`).then((r) => r.data),
 
+  relabelMail: (id: string) =>
+    apiClient.post<{ message: string }>(`/migration/${id}/relabel-mail`).then((r) => r.data),
+
   moveOu: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/move-ou`).then((r) => r.data),
 
