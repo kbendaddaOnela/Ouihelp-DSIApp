@@ -547,4 +547,29 @@ export async function gmailImportMime(params: {
   throw new Error(lastError || 'Gmail import: all attempts failed')
 }
 
+// Modifier les labels d'un message Gmail existant (ajouter + retirer)
+export async function gmailModifyLabels(params: {
+  userEmail: string
+  messageId: string
+  addLabelIds: string[]
+  removeLabelIds: string[]
+}): Promise<void> {
+  const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
+  const res = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/${params.messageId}/modify`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        addLabelIds: params.addLabelIds,
+        removeLabelIds: params.removeLabelIds,
+      }),
+    }
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Gmail modify error (${res.status}): ${err}`)
+  }
+}
+
 export type { GraphFolder, GraphMessageMeta }

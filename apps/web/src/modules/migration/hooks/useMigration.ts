@@ -157,6 +157,14 @@ export function useResetPhase() {
   })
 }
 
+export function useRelabelMail() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.relabelMail(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
 export function useMoveOu() {
   const qc = useQueryClient()
   return useMutation({
