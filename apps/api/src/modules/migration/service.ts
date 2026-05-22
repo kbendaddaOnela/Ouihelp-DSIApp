@@ -7,7 +7,7 @@ interface TokenCache {
 
 const tokenCache = new Map<string, TokenCache>()
 
-async function getAccessToken(tenantId: string, clientId: string, clientSecret: string, scope = 'https://graph.microsoft.com/.default'): Promise<string> {
+export async function getAccessToken(tenantId: string, clientId: string, clientSecret: string, scope = 'https://graph.microsoft.com/.default'): Promise<string> {
   const cacheKey = `${tenantId}:${clientId}:${scope}`
   const cached = tokenCache.get(cacheKey)
   if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token

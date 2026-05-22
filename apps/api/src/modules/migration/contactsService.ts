@@ -2,6 +2,7 @@
 // Lecture Graph (Contacts.Read App) → Écriture People API (impersonation user)
 
 import { getGoogleAccessTokenForUser } from './googleService'
+import { getAccessToken } from './service'
 
 const CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts'
 
@@ -10,19 +11,7 @@ async function onelaToken(): Promise<string> {
   const cid = process.env['ONELA_CLIENT_ID']
   const sec = process.env['ONELA_CLIENT_SECRET']
   if (!tid || !cid || !sec) throw new Error('ONELA Graph credentials manquantes')
-  const res = await fetch(`https://login.microsoftonline.com/${tid}/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: cid,
-      client_secret: sec,
-      scope: 'https://graph.microsoft.com/.default',
-    }),
-  })
-  if (!res.ok) throw new Error(`ONELA token error (${res.status}): ${await res.text()}`)
-  const data = (await res.json()) as { access_token: string }
-  return data.access_token
+  return getAccessToken(tid, cid, sec)
 }
 
 interface GraphContact {

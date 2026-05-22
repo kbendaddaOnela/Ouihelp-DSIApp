@@ -632,7 +632,7 @@ export async function enqueueContactsMigration(migrationId: string): Promise<voi
 // via Gmail messages.modify — SANS re-télécharger les MIME
 const RELABEL_CONCURRENCY = 3
 
-export async function relabelMail(migrationId: string): Promise<{ relabeled: number; errors: number }> {
+export async function relabelMail(migrationId: string): Promise<{ relabeled: number; skipped: number; errors: number; errorSamples: string[] }> {
   const [job] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
   if (!job || !job.gohUpn) throw new Error('Migration introuvable ou gohUpn manquant')
 
@@ -650,19 +650,25 @@ export async function relabelMail(migrationId: string): Promise<{ relabeled: num
   }
   console.log(`[relabel] ${graphToGmail.size} messages migrés à re-labelliser`)
 
-  if (graphToGmail.size === 0) return { relabeled: 0, errors: 0 }
+  if (graphToGmail.size === 0) return { relabeled: 0, skipped: 0, errors: 0, errorSamples: [] }
 
   // Construire le resolver de labels (avec la logique corrigée)
   const folders = await listOnelaFolders(job.onelaUserId)
   const folderById = new Map<string, GraphFolder>(folders.map((f) => [f.id, f]))
   const resolver = await buildLabelResolver(job.gohUpn, folders)
 
-  // Labels système Gmail qui ne doivent pas être retirés (UNREAD, IMPORTANT, STARRED, etc.)
-  const KEEP_LABELS = new Set(['UNREAD', 'IMPORTANT', 'STARRED', 'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS'])
-
   let relabeled = 0
+  let skipped = 0
   let errors = 0
   let processed = 0
+  const errorSamples: string[] = [] // Garder les 20 premières erreurs pour le rapport
+  const errorCounts = new Map<string, number>() // Compter les erreurs par type
+
+  // Mettre à jour le statut en DB pour le suivi en temps réel
+  const updateProgress = async () => {
+    const msg = `Re-labellisation en cours… ${relabeled} OK, ${skipped} ignorés, ${errors} erreurs (${processed} parcourus)`
+    await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, job.id))
+  }
 
   // Itérer tous les messages Graph pour obtenir leur parentFolderId actuel
   const msgIterator = iterateOnelaMessages(job.onelaUserId)
@@ -684,37 +690,51 @@ export async function relabelMail(migrationId: string): Promise<{ relabeled: num
           const finalLabels = msg.isDraft ? ['DRAFT'] : targetLabels
 
           // Ajouter les labels corrects, retirer INBOX si le message ne devrait pas y être
-          const addLabels = finalLabels.filter((l) => l !== 'INBOX') // on ajoute les labels custom
+          const addLabels = finalLabels.filter((l) => l !== 'INBOX')
           const removeLabels: string[] = []
 
-          // Si le message devrait être dans un label custom (pas INBOX), on retire INBOX
           if (!finalLabels.includes('INBOX') && addLabels.length > 0) {
             removeLabels.push('INBOX')
           }
 
-          if (addLabels.length > 0 || removeLabels.length > 0) {
-            await gmailModifyLabels({
-              userEmail: job.gohUpn!,
-              messageId: gmailId,
-              addLabelIds: addLabels,
-              removeLabelIds: removeLabels,
-            })
+          if (addLabels.length === 0 && removeLabels.length === 0) {
+            return 'skipped' as const // Rien à changer (message déjà dans INBOX, pas de label custom)
           }
-          return true
+
+          await gmailModifyLabels({
+            userEmail: job.gohUpn!,
+            messageId: gmailId,
+            addLabelIds: addLabels,
+            removeLabelIds: removeLabels,
+          })
+          return 'relabeled' as const
         })
       )
 
       for (const res of results) {
-        if (res.status === 'fulfilled') relabeled++
-        else {
+        if (res.status === 'fulfilled') {
+          if (res.value === 'skipped') skipped++
+          else relabeled++
+        } else {
           errors++
-          if (errors <= 5) console.warn(`[relabel] error:`, res.reason instanceof Error ? res.reason.message : res.reason)
+          const errMsg = res.reason instanceof Error ? res.reason.message : String(res.reason)
+          // Catégoriser l'erreur
+          const errType = errMsg.match(/\((\d{3})\)/)?.[1] ?? 'unknown'
+          errorCounts.set(errType, (errorCounts.get(errType) ?? 0) + 1)
+          // Garder un échantillon
+          if (errorSamples.length < 20) {
+            errorSamples.push(errMsg.slice(0, 200))
+          }
+          if (errors <= 3) console.warn(`[relabel] error:`, errMsg.slice(0, 200))
         }
       }
     }
 
     processed += batch.length
-    if (processed % 500 === 0) console.log(`[relabel] ${job.id}: ${processed} parcourus, ${relabeled} re-labellisés, ${errors} erreurs`)
+    if (processed % 500 === 0) {
+      console.log(`[relabel] ${job.id}: ${processed} parcourus, ${relabeled} re-labellisés, ${skipped} ignorés, ${errors} erreurs`)
+      await updateProgress()
+    }
 
     // Vérifier signal d'arrêt
     if (isStopRequested(migrationId, 'mail')) {
@@ -728,6 +748,11 @@ export async function relabelMail(migrationId: string): Promise<{ relabeled: num
     batch = await collectBatch(msgIterator, RELABEL_CONCURRENCY)
   }
 
-  console.log(`[relabel] done ${job.id}: ${relabeled} re-labellisés, ${errors} erreurs sur ${processed} parcourus`)
-  return { relabeled, errors }
+  // Log final détaillé
+  const errorBreakdown = [...errorCounts.entries()].map(([type, count]) => `HTTP ${type}: ${count}`).join(', ')
+  console.log(`[relabel] done ${job.id}: ${relabeled} re-labellisés, ${skipped} ignorés, ${errors} erreurs sur ${processed} parcourus`)
+  if (errorBreakdown) console.log(`[relabel] erreurs détaillées: ${errorBreakdown}`)
+  if (errorSamples.length > 0) console.log(`[relabel] exemples d'erreurs: ${errorSamples.slice(0, 3).join(' | ')}`)
+
+  return { relabeled, skipped, errors, errorSamples }
 }

@@ -3,37 +3,18 @@
 // - Écriture via Gmail API (impersonation user, scope mail.google.com)
 
 import { getGoogleAccessTokenForUser } from './googleService'
+import { getAccessToken } from './service'
 
 const GMAIL_SCOPE = 'https://mail.google.com/'
 
 // ── Microsoft Graph (lecture mail ONELA) ──────────────────────────────────────
 
-let _cachedToken: { token: string; expiresAt: number } | null = null
-const TOKEN_MARGIN_MS = 5 * 60 * 1000 // renouveler 5min avant expiration
-
 async function onelaToken(): Promise<string> {
-  if (_cachedToken && Date.now() < _cachedToken.expiresAt) return _cachedToken.token
-
   const tid = process.env['ONELA_TENANT_ID']
   const cid = process.env['ONELA_CLIENT_ID']
   const sec = process.env['ONELA_CLIENT_SECRET']
   if (!tid || !cid || !sec) throw new Error('ONELA Graph credentials manquantes')
-
-  const res = await fetch(`https://login.microsoftonline.com/${tid}/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: cid,
-      client_secret: sec,
-      scope: 'https://graph.microsoft.com/.default',
-    }),
-  })
-  if (!res.ok) throw new Error(`ONELA token error (${res.status}): ${await res.text()}`)
-  const data = (await res.json()) as { access_token: string; expires_in?: number }
-  const expiresIn = (data.expires_in ?? 3600) * 1000
-  _cachedToken = { token: data.access_token, expiresAt: Date.now() + expiresIn - TOKEN_MARGIN_MS }
-  return data.access_token
+  return getAccessToken(tid, cid, sec)
 }
 
 interface GraphFolder {
@@ -214,9 +195,11 @@ export async function* iterateOnelaMessages(
   }
 }
 
-// Récupère le MIME brut RFC 822 d'un message — beaucoup plus simple que reconstruire depuis le JSON
+// Récupère le MIME brut RFC 822 d'un message sous forme de Buffer binaire
+// IMPORTANT : on utilise arrayBuffer() au lieu de text() pour préserver l'intégrité
+// des pièces jointes (images, PDF, etc.) qui peuvent contenir des octets non-UTF-8
 // Retry sur 429/503/504 (transitoires côté Graph) avec backoff exponentiel
-export async function fetchOnelaMessageMime(userId: string, messageId: string): Promise<string> {
+export async function fetchOnelaMessageMime(userId: string, messageId: string): Promise<Buffer> {
   const RETRYABLE = new Set([429, 503, 504])
   const MAX_ATTEMPTS = 5
   let delay = 2000
@@ -227,7 +210,7 @@ export async function fetchOnelaMessageMime(userId: string, messageId: string): 
       `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/$value`,
       { headers: { Authorization: `Bearer ${token}` } }
     )
-    if (res.ok) return await res.text()
+    if (res.ok) return Buffer.from(await res.arrayBuffer())
 
     const body = await res.text()
     if (!RETRYABLE.has(res.status) || attempt === MAX_ATTEMPTS) {
@@ -237,11 +220,10 @@ export async function fetchOnelaMessageMime(userId: string, messageId: string): 
     const retryAfter = res.headers.get('Retry-After')
     const waitMs = retryAfter ? Math.max(parseInt(retryAfter, 10) * 1000, 1000) : delay
     if (attempt === 1) {
-      // Log seulement le premier retry pour éviter le spam
       console.warn(`[mail] $value ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs / 1000}s`)
     }
     await new Promise((r) => setTimeout(r, waitMs))
-    delay = Math.min(delay * 2, 16000) // cap à 16s
+    delay = Math.min(delay * 2, 16000)
   }
   throw new Error('fetchOnelaMessageMime: unreachable')
 }
@@ -412,16 +394,26 @@ export async function buildLabelResolver(
   }
 }
 
-// Import d'un message dans Gmail à partir du MIME brut
+// Import d'un message dans Gmail à partir du MIME brut (Buffer binaire)
 // Corrige les MIME malformés qui ont des headers dupliqués (From, Date, Subject…)
 // Gmail refuse les mails avec plusieurs headers From → on ne garde que le premier
-function fixDuplicateHeaders(mime: string): string {
-  // Détecte le séparateur de ligne (\r\n ou \n)
-  const eol = mime.includes('\r\n') ? '\r\n' : '\n'
-  const headerEnd = mime.indexOf(eol + eol)
-  if (headerEnd === -1) return mime
-  const headerPart = mime.slice(0, headerEnd)
-  const body = mime.slice(headerEnd)
+// IMPORTANT : on travaille sur Buffer pour préserver l'intégrité binaire des pièces jointes
+function fixDuplicateHeaders(mime: Buffer): Buffer {
+  // Les headers MIME sont toujours en 7-bit ASCII, seul le body peut contenir du binaire
+  // On cherche la séparation headers/body (double CRLF ou double LF)
+  const crlfCrlf = Buffer.from('\r\n\r\n')
+  const lfLf = Buffer.from('\n\n')
+  let headerEndIdx = mime.indexOf(crlfCrlf)
+  let eol = '\r\n'
+  if (headerEndIdx === -1) {
+    headerEndIdx = mime.indexOf(lfLf)
+    eol = '\n'
+  }
+  if (headerEndIdx === -1) return mime // pas de séparation headers/body trouvée
+
+  // Extraire seulement la partie headers en string ASCII (safe)
+  const headerPart = mime.subarray(0, headerEndIdx).toString('ascii')
+  const bodyPart = mime.subarray(headerEndIdx) // garde le body en binaire intact
 
   const seen = new Set<string>()
   const lines = headerPart.split(eol)
@@ -446,26 +438,34 @@ function fixDuplicateHeaders(mime: string): string {
     fixed.push(line)
   }
 
-  return fixed.join(eol) + body
+  const fixedHeaders = Buffer.from(fixed.join(eol), 'ascii')
+  return Buffer.concat([fixedHeaders, bodyPart])
 }
 
-function mimeToBase64Url(mime: string): string {
-  return Buffer.from(mime, 'utf-8').toString('base64')
+function bufferToBase64Url(buf: Buffer): string {
+  return buf.toString('base64')
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
+// Seuil au-delà duquel on utilise le resumable upload Gmail (en bytes)
+// Gmail limite le JSON body à ~5 Mo ; le base64 gonfle de ~33% → seuil à 3.5 Mo bruts
+const RESUMABLE_THRESHOLD = 3.5 * 1024 * 1024
+
 export async function gmailImportMime(params: {
   userEmail: string
-  rawMime: string
+  rawMime: Buffer
   labelIds: string[]
   isDraft?: boolean
   isRead?: boolean
 }): Promise<{ id: string }> {
   const sanitizedMime = fixDuplicateHeaders(params.rawMime)
-  const raw = mimeToBase64Url(sanitizedMime)
+  const raw = bufferToBase64Url(sanitizedMime)
 
   const labelIds = [...params.labelIds]
   if (!params.isRead && !labelIds.includes('UNREAD')) labelIds.push('UNREAD')
+
+  // Pour les gros mails, utiliser le resumable upload au lieu du JSON body
+  const useResumable = sanitizedMime.length > RESUMABLE_THRESHOLD
 
   // Retry sur 502/503/429 Gmail (erreurs transitoires)
   const GMAIL_RETRYABLE = new Set([429, 502, 503])
@@ -475,6 +475,25 @@ export async function gmailImportMime(params: {
   for (let attempt = 1; attempt <= MAX_GMAIL_ATTEMPTS; attempt++) {
     const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
 
+    // ── Gros mail : resumable upload (multipart) ──────────────────────────
+    if (useResumable) {
+      try {
+        const result = await gmailResumableInsert(token, params.userEmail, sanitizedMime, labelIds)
+        return result
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        // Retry on transient errors
+        if (attempt < MAX_GMAIL_ATTEMPTS && /\b(429|502|503)\b/.test(errMsg)) {
+          const waitMs = 2000 * attempt
+          console.warn(`[mail] Gmail resumable ${errMsg.slice(0, 80)} — retry ${attempt}/${MAX_GMAIL_ATTEMPTS} dans ${waitMs / 1000}s`)
+          await new Promise((r) => setTimeout(r, waitMs))
+          continue
+        }
+        throw err
+      }
+    }
+
+    // ── Mail normal : JSON body avec raw base64 ──────────────────────────
     // 1) Essai avec messages.insert (bypass la classification Gmail → respecte les labels exactement)
     const insertUrl = new URL(
       `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
@@ -502,49 +521,105 @@ export async function gmailImportMime(params: {
 
     // 2) Si erreur 400 (headers malformés), fallback sur messages.import (plus tolérant sur le MIME)
     if (insertRes.status === 400) {
-    console.warn(`[mail] insert 400, fallback import: ${insertErr.slice(0, 120)}`)
-    const importUrl = new URL(
-      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/import`
-    )
-    importUrl.searchParams.set('internalDateSource', 'dateHeader')
-    importUrl.searchParams.set('neverMarkSpam', 'true')
-    importUrl.searchParams.set('processForCalendar', 'false')
-    importUrl.searchParams.set('deleted', 'false')
+      console.warn(`[mail] insert 400, fallback import: ${insertErr.slice(0, 120)}`)
+      const importUrl = new URL(
+        `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/import`
+      )
+      importUrl.searchParams.set('internalDateSource', 'dateHeader')
+      importUrl.searchParams.set('neverMarkSpam', 'true')
+      importUrl.searchParams.set('processForCalendar', 'false')
+      importUrl.searchParams.set('deleted', 'false')
 
-    const importRes = await fetch(importUrl.toString(), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw, labelIds }),
-    })
+      const importRes = await fetch(importUrl.toString(), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw, labelIds }),
+      })
 
-    if (importRes.ok) {
-      // messages.import peut ignorer les labels custom → on les force avec messages.modify
-      const result = (await importRes.json()) as { id: string; labelIds?: string[] }
-      const appliedLabels = new Set(result.labelIds ?? [])
-      const missingLabels = labelIds.filter((l) => !appliedLabels.has(l))
-      if (missingLabels.length > 0) {
-        try {
-          await fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/${result.id}/modify`,
-            {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ addLabelIds: missingLabels }),
-            }
-          )
-        } catch { /* best effort */ }
+      if (importRes.ok) {
+        // messages.import peut ignorer les labels custom → on les force avec messages.modify
+        const result = (await importRes.json()) as { id: string; labelIds?: string[] }
+        const appliedLabels = new Set(result.labelIds ?? [])
+        const missingLabels = labelIds.filter((l) => !appliedLabels.has(l))
+        if (missingLabels.length > 0) {
+          try {
+            await fetch(
+              `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/${result.id}/modify`,
+              {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ addLabelIds: missingLabels }),
+              }
+            )
+          } catch { /* best effort */ }
+        }
+        return result
       }
-      return result
+      const importErr = await importRes.text()
+      throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
     }
-    const importErr = await importRes.text()
-    throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
-  }
+
+    // 413 = trop gros pour le JSON body → forcer le resumable upload
+    if (insertRes.status === 413) {
+      console.warn(`[mail] insert 413 (taille: ${(sanitizedMime.length / 1024 / 1024).toFixed(1)} Mo), tentative resumable upload`)
+      try {
+        return await gmailResumableInsert(token, params.userEmail, sanitizedMime, labelIds)
+      } catch (err) {
+        throw new Error(`Gmail resumable upload failed: ${err instanceof Error ? err.message : err}`)
+      }
+    }
 
     lastError = `Gmail insert error (${insertRes.status}): ${insertErr}`
     break // Non-retryable error, exit loop
   }
 
   throw new Error(lastError || 'Gmail import: all attempts failed')
+}
+
+// Upload d'un gros mail via le multipart upload Gmail (>3.5 Mo)
+// Utilise le endpoint /upload/gmail/v1/users/.../messages avec uploadType=multipart
+async function gmailResumableInsert(
+  token: string,
+  userEmail: string,
+  mimeBuffer: Buffer,
+  labelIds: string[]
+): Promise<{ id: string }> {
+  const boundary = `----MigrationBoundary${Date.now()}`
+  const metadata = JSON.stringify({ labelIds })
+
+  // Construire le body multipart manuellement
+  const parts = [
+    `--${boundary}\r\n`,
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n`,
+    metadata,
+    `\r\n--${boundary}\r\n`,
+    `Content-Type: message/rfc822\r\n\r\n`,
+  ]
+  const preamble = Buffer.from(parts.join(''), 'utf-8')
+  const epilogue = Buffer.from(`\r\n--${boundary}--`, 'utf-8')
+  const body = Buffer.concat([preamble, mimeBuffer, epilogue])
+
+  const url = new URL(
+    `https://gmail.googleapis.com/upload/gmail/v1/users/${encodeURIComponent(userEmail)}/messages`
+  )
+  url.searchParams.set('uploadType', 'multipart')
+  url.searchParams.set('internalDateSource', 'dateHeader')
+
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary="${boundary}"`,
+      'Content-Length': String(body.length),
+    },
+    body,
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Gmail multipart upload error (${res.status}): ${err}`)
+  }
+  return (await res.json()) as { id: string }
 }
 
 // Modifier les labels d'un message Gmail existant (ajouter + retirer)

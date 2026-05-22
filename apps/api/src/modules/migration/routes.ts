@@ -416,9 +416,15 @@ migrationRouter.post('/:id/relabel-mail', requirePermission('migration:write'), 
   // Lancer en background (ne bloque pas la réponse HTTP)
   relabelMail(id)
     .then(async (result) => {
-      const msg = result.errors > 0
-        ? `Re-labellisation terminée : ${result.relabeled} OK, ${result.errors} erreurs`
-        : `Re-labellisation terminée : ${result.relabeled} messages corrigés`
+      let msg: string
+      if (result.errors > 0) {
+        const samples = result.errorSamples.length > 0
+          ? ` — Ex: ${result.errorSamples[0]?.slice(0, 100)}`
+          : ''
+        msg = `Re-labellisation : ${result.relabeled} corrigés, ${result.skipped} ignorés, ${result.errors} erreurs${samples}`
+      } else {
+        msg = `Re-labellisation terminée : ${result.relabeled} corrigés, ${result.skipped} ignorés`
+      }
       await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, id))
     })
     .catch(async (err) => {
