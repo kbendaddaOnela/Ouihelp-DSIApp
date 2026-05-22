@@ -2,17 +2,9 @@
 // Lecture Graph (Contacts.Read App) → Écriture People API (impersonation user)
 
 import { getGoogleAccessTokenForUser } from './googleService'
-import { getAccessToken } from './service'
+import { getOnelaToken } from './service'
 
 const CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts'
-
-async function onelaToken(): Promise<string> {
-  const tid = process.env['ONELA_TENANT_ID']
-  const cid = process.env['ONELA_CLIENT_ID']
-  const sec = process.env['ONELA_CLIENT_SECRET']
-  if (!tid || !cid || !sec) throw new Error('ONELA Graph credentials manquantes')
-  return getAccessToken(tid, cid, sec)
-}
 
 interface GraphContact {
   id: string
@@ -36,7 +28,7 @@ interface GraphContact {
 }
 
 export async function countOnelaContacts(userId: string, since?: Date | null): Promise<number> {
-  const token = await onelaToken()
+  const token = await getOnelaToken()
   const filter = since ? `&$filter=lastModifiedDateTime gt ${since.toISOString()}` : ''
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$count=true&$top=1${filter}`
   const res = await fetch(url, {
@@ -55,7 +47,7 @@ export async function* iterateOnelaContacts(
   let url: string | null =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$top=100${filter}`
   while (url) {
-    const token = await onelaToken()
+    const token = await getOnelaToken()
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph contacts error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphContact[]; '@odata.nextLink'?: string }

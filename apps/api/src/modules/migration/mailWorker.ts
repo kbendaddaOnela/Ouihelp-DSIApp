@@ -92,7 +92,8 @@ async function pollAndProcess() {
 
   for (const job of candidates) {
     // Récupérer les migrations "running" orphelines (process a crashé/redémarré)
-    // Si le status est 'running' mais pas dans notre map RUNNING → remettre en 'pending'
+    // Si le status est 'running' mais pas dans notre map RUNNING -> remettre en 'pending'
+    // seulement si la tâche a été inactive (updatedAt inchangé) pendant plus de 5 minutes.
     for (const [phase, stepCol] of [
       ['mail', 'stepMailMigration'],
       ['calendar', 'stepCalendarMigration'],
@@ -100,16 +101,20 @@ async function pollAndProcess() {
     ] as const) {
       const key = `${job.id}-${phase}`
       if (job[stepCol] === 'running' && !RUNNING.has(key)) {
-        console.warn(`[migration-worker] orphan detected: ${key} is 'running' but not in RUNNING map — resetting to 'pending'`)
-        if (phase === 'mail') {
-          await db.update(migrations).set({ stepMailMigration: 'pending' }).where(eq(migrations.id, job.id))
-          job.stepMailMigration = 'pending'
-        } else if (phase === 'calendar') {
-          await db.update(migrations).set({ stepCalendarMigration: 'pending' }).where(eq(migrations.id, job.id))
-          job.stepCalendarMigration = 'pending'
-        } else {
-          await db.update(migrations).set({ stepContactsMigration: 'pending' }).where(eq(migrations.id, job.id))
-          job.stepContactsMigration = 'pending'
+        const updatedAtTime = new Date(job.updatedAt).getTime()
+        const isStale = Date.now() - updatedAtTime > 5 * 60 * 1000
+        if (isStale) {
+          console.warn(`[migration-worker] orphan detected: ${key} is 'running' (inactive since ${job.updatedAt}) and not in local RUNNING map — resetting to 'pending'`)
+          if (phase === 'mail') {
+            await db.update(migrations).set({ stepMailMigration: 'pending' }).where(eq(migrations.id, job.id))
+            job.stepMailMigration = 'pending'
+          } else if (phase === 'calendar') {
+            await db.update(migrations).set({ stepCalendarMigration: 'pending' }).where(eq(migrations.id, job.id))
+            job.stepCalendarMigration = 'pending'
+          } else {
+            await db.update(migrations).set({ stepContactsMigration: 'pending' }).where(eq(migrations.id, job.id))
+            job.stepContactsMigration = 'pending'
+          }
         }
       }
     }
@@ -134,6 +139,36 @@ async function pollAndProcess() {
 
   for (const { job, phase } of pending.slice(0, slots)) {
     const key = `${job.id}-${phase}`
+
+    // Acquire atomic cluster-safe lock using a conditional UPDATE
+    const stepCol =
+      phase === 'mail' ? 'stepMailMigration'
+      : phase === 'calendar' ? 'stepCalendarMigration'
+      : 'stepContactsMigration'
+
+    let locked = false
+    try {
+      const [updateResult] = await db.update(migrations)
+        .set({
+          [stepCol]: 'running',
+          ...(phase === 'mail' ? { mailStartedAt: new Date(), mailError: null } : {}),
+          ...(phase === 'calendar' ? { calStartedAt: new Date(), calError: null } : {}),
+          ...(phase === 'contacts' ? { contactsStartedAt: new Date(), contactsError: null } : {}),
+        })
+        .where(and(eq(migrations.id, job.id), eq(migrations[stepCol], 'pending')))
+
+      if (updateResult && (updateResult as any).affectedRows === 1) {
+        locked = true
+      }
+    } catch (err) {
+      console.error(`[migration-worker] failed to acquire atomic lock for ${key}:`, err)
+    }
+
+    if (!locked) {
+      console.log(`[migration-worker] lock missed/already acquired for candidate ${key}, skipping`)
+      continue
+    }
+
     RUNNING.set(key, phase)
     const fn =
       phase === 'mail' ? processUserMail

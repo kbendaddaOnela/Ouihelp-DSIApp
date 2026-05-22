@@ -2,17 +2,9 @@
 // Lecture Graph (Calendars.Read App) → Écriture Calendar API (impersonation user)
 
 import { getGoogleAccessTokenForUser } from './googleService'
-import { getAccessToken } from './service'
+import { getOnelaToken } from './service'
 
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar'
-
-async function onelaToken(): Promise<string> {
-  const tid = process.env['ONELA_TENANT_ID']
-  const cid = process.env['ONELA_CLIENT_ID']
-  const sec = process.env['ONELA_CLIENT_SECRET']
-  if (!tid || !cid || !sec) throw new Error('ONELA Graph credentials manquantes')
-  return getAccessToken(tid, cid, sec)
-}
 
 // ── Types Graph ──────────────────────────────────────────────────────────────
 
@@ -66,7 +58,7 @@ interface GraphEvent {
 }
 
 export async function countOnelaEvents(userId: string, since?: Date | null): Promise<number> {
-  const token = await onelaToken()
+  const token = await getOnelaToken()
   let filter = `(type eq 'singleInstance' or type eq 'seriesMaster')`
   if (since) filter += ` and lastModifiedDateTime gt ${since.toISOString()}`
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$count=true&$top=1&$filter=${encodeURIComponent(filter)}`
@@ -87,7 +79,7 @@ export async function* iterateOnelaEvents(
   let url: string | null =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$top=100&$filter=${encodeURIComponent(filter)}`
   while (url) {
-    const token = await onelaToken()
+    const token = await getOnelaToken()
     const res: Response = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     })

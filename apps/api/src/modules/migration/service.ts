@@ -67,7 +67,7 @@ const USER_SELECT = 'id,displayName,givenName,surname,userPrincipalName,mail,dep
 
 // ── ONELA tenant (read-only) ──────────────────────────────────────────────────
 
-async function onelaToken(): Promise<string> {
+export async function getOnelaToken(): Promise<string> {
   const tid = process.env['ONELA_TENANT_ID']
   const cid = process.env['ONELA_CLIENT_ID']
   const sec = process.env['ONELA_CLIENT_SECRET']
@@ -76,7 +76,7 @@ async function onelaToken(): Promise<string> {
 }
 
 export async function searchOnelaUsers(query: string): Promise<GraphUser[]> {
-  const token = await onelaToken()
+  const token = await getOnelaToken()
   const filter = `startsWith(displayName,'${query}') or startsWith(userPrincipalName,'${query}') or startsWith(mail,'${query}')`
   const res = await graphRequest<{ value: GraphUser[] }>(
     token, 'GET',
