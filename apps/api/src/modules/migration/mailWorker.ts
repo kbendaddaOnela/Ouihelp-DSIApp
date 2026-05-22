@@ -47,8 +47,8 @@ function clearStopSignal(migrationId: string, phase: 'mail' | 'calendar' | 'cont
 // Mail : 2 (Graph $value est TRÈS agressivement throttlé, surtout avec plusieurs jobs)
 // Calendar/Contacts : 5 (moins de données par requête)
 const MAIL_CONCURRENCY = 2
-const CAL_CONCURRENCY = 5
-const CONTACTS_CONCURRENCY = 5
+const CAL_CONCURRENCY = 2
+const CONTACTS_CONCURRENCY = 2
 
 // On limite à 1 seul job mail à la fois pour éviter de saturer le rate limit Graph $value
 const MAX_CONCURRENT_MAIL = 1
@@ -381,6 +381,7 @@ async function processUserCalendar(job: Migration) {
 
     const calSyncStart = new Date()
     const evIterator = iterateOnelaEvents(job.onelaUserId, job.calLastSyncAt)
+    let calBatchDelay = 500 // throttle adaptatif pour Google Calendar
 
     let evBatch = await collectBatch(evIterator, CAL_CONCURRENCY)
     while (evBatch.length > 0) {
@@ -451,6 +452,12 @@ async function processUserCalendar(job: Migration) {
         return
       }
 
+      // Throttle adaptatif : ralentir si Google rate-limit, accélérer sinon
+      const calHad429 = results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('403'))
+        || results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('429'))
+      calBatchDelay = adaptiveThrottle(calHad429, calBatchDelay)
+      if (calBatchDelay > 0) await new Promise((r) => setTimeout(r, calBatchDelay))
+
       evBatch = await collectBatch(evIterator, CAL_CONCURRENCY)
     }
 
@@ -509,6 +516,7 @@ async function processUserContacts(job: Migration) {
 
     const ctSyncStart = new Date()
     const ctIterator = iterateOnelaContacts(job.onelaUserId, job.contactsLastSyncAt)
+    let ctBatchDelay = 500 // throttle adaptatif pour Google People API
 
     let ctBatch = await collectBatch(ctIterator, CONTACTS_CONCURRENCY)
     while (ctBatch.length > 0) {
@@ -569,6 +577,12 @@ async function processUserContacts(job: Migration) {
           .where(eq(migrations.id, job.id))
         return
       }
+
+      // Throttle adaptatif
+      const ctHad429 = results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('403'))
+        || results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('429'))
+      ctBatchDelay = adaptiveThrottle(ctHad429, ctBatchDelay)
+      if (ctBatchDelay > 0) await new Promise((r) => setTimeout(r, ctBatchDelay))
 
       ctBatch = await collectBatch(ctIterator, CONTACTS_CONCURRENCY)
     }

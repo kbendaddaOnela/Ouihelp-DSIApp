@@ -145,22 +145,38 @@ function buildPeoplePayload(c: GraphContact): PeoplePersonPayload {
   return p
 }
 
+const CONTACTS_MAX_RETRIES = 4
+
 export async function googlePeopleCreateContact(
   userEmail: string,
   contact: GraphContact
 ): Promise<{ resourceName: string }> {
-  const token = await getGoogleAccessTokenForUser(userEmail, CONTACTS_SCOPE)
   const payload = buildPeoplePayload(contact)
 
-  const res = await fetch('https://people.googleapis.com/v1/people:createContact', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
+  for (let attempt = 0; attempt < CONTACTS_MAX_RETRIES; attempt++) {
+    const token = await getGoogleAccessTokenForUser(userEmail, CONTACTS_SCOPE)
 
-  if (!res.ok) {
+    const res = await fetch('https://people.googleapis.com/v1/people:createContact', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+
+    if (res.ok) {
+      return (await res.json()) as { resourceName: string }
+    }
+
+    // Retry sur rate limit (403/429) et erreurs transitoires (502/503)
+    if ((res.status === 403 || res.status === 429 || res.status === 502 || res.status === 503) && attempt < CONTACTS_MAX_RETRIES - 1) {
+      const backoff = Math.min(1000 * Math.pow(2, attempt + 1), 16000)
+      console.warn(`[contacts] ${res.status} on create (attempt ${attempt + 1}/${CONTACTS_MAX_RETRIES}), retry in ${backoff}ms`)
+      await new Promise((r) => setTimeout(r, backoff))
+      continue
+    }
+
     const err = await res.text()
     throw new Error(`Google People create error (${res.status}): ${err}`)
   }
-  return (await res.json()) as { resourceName: string }
+
+  throw new Error('Google People create: max retries exceeded')
 }
