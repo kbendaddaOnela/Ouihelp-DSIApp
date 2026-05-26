@@ -22,7 +22,42 @@ interface GraphFolder {
   displayName: string
   path: string
   wellKnownName?: string
+  /**
+   * Alias du dossier système (inbox/sentitems/deleteditems/...) duquel ce dossier descend.
+   * Permet au resolver d'appliquer le bon label système (TRASH pour les enfants de
+   * Deleted Items, SENT pour ceux de Sent Items, etc.) en plus du label custom.
+   */
+  wellKnownAncestor?: string
   totalItemCount?: number
+}
+
+/**
+ * Configuration par dossier système Exchange : comment traiter ses sous-dossiers.
+ *
+ * - `childPrefix` : préfixe à appliquer au path des sous-dossiers.
+ *     `null` = sous-dossiers deviennent des labels racine (Inbox/Acer → "Acer").
+ *     `"Corbeille"` = sous-dossiers préfixés (Deleted/Khadija → "Corbeille/Khadija").
+ *
+ * - `skipChildren` : `true` = on ne descend pas dans ce dossier système (Junk).
+ *
+ * - `systemLabelForDescendants` : label Gmail système à ajouter pour tout descendant.
+ *     Ex: enfants de Deleted Items obtiennent `TRASH` en plus de leur label custom,
+ *     donc apparaissent dans la Corbeille Gmail (purge auto à 30j conforme à
+ *     l'intention "supprimé" de l'utilisateur).
+ */
+interface WellKnownChildConfig {
+  childPrefix: string | null
+  skipChildren: boolean
+  systemLabelForDescendants: string | null
+}
+
+const WELL_KNOWN_CHILD_CONFIG: Record<string, WellKnownChildConfig> = {
+  inbox:        { childPrefix: null,         skipChildren: false, systemLabelForDescendants: null },
+  archive:      { childPrefix: null,         skipChildren: false, systemLabelForDescendants: null },
+  sentitems:    { childPrefix: 'Envoyés',    skipChildren: false, systemLabelForDescendants: 'SENT' },
+  drafts:       { childPrefix: 'Brouillons', skipChildren: false, systemLabelForDescendants: 'DRAFT' },
+  deleteditems: { childPrefix: 'Corbeille',  skipChildren: false, systemLabelForDescendants: 'TRASH' },
+  junkemail:    { childPrefix: null,         skipChildren: true,  systemLabelForDescendants: null },
 }
 
 // Catégories Outlook par défaut (couleurs natives) — on ne les convertit pas en label Gmail
@@ -142,9 +177,15 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   }
 
   // 3. Récursion complète sur les sous-dossiers (chemin hiérarchique parent/child/...)
-  // parentLabelPath = null signifie que les enfants directs utilisent juste leur displayName
-  // (c'est le cas pour les dossiers well-known comme inbox, sent, etc.)
-  async function crawlChildren(parentId: string, parentLabelPath: string | null): Promise<void> {
+  // `parentLabelPath = null` → l'enfant prend juste son displayName (label racine).
+  // `wellKnownAncestor` = alias du dossier système (inbox/sentitems/...) duquel on
+  // descend ; transmis récursivement pour que le resolver applique le bon label
+  // système (TRASH pour les enfants de Deleted Items, SENT pour ceux de Sent…).
+  async function crawlChildren(
+    parentId: string,
+    parentLabelPath: string | null,
+    wellKnownAncestor: string | undefined
+  ): Promise<void> {
     let childUrl: string | null =
       `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName,totalItemCount`
     while (childUrl) {
@@ -159,12 +200,17 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
             continue
           }
           if (!folderById.has(f.id)) {
-            // Si parentLabelPath est null, le sous-dossier devient un label racine (ex: inbox/Acer → "Acer")
             // Trim les espaces des noms de dossiers Exchange (certains ont des espaces en fin)
             const cleanName = f.displayName.trim()
             const childPath = parentLabelPath ? `${parentLabelPath}/${cleanName}` : cleanName
-            folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath, totalItemCount: f.totalItemCount })
-            await crawlChildren(f.id, childPath)
+            folderById.set(f.id, {
+              id: f.id,
+              displayName: f.displayName,
+              path: childPath,
+              totalItemCount: f.totalItemCount,
+              wellKnownAncestor,
+            })
+            await crawlChildren(f.id, childPath, wellKnownAncestor)
           }
         }
         childUrl = data['@odata.nextLink'] ?? null
@@ -172,14 +218,25 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
     }
   }
 
-  // Crawl depuis tous les top-level folders (y compris well-known comme inbox)
-  // Pour les dossiers well-known mappés vers un label système (inbox→INBOX, sent→SENT...),
-  // les sous-dossiers deviennent des labels racine (sans préfixe "Boîte de réception/")
+  // Crawl depuis tous les top-level folders (y compris well-known comme inbox).
+  // Comportement par dossier système :
+  //   - inbox / archive  → enfants en labels racine, pas de label système hérité
+  //   - sentitems        → enfants préfixés "Envoyés/", + label SENT
+  //   - drafts           → enfants préfixés "Brouillons/", + label DRAFT
+  //   - deleteditems     → enfants préfixés "Corbeille/", + label TRASH (auto-purge 30j)
+  //   - junkemail        → enfants ignorés (spam ne mérite pas d'organisation)
+  //   - custom           → enfants avec préfixe hiérarchique de leur parent
   for (const folder of [...folderById.values()]) {
     if (skipIds.has(folder.id)) continue
-    const isWellKnown = folder.wellKnownName && SYSTEM_LABEL_MAP[folder.wellKnownName]
-    // well-known → enfants sans préfixe ; custom → enfants avec préfixe hiérarchique
-    await crawlChildren(folder.id, isWellKnown ? null : folder.path)
+    const wkn = folder.wellKnownName?.toLowerCase()
+    const config = wkn ? WELL_KNOWN_CHILD_CONFIG[wkn] : null
+
+    if (config?.skipChildren) {
+      continue
+    }
+
+    const childPrefix = config ? config.childPrefix : folder.path
+    await crawlChildren(folder.id, childPrefix, wkn)
   }
 
   return [...folderById.values()]
@@ -379,7 +436,15 @@ export async function buildLabelResolver(
         }
       }
     }
-    folderToLabelIds.set(f.id, [labelId])
+
+    // Pour les descendants d'un dossier système (sent/drafts/deleteditems),
+    // on ajoute le label système hérité en plus du label custom.
+    // Ex : un mail dans "Deleted Items/Khadija" obtient `["Corbeille/Khadija", "TRASH"]`
+    // → visible dans le label custom ET dans la Corbeille Gmail (purge auto à 30j).
+    const ancestorConfig = f.wellKnownAncestor ? WELL_KNOWN_CHILD_CONFIG[f.wellKnownAncestor] : null
+    const systemLabel = ancestorConfig?.systemLabelForDescendants
+    const finalLabels = systemLabel ? [labelId, systemLabel] : [labelId]
+    folderToLabelIds.set(f.id, finalLabels)
   }
 
   // Cache catégorie Outlook → label Gmail (créé à la volée)
