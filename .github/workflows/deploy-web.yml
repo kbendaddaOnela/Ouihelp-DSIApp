@@ -11,6 +11,11 @@ on:
     types: [opened, synchronize, reopened, closed]
     branches: [main]
 
+# Évite les déploiements concurrents sur la même cible (prod main ou un PR donné)
+concurrency:
+  group: deploy-web-${{ github.event_name == 'pull_request' && github.event.number || 'main' }}
+  cancel-in-progress: false
+
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest

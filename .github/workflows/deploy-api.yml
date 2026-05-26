@@ -8,6 +8,12 @@ on:
       - 'packages/shared/**'
       - '.github/workflows/deploy-api.yml'
 
+# Évite les déploiements concurrents (Azure App Service refuse le 2e en parallèle).
+# Si un push arrive pendant qu'un deploy tourne, le nouveau attend (ou annule l'ancien).
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
