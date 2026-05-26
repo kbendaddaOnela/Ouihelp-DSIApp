@@ -22,7 +22,23 @@ interface GraphFolder {
   displayName: string
   path: string
   wellKnownName?: string
+  totalItemCount?: number
 }
+
+// Catégories Outlook par défaut (couleurs natives) — on ne les convertit pas en label Gmail
+// pour éviter de polluer la liste des labels avec des noms génériques
+const DEFAULT_OUTLOOK_CATEGORIES = new Set([
+  // EN
+  'orange category', 'red category', 'yellow category', 'blue category',
+  'green category', 'purple category', 'black category', 'gray category',
+  'grey category', 'pink category', 'olive category', 'teal category',
+  'steel category', 'dark blue category', 'dark green category', 'dark red category',
+  'dark yellow category', 'dark orange category', 'dark purple category',
+  // FR
+  'catégorie orange', 'catégorie rouge', 'catégorie jaune', 'catégorie bleu',
+  'catégorie verte', 'catégorie violette', 'catégorie noire', 'catégorie grise',
+  'catégorie rose', 'catégorie olive', 'catégorie sarcelle',
+])
 
 interface GraphMessageMeta {
   id: string
@@ -65,12 +81,12 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   const wellKnownPromises = WELL_KNOWN_ALIASES.map(async (alias) => {
     try {
       const res = await fetch(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName`,
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName,totalItemCount`,
         { headers: { Authorization: `Bearer ${token}` } }
       )
       if (res.ok) {
-        const f = (await res.json()) as { id: string; displayName: string }
-        return { type: 'keep' as const, alias, id: f.id, displayName: f.displayName }
+        const f = (await res.json()) as { id: string; displayName: string; totalItemCount?: number }
+        return { type: 'keep' as const, alias, id: f.id, displayName: f.displayName, totalItemCount: f.totalItemCount }
       }
     } catch { /* alias absent */ }
     return null
@@ -94,7 +110,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   for (const r of allResults) {
     if (!r) continue
     if (r.type === 'keep') {
-      folderById.set(r.id, { id: r.id, displayName: r.displayName, path: r.displayName, wellKnownName: r.alias })
+      folderById.set(r.id, { id: r.id, displayName: r.displayName, path: r.displayName, wellKnownName: r.alias, totalItemCount: r.totalItemCount })
       wellKnownIds.add(r.id)
     } else {
       skipIds.add(r.id)
@@ -103,11 +119,11 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
 
   // 2. Lister les folders top-level du user
   let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName`
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName,totalItemCount`
   while (url) {
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph folders error (${res.status}): ${await res.text()}`)
-    const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
+    const data = (await res.json()) as { value: Array<{ id: string; displayName: string; totalItemCount?: number }>; '@odata.nextLink'?: string }
     for (const f of data.value) {
       if (!folderById.has(f.id) && !skipIds.has(f.id)) {
         // Exclure aussi par displayName (fallback si l'alias well-known n'a pas été résolu)
@@ -115,7 +131,11 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
           skipIds.add(f.id)
           continue
         }
-        folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName })
+        folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName, totalItemCount: f.totalItemCount })
+      } else if (folderById.has(f.id) && f.totalItemCount !== undefined) {
+        // Compléter le totalItemCount d'un well-known déjà inséré sans count
+        const existing = folderById.get(f.id)!
+        existing.totalItemCount = f.totalItemCount
       }
     }
     url = data['@odata.nextLink'] ?? null
@@ -126,12 +146,12 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   // (c'est le cas pour les dossiers well-known comme inbox, sent, etc.)
   async function crawlChildren(parentId: string, parentLabelPath: string | null): Promise<void> {
     let childUrl: string | null =
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName`
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName,totalItemCount`
     while (childUrl) {
       try {
         const res: Response = await fetch(childUrl, { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) break
-        const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
+        const data = (await res.json()) as { value: Array<{ id: string; displayName: string; totalItemCount?: number }>; '@odata.nextLink'?: string }
         for (const f of data.value) {
           // Ignorer les sous-dossiers système (ex: enfants de "Problèmes de synchronisation")
           if (skipIds.has(f.id) || SKIP_DISPLAY_NAMES.has(f.displayName.toLowerCase())) {
@@ -143,7 +163,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
             // Trim les espaces des noms de dossiers Exchange (certains ont des espaces en fin)
             const cleanName = f.displayName.trim()
             const childPath = parentLabelPath ? `${parentLabelPath}/${cleanName}` : cleanName
-            folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath })
+            folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath, totalItemCount: f.totalItemCount })
             await crawlChildren(f.id, childPath)
           }
         }
@@ -166,7 +186,20 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
 }
 
 // Compte le nombre de messages avant l'itération pour afficher le total dès le début
-export async function countOnelaMessages(userId: string, since?: Date | null): Promise<number> {
+// Si `folders` est fourni, on somme les totalItemCount des dossiers visibles (exclut
+// Recoverable Items + Notes/Tasks/Calendar). Sinon, fallback sur /messages global.
+export async function countOnelaMessages(
+  userId: string,
+  since?: Date | null,
+  folders?: GraphFolder[]
+): Promise<number> {
+  // Compteur précis basé sur les dossiers visibles (mode par défaut depuis la refonte)
+  // Note : en mode delta (since != null), totalItemCount n'est pas filtré par date —
+  // on retombe alors sur le compteur global Graph
+  if (folders && !since) {
+    return folders.reduce((sum, f) => sum + (f.totalItemCount ?? 0), 0)
+  }
+
   const token = await onelaToken()
   const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$count=true&$top=1${filter}`
@@ -363,6 +396,10 @@ export async function buildLabelResolver(
       for (const cat of categories) {
         const catName = cat.trim()
         if (!catName) continue
+
+        // Skip les catégories par défaut Outlook (couleurs natives) — sinon on pollue
+        // Gmail avec "Orange category", "Red category", etc. (noms génériques sans valeur)
+        if (DEFAULT_OUTLOOK_CATEGORIES.has(catName.toLowerCase())) continue
 
         // Déjà résolu ?
         let labelId = categoryCache.get(catName.toLowerCase())
