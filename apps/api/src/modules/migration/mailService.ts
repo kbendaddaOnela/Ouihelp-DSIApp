@@ -604,9 +604,13 @@ export async function gmailImportMime(params: {
 
       if (importRes.ok) {
         // messages.import peut ignorer les labels custom → on les force avec messages.modify
+        // Note : Gmail INTERDIT d'ajouter SENT/DRAFT via messages.modify
+        // (ces labels système ne peuvent être appliqués qu'à la création)
         const result = (await importRes.json()) as { id: string; labelIds?: string[] }
         const appliedLabels = new Set(result.labelIds ?? [])
-        const missingLabels = labelIds.filter((l) => !appliedLabels.has(l))
+        const missingLabels = labelIds
+          .filter((l) => !appliedLabels.has(l))
+          .filter((l) => l !== 'SENT' && l !== 'DRAFT')
         if (missingLabels.length > 0) {
           try {
             await fetch(
@@ -633,22 +637,29 @@ export async function gmailImportMime(params: {
 }
 
 // Modifier les labels d'un message Gmail existant (ajouter + retirer)
+// Gmail INTERDIT d'ajouter ou retirer SENT/DRAFT via messages.modify (labels système
+// uniquement appliqués à la création). On les filtre silencieusement.
+const NON_MODIFIABLE_LABELS = new Set(['SENT', 'DRAFT'])
+
 export async function gmailModifyLabels(params: {
   userEmail: string
   messageId: string
   addLabelIds: string[]
   removeLabelIds: string[]
 }): Promise<void> {
+  const addLabelIds = params.addLabelIds.filter((l) => !NON_MODIFIABLE_LABELS.has(l))
+  const removeLabelIds = params.removeLabelIds.filter((l) => !NON_MODIFIABLE_LABELS.has(l))
+
+  // Rien à modifier après filtrage → skip silencieux
+  if (addLabelIds.length === 0 && removeLabelIds.length === 0) return
+
   const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
   const res = await fetch(
     `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/${params.messageId}/modify`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        addLabelIds: params.addLabelIds,
-        removeLabelIds: params.removeLabelIds,
-      }),
+      body: JSON.stringify({ addLabelIds, removeLabelIds }),
     }
   )
   if (!res.ok) {
