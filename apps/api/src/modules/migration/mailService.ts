@@ -3,18 +3,42 @@
 // - Écriture via Gmail API (impersonation user, scope mail.google.com)
 
 import { getGoogleAccessTokenForUser } from './googleService'
-import { getOnelaToken } from './service'
+import { getAccessToken } from './service'
 
 const GMAIL_SCOPE = 'https://mail.google.com/'
 
 // ── Microsoft Graph (lecture mail ONELA) ──────────────────────────────────────
+
+async function onelaToken(): Promise<string> {
+  const tid = process.env['ONELA_TENANT_ID']
+  const cid = process.env['ONELA_CLIENT_ID']
+  const sec = process.env['ONELA_CLIENT_SECRET']
+  if (!tid || !cid || !sec) throw new Error('ONELA Graph credentials manquantes')
+  return getAccessToken(tid, cid, sec)
+}
 
 interface GraphFolder {
   id: string
   displayName: string
   path: string
   wellKnownName?: string
+  totalItemCount?: number
 }
+
+// Catégories Outlook par défaut (couleurs natives) — on ne les convertit pas en label Gmail
+// pour éviter de polluer la liste des labels avec des noms génériques
+const DEFAULT_OUTLOOK_CATEGORIES = new Set([
+  // EN
+  'orange category', 'red category', 'yellow category', 'blue category',
+  'green category', 'purple category', 'black category', 'gray category',
+  'grey category', 'pink category', 'olive category', 'teal category',
+  'steel category', 'dark blue category', 'dark green category', 'dark red category',
+  'dark yellow category', 'dark orange category', 'dark purple category',
+  // FR
+  'catégorie orange', 'catégorie rouge', 'catégorie jaune', 'catégorie bleu',
+  'catégorie verte', 'catégorie violette', 'catégorie noire', 'catégorie grise',
+  'catégorie rose', 'catégorie olive', 'catégorie sarcelle',
+])
 
 interface GraphMessageMeta {
   id: string
@@ -46,7 +70,7 @@ const SKIP_DISPLAY_NAMES = new Set([
 ])
 
 export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
-  const token = await getOnelaToken()
+  const token = await onelaToken()
   const folderById = new Map<string, GraphFolder>()
   const wellKnownIds = new Set<string>()
 
@@ -57,12 +81,12 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   const wellKnownPromises = WELL_KNOWN_ALIASES.map(async (alias) => {
     try {
       const res = await fetch(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName`,
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName,totalItemCount`,
         { headers: { Authorization: `Bearer ${token}` } }
       )
       if (res.ok) {
-        const f = (await res.json()) as { id: string; displayName: string }
-        return { type: 'keep' as const, alias, id: f.id, displayName: f.displayName }
+        const f = (await res.json()) as { id: string; displayName: string; totalItemCount?: number }
+        return { type: 'keep' as const, alias, id: f.id, displayName: f.displayName, totalItemCount: f.totalItemCount }
       }
     } catch { /* alias absent */ }
     return null
@@ -86,7 +110,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   for (const r of allResults) {
     if (!r) continue
     if (r.type === 'keep') {
-      folderById.set(r.id, { id: r.id, displayName: r.displayName, path: r.displayName, wellKnownName: r.alias })
+      folderById.set(r.id, { id: r.id, displayName: r.displayName, path: r.displayName, wellKnownName: r.alias, totalItemCount: r.totalItemCount })
       wellKnownIds.add(r.id)
     } else {
       skipIds.add(r.id)
@@ -95,11 +119,11 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
 
   // 2. Lister les folders top-level du user
   let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName`
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName,totalItemCount`
   while (url) {
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph folders error (${res.status}): ${await res.text()}`)
-    const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
+    const data = (await res.json()) as { value: Array<{ id: string; displayName: string; totalItemCount?: number }>; '@odata.nextLink'?: string }
     for (const f of data.value) {
       if (!folderById.has(f.id) && !skipIds.has(f.id)) {
         // Exclure aussi par displayName (fallback si l'alias well-known n'a pas été résolu)
@@ -107,7 +131,11 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
           skipIds.add(f.id)
           continue
         }
-        folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName })
+        folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName, totalItemCount: f.totalItemCount })
+      } else if (folderById.has(f.id) && f.totalItemCount !== undefined) {
+        // Compléter le totalItemCount d'un well-known déjà inséré sans count
+        const existing = folderById.get(f.id)!
+        existing.totalItemCount = f.totalItemCount
       }
     }
     url = data['@odata.nextLink'] ?? null
@@ -118,12 +146,12 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   // (c'est le cas pour les dossiers well-known comme inbox, sent, etc.)
   async function crawlChildren(parentId: string, parentLabelPath: string | null): Promise<void> {
     let childUrl: string | null =
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName`
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName,totalItemCount`
     while (childUrl) {
       try {
         const res: Response = await fetch(childUrl, { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) break
-        const data = (await res.json()) as { value: Array<{ id: string; displayName: string }>; '@odata.nextLink'?: string }
+        const data = (await res.json()) as { value: Array<{ id: string; displayName: string; totalItemCount?: number }>; '@odata.nextLink'?: string }
         for (const f of data.value) {
           // Ignorer les sous-dossiers système (ex: enfants de "Problèmes de synchronisation")
           if (skipIds.has(f.id) || SKIP_DISPLAY_NAMES.has(f.displayName.toLowerCase())) {
@@ -135,7 +163,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
             // Trim les espaces des noms de dossiers Exchange (certains ont des espaces en fin)
             const cleanName = f.displayName.trim()
             const childPath = parentLabelPath ? `${parentLabelPath}/${cleanName}` : cleanName
-            folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath })
+            folderById.set(f.id, { id: f.id, displayName: f.displayName, path: childPath, totalItemCount: f.totalItemCount })
             await crawlChildren(f.id, childPath)
           }
         }
@@ -158,8 +186,21 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
 }
 
 // Compte le nombre de messages avant l'itération pour afficher le total dès le début
-export async function countOnelaMessages(userId: string, since?: Date | null): Promise<number> {
-  const token = await getOnelaToken()
+// Si `folders` est fourni, on somme les totalItemCount des dossiers visibles (exclut
+// Recoverable Items + Notes/Tasks/Calendar). Sinon, fallback sur /messages global.
+export async function countOnelaMessages(
+  userId: string,
+  since?: Date | null,
+  folders?: GraphFolder[]
+): Promise<number> {
+  // Compteur précis basé sur les dossiers visibles (mode par défaut depuis la refonte)
+  // Note : en mode delta (since != null), totalItemCount n'est pas filtré par date —
+  // on retombe alors sur le compteur global Graph
+  if (folders && !since) {
+    return folders.reduce((sum, f) => sum + (f.totalItemCount ?? 0), 0)
+  }
+
+  const token = await onelaToken()
   const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$count=true&$top=1${filter}`
   const res = await fetch(url, {
@@ -178,7 +219,7 @@ export async function* iterateOnelaMessages(
   const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
   let url: string | null = base + filter
   while (url) {
-    const token = await getOnelaToken()
+    const token = await onelaToken()
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph messages error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphMessageMeta[]; '@odata.nextLink'?: string }
@@ -187,7 +228,9 @@ export async function* iterateOnelaMessages(
   }
 }
 
-// Récupère le MIME brut RFC 822 d'un message — beaucoup plus simple que reconstruire depuis le JSON
+// Récupère le MIME brut RFC 822 d'un message sous forme de Buffer binaire
+// IMPORTANT : on utilise arrayBuffer() au lieu de text() pour préserver l'intégrité
+// des pièces jointes (images, PDF, etc.) qui peuvent contenir des octets non-UTF-8
 // Retry sur 429/503/504 (transitoires côté Graph) avec backoff exponentiel
 export async function fetchOnelaMessageMime(userId: string, messageId: string): Promise<Buffer> {
   const RETRYABLE = new Set([429, 503, 504])
@@ -195,7 +238,7 @@ export async function fetchOnelaMessageMime(userId: string, messageId: string): 
   let delay = 2000
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const token = await getOnelaToken()
+    const token = await onelaToken()
     const res = await fetch(
       `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/$value`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -210,11 +253,10 @@ export async function fetchOnelaMessageMime(userId: string, messageId: string): 
     const retryAfter = res.headers.get('Retry-After')
     const waitMs = retryAfter ? Math.max(parseInt(retryAfter, 10) * 1000, 1000) : delay
     if (attempt === 1) {
-      // Log seulement le premier retry pour éviter le spam
       console.warn(`[mail] $value ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs / 1000}s`)
     }
     await new Promise((r) => setTimeout(r, waitMs))
-    delay = Math.min(delay * 2, 16000) // cap à 16s
+    delay = Math.min(delay * 2, 16000)
   }
   throw new Error('fetchOnelaMessageMime: unreachable')
 }
@@ -355,6 +397,10 @@ export async function buildLabelResolver(
         const catName = cat.trim()
         if (!catName) continue
 
+        // Skip les catégories par défaut Outlook (couleurs natives) — sinon on pollue
+        // Gmail avec "Orange category", "Red category", etc. (noms génériques sans valeur)
+        if (DEFAULT_OUTLOOK_CATEGORIES.has(catName.toLowerCase())) continue
+
         // Déjà résolu ?
         let labelId = categoryCache.get(catName.toLowerCase())
         if (labelId) { labelIds.push(labelId); continue }
@@ -385,22 +431,26 @@ export async function buildLabelResolver(
   }
 }
 
-// Import d'un message dans Gmail à partir du MIME brut
+// Import d'un message dans Gmail à partir du MIME brut (Buffer binaire)
 // Corrige les MIME malformés qui ont des headers dupliqués (From, Date, Subject…)
 // Gmail refuse les mails avec plusieurs headers From → on ne garde que le premier
+// IMPORTANT : on travaille sur Buffer pour préserver l'intégrité binaire des pièces jointes
 function fixDuplicateHeaders(mime: Buffer): Buffer {
-  // Find where headers end (separated by \r\n\r\n or \n\n)
-  let headerEnd = mime.indexOf('\r\n\r\n')
+  // Les headers MIME sont toujours en 7-bit ASCII, seul le body peut contenir du binaire
+  // On cherche la séparation headers/body (double CRLF ou double LF)
+  const crlfCrlf = Buffer.from('\r\n\r\n')
+  const lfLf = Buffer.from('\n\n')
+  let headerEndIdx = mime.indexOf(crlfCrlf)
   let eol = '\r\n'
-  if (headerEnd === -1) {
-    headerEnd = mime.indexOf('\n\n')
+  if (headerEndIdx === -1) {
+    headerEndIdx = mime.indexOf(lfLf)
     eol = '\n'
   }
-  if (headerEnd === -1) return mime
+  if (headerEndIdx === -1) return mime // pas de séparation headers/body trouvée
 
-  // Headers are pure ASCII/UTF-8 string. Let's slice the header part and decode as string
-  const headerPart = mime.subarray(0, headerEnd).toString('utf-8')
-  const bodyPart = mime.subarray(headerEnd) // starts with eol + eol
+  // Extraire seulement la partie headers en string ASCII (safe)
+  const headerPart = mime.subarray(0, headerEndIdx).toString('ascii')
+  const bodyPart = mime.subarray(headerEndIdx) // garde le body en binaire intact
 
   const seen = new Set<string>()
   const lines = headerPart.split(eol)
@@ -425,37 +475,18 @@ function fixDuplicateHeaders(mime: Buffer): Buffer {
     fixed.push(line)
   }
 
-  const fixedHeaderStr = fixed.join(eol)
-  const fixedHeaderBuf = Buffer.from(fixedHeaderStr, 'utf-8')
-
-  return Buffer.concat([fixedHeaderBuf, bodyPart])
+  const fixedHeaders = Buffer.from(fixed.join(eol), 'ascii')
+  return Buffer.concat([fixedHeaders, bodyPart])
 }
 
-function mimeToBase64Url(mime: Buffer): string {
-  return mime.toString('base64')
+function bufferToBase64Url(buf: Buffer): string {
+  return buf.toString('base64')
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-async function applyLabelsWithModify(
-  userEmail: string,
-  messageId: string,
-  labelIds: string[],
-  token: string
-): Promise<void> {
-  if (labelIds.length === 0) return
-  const modifyRes = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages/${messageId}/modify`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ addLabelIds: labelIds }),
-    }
-  )
-  if (!modifyRes.ok) {
-    const err = await modifyRes.text()
-    console.error(`[mail] modify labels failed for ${messageId}: ${err.slice(0, 200)}`)
-  }
-}
+// Seuil au-delà duquel on utilise le resumable upload Gmail (en bytes)
+// Gmail limite le JSON body à ~5 Mo ; le base64 gonfle de ~33% → seuil à 3.5 Mo bruts
+const RESUMABLE_THRESHOLD = 3.5 * 1024 * 1024
 
 export async function gmailImportMime(params: {
   userEmail: string
@@ -465,92 +496,13 @@ export async function gmailImportMime(params: {
   isRead?: boolean
 }): Promise<{ id: string }> {
   const sanitizedMime = fixDuplicateHeaders(params.rawMime)
+  const raw = bufferToBase64Url(sanitizedMime)
 
   const labelIds = [...params.labelIds]
   if (!params.isRead && !labelIds.includes('UNREAD')) labelIds.push('UNREAD')
 
-  const useMediaUpload = sanitizedMime.length > 5 * 1024 * 1024
-
-  if (useMediaUpload) {
-    const GMAIL_RETRYABLE = new Set([429, 502, 503])
-    const MAX_GMAIL_ATTEMPTS = 3
-    let lastError = ''
-
-    for (let attempt = 1; attempt <= MAX_GMAIL_ATTEMPTS; attempt++) {
-      const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
-
-      // 1) Essai avec insert (uploadType=media)
-      const uploadUrl = new URL(
-        `https://www.googleapis.com/upload/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
-      )
-      uploadUrl.searchParams.set('uploadType', 'media')
-      uploadUrl.searchParams.set('internalDateSource', 'dateHeader')
-      uploadUrl.searchParams.set('deleted', 'false')
-
-      const res = await fetch(uploadUrl.toString(), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'message/rfc822',
-        },
-        body: sanitizedMime,
-      })
-
-      if (res.ok) {
-        const result = (await res.json()) as { id: string }
-        await applyLabelsWithModify(params.userEmail, result.id, labelIds, token)
-        return result
-      }
-
-      const errMsg = await res.text()
-
-      // Retry sur erreurs transitoires Gmail (502, 503, 429)
-      if (GMAIL_RETRYABLE.has(res.status) && attempt < MAX_GMAIL_ATTEMPTS) {
-        const waitMs = res.status === 429 ? 5000 : 2000 * attempt
-        console.warn(`[mail] Gmail media insert ${res.status} — retry ${attempt}/${MAX_GMAIL_ATTEMPTS} dans ${waitMs / 1000}s`)
-        await new Promise((r) => setTimeout(r, waitMs))
-        continue
-      }
-
-      // Fallback sur import si erreur 400
-      if (res.status === 400) {
-        console.warn(`[mail] media insert 400, fallback import: ${errMsg.slice(0, 120)}`)
-        const importUrl = new URL(
-          `https://www.googleapis.com/upload/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/import`
-        )
-        importUrl.searchParams.set('uploadType', 'media')
-        importUrl.searchParams.set('internalDateSource', 'dateHeader')
-        importUrl.searchParams.set('neverMarkSpam', 'true')
-        importUrl.searchParams.set('processForCalendar', 'false')
-        importUrl.searchParams.set('deleted', 'false')
-
-        const importRes = await fetch(importUrl.toString(), {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'message/rfc822',
-          },
-          body: sanitizedMime,
-        })
-
-        if (importRes.ok) {
-          const result = (await importRes.json()) as { id: string }
-          await applyLabelsWithModify(params.userEmail, result.id, labelIds, token)
-          return result
-        }
-
-        const importErr = await importRes.text()
-        throw new Error(`Gmail media import error (${importRes.status}): ${importErr}`)
-      }
-
-      lastError = `Gmail media insert error (${res.status}): ${errMsg}`
-      break
-    }
-    throw new Error(lastError || 'Gmail media import: all attempts failed')
-  }
-
-  // Comportement standard pour les messages <= 5 Mo
-  const raw = mimeToBase64Url(sanitizedMime)
+  // Pour les gros mails, utiliser le resumable upload au lieu du JSON body
+  const useResumable = sanitizedMime.length > RESUMABLE_THRESHOLD
 
   // Retry sur 502/503/429 Gmail (erreurs transitoires)
   const GMAIL_RETRYABLE = new Set([429, 502, 503])
@@ -560,6 +512,25 @@ export async function gmailImportMime(params: {
   for (let attempt = 1; attempt <= MAX_GMAIL_ATTEMPTS; attempt++) {
     const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
 
+    // ── Gros mail : resumable upload (multipart) ──────────────────────────
+    if (useResumable) {
+      try {
+        const result = await gmailResumableInsert(token, params.userEmail, sanitizedMime, labelIds)
+        return result
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        // Retry on transient errors
+        if (attempt < MAX_GMAIL_ATTEMPTS && /\b(429|502|503)\b/.test(errMsg)) {
+          const waitMs = 2000 * attempt
+          console.warn(`[mail] Gmail resumable ${errMsg.slice(0, 80)} — retry ${attempt}/${MAX_GMAIL_ATTEMPTS} dans ${waitMs / 1000}s`)
+          await new Promise((r) => setTimeout(r, waitMs))
+          continue
+        }
+        throw err
+      }
+    }
+
+    // ── Mail normal : JSON body avec raw base64 ──────────────────────────
     // 1) Essai avec messages.insert (bypass la classification Gmail → respecte les labels exactement)
     const insertUrl = new URL(
       `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages`
@@ -629,11 +600,67 @@ export async function gmailImportMime(params: {
       throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
     }
 
+    // 413 = trop gros pour le JSON body → forcer le resumable upload
+    if (insertRes.status === 413) {
+      console.warn(`[mail] insert 413 (taille: ${(sanitizedMime.length / 1024 / 1024).toFixed(1)} Mo), tentative resumable upload`)
+      try {
+        return await gmailResumableInsert(token, params.userEmail, sanitizedMime, labelIds)
+      } catch (err) {
+        throw new Error(`Gmail resumable upload failed: ${err instanceof Error ? err.message : err}`)
+      }
+    }
+
     lastError = `Gmail insert error (${insertRes.status}): ${insertErr}`
     break // Non-retryable error, exit loop
   }
 
   throw new Error(lastError || 'Gmail import: all attempts failed')
+}
+
+// Upload d'un gros mail via le multipart upload Gmail (>3.5 Mo)
+// Utilise le endpoint /upload/gmail/v1/users/.../messages avec uploadType=multipart
+async function gmailResumableInsert(
+  token: string,
+  userEmail: string,
+  mimeBuffer: Buffer,
+  labelIds: string[]
+): Promise<{ id: string }> {
+  const boundary = `----MigrationBoundary${Date.now()}`
+  const metadata = JSON.stringify({ labelIds })
+
+  // Construire le body multipart manuellement
+  const parts = [
+    `--${boundary}\r\n`,
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n`,
+    metadata,
+    `\r\n--${boundary}\r\n`,
+    `Content-Type: message/rfc822\r\n\r\n`,
+  ]
+  const preamble = Buffer.from(parts.join(''), 'utf-8')
+  const epilogue = Buffer.from(`\r\n--${boundary}--`, 'utf-8')
+  const body = Buffer.concat([preamble, mimeBuffer, epilogue])
+
+  const url = new URL(
+    `https://gmail.googleapis.com/upload/gmail/v1/users/${encodeURIComponent(userEmail)}/messages`
+  )
+  url.searchParams.set('uploadType', 'multipart')
+  url.searchParams.set('internalDateSource', 'dateHeader')
+
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary="${boundary}"`,
+      'Content-Length': String(body.length),
+    },
+    body,
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Gmail multipart upload error (${res.status}): ${err}`)
+  }
+  return (await res.json()) as { id: string }
 }
 
 // Modifier les labels d'un message Gmail existant (ajouter + retirer)

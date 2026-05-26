@@ -234,7 +234,9 @@ async function processUserMail(job: Migration) {
     let total = previousTotal
     let preCountSet = false
     try {
-      const newCount = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
+      // En full-resync (pas de lastSyncAt), on utilise la somme des totalItemCount
+      // des dossiers visibles : exclut Recoverable Items / Notes / Tasks / Calendar
+      const newCount = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt, folders)
       total = previousTotal + newCount
       preCountSet = true
       await db.update(migrations).set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed }).where(eq(migrations.id, job.id))
@@ -250,12 +252,21 @@ async function processUserMail(job: Migration) {
     // Traitement par batch de MAIL_CONCURRENCY messages en parallèle
     let batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
     while (batch.length > 0) {
-      // Filtrer les messages déjà migrés
+      // Filtrer les messages déjà migrés + ceux dans des dossiers cachés
+      // (Recoverable Items : Versions, Purges, Deletions — non visibles dans Outlook)
       const toProcess = batch.filter((msg) => {
         if (!preCountSet) total++
         if (skipSet.has(msg.id)) {
           skipped++
           if (skipped % 500 === 0) console.log(`[mail] ${job.id}: skipped ${skipped}/${skipSet.size} déjà migrés...`)
+          return false
+        }
+        // Dossier inconnu = Recoverable Items ou dossier système caché → skip silencieux
+        // (on évite ainsi les ~11k messages fantômes par rapport au compte Outlook visible)
+        if (msg.parentFolderId && !folderById.has(msg.parentFolderId)) {
+          skipped++
+          // Compte non-incrémenté : ces messages ne devraient pas peser sur total
+          if (!preCountSet) total--
           return false
         }
         return true
