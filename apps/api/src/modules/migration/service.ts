@@ -186,7 +186,10 @@ export async function createGohUser(params: {
 
 export async function setGohUserAttributes(userId: string, ext10: string, ext11: string): Promise<void> {
   const token = await gohToken()
+  // On renseigne aussi `mail` avec la valeur d'extensionAttribute11 (prenom.nom@onela.com)
+  // pour que le compte affiche la bonne adresse de routage dans Entra ID
   await graphRequest<void>(token, 'PATCH', `/users/${userId}`, {
+    mail: ext11,
     onPremisesExtensionAttributes: { extensionAttribute10: ext10, extensionAttribute11: ext11 },
   })
 }
