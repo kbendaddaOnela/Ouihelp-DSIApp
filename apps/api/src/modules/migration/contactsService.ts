@@ -44,8 +44,9 @@ export async function* iterateOnelaContacts(
   since?: Date | null
 ): AsyncGenerator<GraphContact> {
   const filter = since ? `&$filter=lastModifiedDateTime gt ${since.toISOString()}` : ''
+  // $orderby pour une pagination stable avec $filter (sinon Graph peut couper prématurément)
   let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$top=100${filter}`
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$top=100${filter}&$orderby=${encodeURIComponent('lastModifiedDateTime')}`
   while (url) {
     const token = await getOnelaToken()
     const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })

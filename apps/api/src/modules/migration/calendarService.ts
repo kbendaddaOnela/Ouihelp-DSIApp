@@ -76,8 +76,10 @@ export async function* iterateOnelaEvents(
 ): AsyncGenerator<GraphEvent> {
   let filter = `(type eq 'singleInstance' or type eq 'seriesMaster')`
   if (since) filter += ` and lastModifiedDateTime gt ${since.toISOString()}`
+  // $orderby est obligatoire pour une pagination stable avec $filter
+  // (sinon Graph peut couper la pagination prématurément et yield seulement une partie des events)
   let url: string | null =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$top=100&$filter=${encodeURIComponent(filter)}`
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$top=100&$filter=${encodeURIComponent(filter)}&$orderby=${encodeURIComponent('lastModifiedDateTime')}`
   while (url) {
     const token = await getOnelaToken()
     const res: Response = await fetch(url, {
