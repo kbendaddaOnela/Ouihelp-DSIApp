@@ -222,6 +222,8 @@ function buildGoogleEvent(g: GraphEvent): GoogleCalendarEvent | null {
   return ev
 }
 
+const CAL_MAX_RETRIES = 4
+
 export async function googleCalendarImportEvent(
   userEmail: string,
   graphEvent: GraphEvent
@@ -229,23 +231,41 @@ export async function googleCalendarImportEvent(
   const evt = buildGoogleEvent(graphEvent)
   if (!evt) return null
 
-  const token = await getGoogleAccessTokenForUser(userEmail, CALENDAR_SCOPE)
-
   // import = on dépose l'événement sans envoyer d'invitations
   const url = new URL(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(userEmail)}/events/import`
   )
   url.searchParams.set('sendUpdates', 'none')
 
-  const res = await fetch(url.toString(), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(evt),
-  })
+  for (let attempt = 0; attempt < CAL_MAX_RETRIES; attempt++) {
+    const token = await getGoogleAccessTokenForUser(userEmail, CALENDAR_SCOPE)
 
-  if (!res.ok) {
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(evt),
+    })
+
+    if (res.ok) {
+      return (await res.json()) as { id: string }
+    }
+
+    // 409 Conflict = event déjà importé (même iCalUID) → skip silencieux
+    if (res.status === 409) {
+      return { id: `duplicate-${graphEvent.id}` }
+    }
+
+    // Retry sur rate limit (403 usageLimits / 429) et erreurs transitoires (502/503)
+    if ((res.status === 403 || res.status === 429 || res.status === 502 || res.status === 503) && attempt < CAL_MAX_RETRIES - 1) {
+      const backoff = Math.min(1000 * Math.pow(2, attempt + 1), 16000) // 2s, 4s, 8s, 16s
+      console.warn(`[calendar] ${res.status} on import (attempt ${attempt + 1}/${CAL_MAX_RETRIES}), retry in ${backoff}ms`)
+      await new Promise((r) => setTimeout(r, backoff))
+      continue
+    }
+
     const err = await res.text()
     throw new Error(`Google Calendar import error (${res.status}): ${err}`)
   }
-  return (await res.json()) as { id: string }
+
+  throw new Error('Google Calendar import: max retries exceeded')
 }
