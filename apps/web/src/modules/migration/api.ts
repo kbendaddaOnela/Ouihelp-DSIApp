@@ -65,6 +65,9 @@ export const migrationApi = {
   relabelMail: (id: string) =>
     apiClient.post<{ message: string }>(`/migration/${id}/relabel-mail`).then((r) => r.data),
 
+  dedupeMail: (id: string) =>
+    apiClient.post<{ message: string }>(`/migration/${id}/dedupe-mail`).then((r) => r.data),
+
   moveOu: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/move-ou`).then((r) => r.data),
 

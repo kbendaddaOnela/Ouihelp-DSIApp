@@ -165,6 +165,14 @@ export function useRelabelMail() {
   })
 }
 
+export function useDedupeMail() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.dedupeMail(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
 export function useMoveOu() {
   const qc = useQueryClient()
   return useMutation({

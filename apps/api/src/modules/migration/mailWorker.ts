@@ -13,6 +13,7 @@ import {
   buildLabelResolver,
   gmailImportMime,
   gmailModifyLabels,
+  gmailFindByMessageId,
   type GraphFolder,
 } from './mailService'
 import { countOnelaEvents, iterateOnelaEvents, googleCalendarImportEvent } from './calendarService'
@@ -23,7 +24,7 @@ import { countOnelaContacts, iterateOnelaContacts, googlePeopleCreateContact } f
 const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
   s ? s.replace(/[\u{10000}-\u{10FFFF}]/gu, '').slice(0, maxLen) || null : null
 
-const MAX_CONCURRENT = 3
+const MAX_CONCURRENT = 6
 const POLL_INTERVAL_MS = 5000
 const RUNNING = new Map<string, 'mail' | 'calendar' | 'contacts'>()
 
@@ -50,8 +51,9 @@ const MAIL_CONCURRENCY = 2
 const CAL_CONCURRENCY = 2
 const CONTACTS_CONCURRENCY = 2
 
-// On limite à 1 seul job mail à la fois pour éviter de saturer le rate limit Graph $value
-const MAX_CONCURRENT_MAIL = 1
+// Avec retry+throttle adaptatif sur Graph et Gmail, on peut faire tourner 2 migrations
+// mail en parallèle sans saturer (testé : OK avec 2x MAIL_CONCURRENCY=2 = 4 req/s max sur $value)
+const MAX_CONCURRENT_MAIL = 2
 
 /** Collecte `count` items d'un AsyncGenerator (ou moins si épuisé) */
 async function collectBatch<T>(gen: AsyncGenerator<T>, count: number): Promise<T[]> {
@@ -245,6 +247,7 @@ async function processUserMail(job: Migration) {
     }
 
     let skipped = 0
+    let dedupHits = 0 // compteur des messages détectés comme déjà présents dans Gmail
     let batchDelay = 500 // délai adaptatif entre les batches (ms), commence à 500ms pour éviter le burst initial
     const syncStartedAt = new Date()
     const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
@@ -275,6 +278,15 @@ async function processUserMail(job: Migration) {
       // Traiter le batch en parallèle
       const results = await Promise.allSettled(
         toProcess.map(async (msg) => {
+          // Dédup : si le Message-ID existe déjà dans Gmail, on récupère son ID
+          // sans re-télécharger ni re-uploader. Évite les doublons après un reset.
+          if (msg.internetMessageId) {
+            const existingId = await gmailFindByMessageId(job.gohUpn!, msg.internetMessageId)
+            if (existingId) {
+              return { msg, result: { id: existingId }, dedup: true as const }
+            }
+          }
+
           const rawMime = await fetchOnelaMessageMime(job.onelaUserId, msg.id)
           const folder = msg.parentFolderId ? folderById.get(msg.parentFolderId) : undefined
           const folderLabels = folder ? await resolver.resolve(folder) : ['INBOX']
@@ -291,7 +303,7 @@ async function processUserMail(job: Migration) {
             isDraft: msg.isDraft,
             isRead: msg.isRead,
           })
-          return { msg, result }
+          return { msg, result, dedup: false as const }
         })
       )
 
@@ -317,6 +329,10 @@ async function processUserMail(job: Migration) {
             console.error(`[mail] DB write failed for success record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
           }
           migrated++
+          if (res.value.dedup) {
+            dedupHits++
+            if (dedupHits % 100 === 0) console.log(`[mail] ${job.id}: ${dedupHits} doublons détectés (Message-ID déjà présent dans Gmail)`)
+          }
           if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
         } else {
           const errorDetails = sanitize(res.reason instanceof Error ? res.reason.message : String(res.reason), 2000) ?? 'unknown'
@@ -382,7 +398,7 @@ async function processUserMail(job: Migration) {
       })
       .where(eq(migrations.id, job.id))
 
-    console.log(`[mail] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
+    console.log(`[mail] done ${job.id}: ${migrated}/${total} OK, ${failed} fail, ${dedupHits} dédup`)
   } catch (err) {
     await markStepError(job.id, 'mail', err instanceof Error ? err.message : String(err))
   }
