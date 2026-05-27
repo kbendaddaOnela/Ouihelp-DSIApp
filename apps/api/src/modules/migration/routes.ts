@@ -17,6 +17,7 @@ import {
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
+import { gmailDedupeMailbox } from './mailService'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -433,6 +434,34 @@ migrationRouter.post('/:id/relabel-mail', requirePermission('migration:write'), 
     })
 
   return c.json({ message: 'Re-labellisation lancée en background' }, 202)
+})
+
+// ── Déduplication Gmail : nettoie les doublons par Message-ID ───────────────
+// Scanne toute la mailbox, groupe par Message-ID RFC822 et envoie les doublons
+// à la Corbeille (purge auto 30j, donc réversible si erreur).
+migrationRouter.post('/:id/dedupe-mail', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé' }, 400)
+
+  await db.update(migrations).set({ mailError: 'Déduplication Gmail en cours…' }).where(eq(migrations.id, id))
+
+  gmailDedupeMailbox(row.gohUpn, async (scanned, removed) => {
+    const msg = `Déduplication : ${scanned} scannés, ${removed} doublons supprimés…`
+    await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, id))
+  })
+    .then(async (result) => {
+      const msg = `Déduplication terminée : ${result.duplicatesRemoved} doublons supprimés sur ${result.scanned} messages scannés${result.errors > 0 ? ` (${result.errors} erreurs)` : ''}`
+      await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, id))
+    })
+    .catch(async (err) => {
+      const msg = `Déduplication échouée : ${err instanceof Error ? err.message : String(err)}`
+      await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, id))
+    })
+
+  return c.json({ message: 'Déduplication lancée en background' }, 202)
 })
 
 // ── Forcer l'arrêt d'une phase (running → error) ────────────────────────────

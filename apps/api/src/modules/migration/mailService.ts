@@ -496,6 +496,138 @@ export async function buildLabelResolver(
   }
 }
 
+/**
+ * Cherche dans Gmail un message existant avec le même Message-ID RFC822.
+ * Permet d'éviter les doublons quand on relance une migration après un reset.
+ * Retourne l'ID Gmail du message existant, ou `null` s'il n'existe pas.
+ */
+export async function gmailFindByMessageId(
+  userEmail: string,
+  internetMessageId: string
+): Promise<string | null> {
+  if (!internetMessageId) return null
+
+  const token = await getGoogleAccessTokenForUser(userEmail, GMAIL_SCOPE)
+  // Le Message-ID est souvent entre `<>` dans le header brut, Gmail accepte les deux formats
+  const cleaned = internetMessageId.replace(/^<|>$/g, '')
+  const q = `rfc822msgid:${cleaned}`
+  const url = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages?q=${encodeURIComponent(q)}&maxResults=1`
+
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok) {
+    // 404 / 429 / 5xx → on retourne null pour ne pas bloquer la migration
+    return null
+  }
+  const data = (await res.json()) as { messages?: Array<{ id: string }> }
+  return data.messages?.[0]?.id ?? null
+}
+
+/**
+ * Scanne toute la mailbox Gmail, groupe les messages par Message-ID RFC822 et
+ * supprime les doublons (garde le plus ancien). Utile après une mauvaise réinit
+ * qui aurait re-uploadé des messages déjà migrés.
+ *
+ * NB : la suppression Gmail = déplacement vers la Corbeille (purge auto 30j).
+ * On ne fait pas batchDelete pour rester compatible avec le scope `gmail.modify`.
+ */
+export async function gmailDedupeMailbox(
+  userEmail: string,
+  onProgress?: (scanned: number, duplicatesRemoved: number) => void
+): Promise<{ scanned: number; duplicatesRemoved: number; errors: number }> {
+  const token = await getGoogleAccessTokenForUser(userEmail, GMAIL_SCOPE)
+
+  // Map: Message-ID → liste de { gmailId, internalDate } pour grouper les doublons
+  const byMsgId = new Map<string, Array<{ gmailId: string; internalDate: number }>>()
+  let scanned = 0
+
+  // 1. Lister tous les message IDs de la mailbox (paginé, 500 par page)
+  const allIds: string[] = []
+  let pageToken: string | undefined
+  do {
+    const listUrl = new URL(
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages`
+    )
+    listUrl.searchParams.set('maxResults', '500')
+    // Inclure aussi la Corbeille et le Spam (les doublons peuvent y être)
+    listUrl.searchParams.set('includeSpamTrash', 'true')
+    if (pageToken) listUrl.searchParams.set('pageToken', pageToken)
+
+    const res = await fetch(listUrl.toString(), { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) throw new Error(`Gmail list error (${res.status}): ${await res.text()}`)
+    const data = (await res.json()) as { messages?: Array<{ id: string }>; nextPageToken?: string }
+    if (data.messages) allIds.push(...data.messages.map((m) => m.id))
+    pageToken = data.nextPageToken
+  } while (pageToken)
+
+  console.log(`[dedupe] ${userEmail}: ${allIds.length} messages à analyser`)
+
+  // 2. Pour chaque ID, récupérer le header Message-ID (en parallèle par batch de 20)
+  const BATCH = 20
+  for (let i = 0; i < allIds.length; i += BATCH) {
+    const slice = allIds.slice(i, i + BATCH)
+    const results = await Promise.allSettled(
+      slice.map(async (gmailId) => {
+        const detailRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages/${gmailId}?format=metadata&metadataHeaders=Message-ID`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        )
+        if (!detailRes.ok) return null
+        const detail = (await detailRes.json()) as {
+          id: string
+          internalDate: string
+          payload?: { headers?: Array<{ name: string; value: string }> }
+        }
+        const header = detail.payload?.headers?.find((h) => h.name.toLowerCase() === 'message-id')
+        if (!header) return null
+        return { gmailId, internalDate: parseInt(detail.internalDate, 10), msgId: header.value }
+      })
+    )
+
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value) {
+        const { gmailId, internalDate, msgId } = r.value
+        const arr = byMsgId.get(msgId) ?? []
+        arr.push({ gmailId, internalDate })
+        byMsgId.set(msgId, arr)
+      }
+      scanned++
+    }
+    if (onProgress && scanned % 500 < BATCH) onProgress(scanned, 0)
+  }
+
+  console.log(`[dedupe] ${userEmail}: ${byMsgId.size} Message-ID uniques sur ${scanned} messages scannés`)
+
+  // 3. Supprimer les doublons (garder le plus ancien par groupe)
+  let duplicatesRemoved = 0
+  let errors = 0
+  for (const [, entries] of byMsgId) {
+    if (entries.length <= 1) continue
+    entries.sort((a, b) => a.internalDate - b.internalDate)
+    const toDelete = entries.slice(1) // tout sauf le plus ancien
+
+    for (const dup of toDelete) {
+      // On utilise `trash` plutôt que `delete` : compatible avec le scope gmail.modify
+      // et réversible (l'user peut récupérer 30j si on s'est trompé)
+      const trashRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages/${dup.gmailId}/trash`,
+        { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+      )
+      if (trashRes.ok) {
+        duplicatesRemoved++
+        if (duplicatesRemoved % 100 === 0) {
+          console.log(`[dedupe] ${userEmail}: ${duplicatesRemoved} doublons supprimés…`)
+          onProgress?.(scanned, duplicatesRemoved)
+        }
+      } else {
+        errors++
+      }
+    }
+  }
+
+  console.log(`[dedupe] ${userEmail}: terminé — ${duplicatesRemoved} doublons supprimés, ${errors} erreurs`)
+  return { scanned, duplicatesRemoved, errors }
+}
+
 // Import d'un message dans Gmail à partir du MIME brut (Buffer binaire)
 // Corrige les MIME malformés qui ont des headers dupliqués (From, Date, Subject…)
 // Gmail refuse les mails avec plusieurs headers From → on ne garde que le premier
