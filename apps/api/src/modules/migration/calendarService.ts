@@ -1,6 +1,7 @@
 // Migration calendrier Exchange → Google Calendar
 // Lecture Graph (Calendars.Read App) → Écriture Calendar API (impersonation user)
 
+import { fetchWithTimeout } from './httpClient'
 import { getGoogleAccessTokenForUser } from './googleService'
 import { getOnelaToken } from './service'
 
@@ -62,7 +63,7 @@ export async function countOnelaEvents(userId: string, since?: Date | null): Pro
   let filter = `(type eq 'singleInstance' or type eq 'seriesMaster')`
   if (since) filter += ` and lastModifiedDateTime gt ${since.toISOString()}`
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$count=true&$top=1&$filter=${encodeURIComponent(filter)}`
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
   })
   if (!res.ok) throw new Error(`Graph events count error (${res.status}): ${await res.text()}`)
@@ -82,7 +83,7 @@ export async function* iterateOnelaEvents(
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/events?$top=100&$filter=${encodeURIComponent(filter)}&$orderby=${encodeURIComponent('lastModifiedDateTime')}`
   while (url) {
     const token = await getOnelaToken()
-    const res: Response = await fetch(url, {
+    const res: Response = await fetchWithTimeout(url, {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!res.ok) throw new Error(`Graph events error (${res.status}): ${await res.text()}`)
@@ -242,7 +243,7 @@ export async function googleCalendarImportEvent(
   for (let attempt = 0; attempt < CAL_MAX_RETRIES; attempt++) {
     const token = await getGoogleAccessTokenForUser(userEmail, CALENDAR_SCOPE)
 
-    const res = await fetch(url.toString(), {
+    const res = await fetchWithTimeout(url.toString(), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(evt),

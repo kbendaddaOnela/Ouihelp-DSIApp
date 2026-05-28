@@ -1,6 +1,7 @@
 // Migration contacts Exchange → Google Contacts (People API)
 // Lecture Graph (Contacts.Read App) → Écriture People API (impersonation user)
 
+import { fetchWithTimeout } from './httpClient'
 import { getGoogleAccessTokenForUser } from './googleService'
 import { getOnelaToken } from './service'
 
@@ -31,7 +32,7 @@ export async function countOnelaContacts(userId: string, since?: Date | null): P
   const token = await getOnelaToken()
   const filter = since ? `&$filter=lastModifiedDateTime gt ${since.toISOString()}` : ''
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$count=true&$top=1${filter}`
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
   })
   if (!res.ok) throw new Error(`Graph contacts count error (${res.status}): ${await res.text()}`)
@@ -49,7 +50,7 @@ export async function* iterateOnelaContacts(
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/contacts?$top=100${filter}&$orderby=${encodeURIComponent('lastModifiedDateTime')}`
   while (url) {
     const token = await getOnelaToken()
-    const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const res: Response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph contacts error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphContact[]; '@odata.nextLink'?: string }
     for (const c of data.value) yield c
@@ -149,7 +150,7 @@ export async function googlePeopleCreateContact(
   for (let attempt = 0; attempt < CONTACTS_MAX_RETRIES; attempt++) {
     const token = await getGoogleAccessTokenForUser(userEmail, CONTACTS_SCOPE)
 
-    const res = await fetch('https://people.googleapis.com/v1/people:createContact', {
+    const res = await fetchWithTimeout('https://people.googleapis.com/v1/people:createContact', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

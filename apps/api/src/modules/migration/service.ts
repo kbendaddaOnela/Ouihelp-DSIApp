@@ -1,4 +1,5 @@
 // Graph API client — client credentials flow (no SDK dependency)
+import { fetchWithTimeout } from './httpClient'
 
 interface TokenCache {
   token: string
@@ -12,7 +13,7 @@ export async function getAccessToken(tenantId: string, clientId: string, clientS
   const cached = tokenCache.get(cacheKey)
   if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token
 
-  const res = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
+  const res = await fetchWithTimeout(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -34,7 +35,7 @@ export async function getAccessToken(tenantId: string, clientId: string, clientS
 }
 
 async function graphRequest<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+  const res = await fetchWithTimeout(`https://graph.microsoft.com/v1.0${path}`, {
     method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
@@ -98,7 +99,7 @@ async function onelaExchangeToken(): Promise<string> {
 
 async function exchangeAdminRequest<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
   const tid = process.env['ONELA_TENANT_ID']
-  const res = await fetch(`https://outlook.office365.com/adminapi/beta/${tid}${path}`, {
+  const res = await fetchWithTimeout(`https://outlook.office365.com/adminapi/beta/${tid}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,

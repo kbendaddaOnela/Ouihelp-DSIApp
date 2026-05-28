@@ -44,6 +44,27 @@ function clearStopSignal(migrationId: string, phase: 'mail' | 'calendar' | 'cont
   STOP_SIGNALS.delete(`${migrationId}-${phase}`)
 }
 
+// Heartbeat : un job actif mais lent (ex. un resume qui re-scanne des milliers de
+// messages déjà migrés, ou un gros téléchargement) doit rafraîchir son updatedAt
+// régulièrement. Sinon le détecteur d'orphelins le croit mort, le remet en
+// 'pending' et le relance → livelock (la tâche redémarre sans jamais finir).
+const HEARTBEAT_MS = 60_000
+// Seuil d'inactivité avant de considérer un job 'running' comme orphelin.
+// Avec le heartbeat ci-dessus (toutes les 60s), 15 min laisse une grande marge :
+// on ne relance que si la tâche est vraiment morte (process crashé/recyclé).
+const ORPHAN_STALE_MS = 15 * 60 * 1000
+
+function startHeartbeat(migrationId: string): () => void {
+  const timer = setInterval(() => {
+    void db
+      .update(migrations)
+      .set({ updatedAt: new Date() })
+      .where(eq(migrations.id, migrationId))
+      .catch((err) => console.warn(`[heartbeat] ${migrationId}:`, err instanceof Error ? err.message : err))
+  }, HEARTBEAT_MS)
+  return () => clearInterval(timer)
+}
+
 // Nombre d'items traités en parallèle dans chaque phase
 // Mail : 2 (Graph $value est TRÈS agressivement throttlé, surtout avec plusieurs jobs)
 // Calendar/Contacts : 5 (moins de données par requête)
@@ -104,7 +125,7 @@ async function pollAndProcess() {
       const key = `${job.id}-${phase}`
       if (job[stepCol] === 'running' && !RUNNING.has(key)) {
         const updatedAtTime = new Date(job.updatedAt).getTime()
-        const isStale = Date.now() - updatedAtTime > 5 * 60 * 1000
+        const isStale = Date.now() - updatedAtTime > ORPHAN_STALE_MS
         if (isStale) {
           console.warn(`[migration-worker] orphan detected: ${key} is 'running' (inactive since ${job.updatedAt}) and not in local RUNNING map — resetting to 'pending'`)
           if (phase === 'mail') {
@@ -188,6 +209,7 @@ async function processUserMail(job: Migration) {
   console.log(`[mail] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
   if (!job.gohUpn) return markStepError(job.id, 'mail', 'gohUpn manquant')
 
+  const stopHeartbeat = startHeartbeat(job.id)
   try {
     // Charger les messages déjà migrés pour skip (idempotence)
     // On ne skip que les succès — les erreurs seront retentées automatiquement
@@ -401,6 +423,8 @@ async function processUserMail(job: Migration) {
     console.log(`[mail] done ${job.id}: ${migrated}/${total} OK, ${failed} fail, ${dedupHits} dédup`)
   } catch (err) {
     await markStepError(job.id, 'mail', err instanceof Error ? err.message : String(err))
+  } finally {
+    stopHeartbeat()
   }
 }
 
@@ -410,6 +434,7 @@ async function processUserCalendar(job: Migration) {
   console.log(`[calendar] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
   if (!job.gohUpn) return markStepError(job.id, 'calendar', 'gohUpn manquant')
 
+  const stopHeartbeat = startHeartbeat(job.id)
   try {
     const alreadyCal = await db
       .select({ graphEventId: migratedEvents.graphEventId, status: migratedEvents.status })
@@ -537,6 +562,8 @@ async function processUserCalendar(job: Migration) {
     console.log(`[calendar] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
   } catch (err) {
     await markStepError(job.id, 'calendar', err instanceof Error ? err.message : String(err))
+  } finally {
+    stopHeartbeat()
   }
 }
 
@@ -546,6 +573,7 @@ async function processUserContacts(job: Migration) {
   console.log(`[contacts] start ${job.id} (${job.onelaUpn} → ${job.gohUpn})`)
   if (!job.gohUpn) return markStepError(job.id, 'contacts', 'gohUpn manquant')
 
+  const stopHeartbeat = startHeartbeat(job.id)
   try {
     const alreadyCt = await db
       .select({ graphContactId: migratedContacts.graphContactId, status: migratedContacts.status })
@@ -663,6 +691,8 @@ async function processUserContacts(job: Migration) {
     console.log(`[contacts] done ${job.id}: ${migrated}/${total} OK, ${failed} fail`)
   } catch (err) {
     await markStepError(job.id, 'contacts', err instanceof Error ? err.message : String(err))
+  } finally {
+    stopHeartbeat()
   }
 }
 

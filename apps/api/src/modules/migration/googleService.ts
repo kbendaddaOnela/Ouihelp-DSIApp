@@ -1,4 +1,5 @@
 import { SignJWT, importPKCS8 } from 'jose'
+import { fetchWithTimeout } from './httpClient'
 
 interface TokenCache {
   token: string
@@ -30,7 +31,7 @@ export async function getGoogleAccessTokenForUser(impersonate: string, scope: st
     .setExpirationTime(now + 3600)
     .sign(privateKey)
 
-  const res = await fetch('https://oauth2.googleapis.com/token', {
+  const res = await fetchWithTimeout('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -57,7 +58,7 @@ async function getGoogleAccessToken(): Promise<string> {
 
 export async function googleUserExists(email: string): Promise<boolean> {
   const token = await getGoogleAccessToken()
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://admin.googleapis.com/admin/directory/v1/users/${encodeURIComponent(email)}?projection=basic`,
     { headers: { Authorization: `Bearer ${token}` } }
   )
@@ -67,7 +68,7 @@ export async function googleUserExists(email: string): Promise<boolean> {
 /** Déplace un utilisateur Google vers une OU donnée (ex: /ONELA) */
 export async function moveUserToOu(userEmail: string, ouPath: string): Promise<void> {
   const token = await getGoogleAccessToken()
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://admin.googleapis.com/admin/directory/v1/users/${encodeURIComponent(userEmail)}`,
     {
       method: 'PATCH',
@@ -83,7 +84,7 @@ export async function moveUserToOu(userEmail: string, ouPath: string): Promise<v
 
 export async function addGoogleAlias(userEmail: string, alias: string): Promise<void> {
   const token = await getGoogleAccessToken()
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://admin.googleapis.com/admin/directory/v1/users/${encodeURIComponent(userEmail)}/aliases`,
     {
       method: 'POST',

@@ -2,6 +2,7 @@
 // - Lecture via Microsoft Graph (App-only, Mail.ReadWrite)
 // - Écriture via Gmail API (impersonation user, scope mail.google.com)
 
+import { fetchWithTimeout } from './httpClient'
 import { getGoogleAccessTokenForUser } from './googleService'
 import { getAccessToken } from './service'
 
@@ -115,7 +116,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   // 1. Récupérer en parallèle les folders well-known + ceux à ignorer
   const wellKnownPromises = WELL_KNOWN_ALIASES.map(async (alias) => {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName,totalItemCount`,
         { headers: { Authorization: `Bearer ${token}` } }
       )
@@ -129,7 +130,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
 
   const skipPromises = [...SKIP_WELL_KNOWN].map(async (alias) => {
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id`,
         { headers: { Authorization: `Bearer ${token}` } }
       )
@@ -156,7 +157,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   let url: string | null =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName,totalItemCount`
   while (url) {
-    const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const res: Response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph folders error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: Array<{ id: string; displayName: string; totalItemCount?: number }>; '@odata.nextLink'?: string }
     for (const f of data.value) {
@@ -190,7 +191,7 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
       `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${parentId}/childFolders?$top=100&$select=id,displayName,totalItemCount`
     while (childUrl) {
       try {
-        const res: Response = await fetch(childUrl, { headers: { Authorization: `Bearer ${token}` } })
+        const res: Response = await fetchWithTimeout(childUrl, { headers: { Authorization: `Bearer ${token}` } })
         if (!res.ok) break
         const data = (await res.json()) as { value: Array<{ id: string; displayName: string; totalItemCount?: number }>; '@odata.nextLink'?: string }
         for (const f of data.value) {
@@ -260,7 +261,7 @@ export async function countOnelaMessages(
   const token = await onelaToken()
   const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$count=true&$top=1${filter}`
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
   })
   if (!res.ok) throw new Error(`Graph count error (${res.status}): ${await res.text()}`)
@@ -277,7 +278,7 @@ export async function* iterateOnelaMessages(
   let url: string | null = base + filter
   while (url) {
     const token = await onelaToken()
-    const res: Response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const res: Response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph messages error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphMessageMeta[]; '@odata.nextLink'?: string }
     for (const msg of data.value) yield msg
@@ -296,7 +297,7 @@ export async function fetchOnelaMessageMime(userId: string, messageId: string): 
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const token = await onelaToken()
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/$value`,
       { headers: { Authorization: `Bearer ${token}` } }
     )
@@ -328,7 +329,7 @@ interface GmailLabel {
 
 export async function listGmailLabels(userEmail: string): Promise<GmailLabel[]> {
   const token = await getGoogleAccessTokenForUser(userEmail, GMAIL_SCOPE)
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/labels`,
     { headers: { Authorization: `Bearer ${token}` } }
   )
@@ -339,7 +340,7 @@ export async function listGmailLabels(userEmail: string): Promise<GmailLabel[]> 
 
 export async function createGmailLabel(userEmail: string, name: string): Promise<GmailLabel> {
   const token = await getGoogleAccessTokenForUser(userEmail, GMAIL_SCOPE)
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/labels`,
     {
       method: 'POST',
@@ -513,7 +514,7 @@ export async function gmailFindByMessageId(
   const q = `rfc822msgid:${cleaned}`
   const url = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages?q=${encodeURIComponent(q)}&maxResults=1`
 
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
   if (!res.ok) {
     // 404 / 429 / 5xx → on retourne null pour ne pas bloquer la migration
     return null
@@ -552,7 +553,7 @@ export async function gmailDedupeMailbox(
     listUrl.searchParams.set('includeSpamTrash', 'true')
     if (pageToken) listUrl.searchParams.set('pageToken', pageToken)
 
-    const res = await fetch(listUrl.toString(), { headers: { Authorization: `Bearer ${token}` } })
+    const res = await fetchWithTimeout(listUrl.toString(), { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Gmail list error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { messages?: Array<{ id: string }>; nextPageToken?: string }
     if (data.messages) allIds.push(...data.messages.map((m) => m.id))
@@ -567,7 +568,7 @@ export async function gmailDedupeMailbox(
     const slice = allIds.slice(i, i + BATCH)
     const results = await Promise.allSettled(
       slice.map(async (gmailId) => {
-        const detailRes = await fetch(
+        const detailRes = await fetchWithTimeout(
           `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages/${gmailId}?format=metadata&metadataHeaders=Message-ID`,
           { headers: { Authorization: `Bearer ${token}` } }
         )
@@ -608,7 +609,7 @@ export async function gmailDedupeMailbox(
     for (const dup of toDelete) {
       // On utilise `trash` plutôt que `delete` : compatible avec le scope gmail.modify
       // et réversible (l'user peut récupérer 30j si on s'est trompé)
-      const trashRes = await fetch(
+      const trashRes = await fetchWithTimeout(
         `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(userEmail)}/messages/${dup.gmailId}/trash`,
         { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
       )
@@ -735,7 +736,7 @@ export async function gmailImportMime(params: {
     insertUrl.searchParams.set('internalDateSource', 'dateHeader')
     insertUrl.searchParams.set('deleted', 'false')
 
-    const insertRes = await fetch(insertUrl.toString(), {
+    const insertRes = await fetchWithTimeout(insertUrl.toString(), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ raw, labelIds }),
@@ -764,7 +765,7 @@ export async function gmailImportMime(params: {
       importUrl.searchParams.set('processForCalendar', 'false')
       importUrl.searchParams.set('deleted', 'false')
 
-      const importRes = await fetch(importUrl.toString(), {
+      const importRes = await fetchWithTimeout(importUrl.toString(), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ raw, labelIds }),
@@ -781,7 +782,7 @@ export async function gmailImportMime(params: {
           .filter((l) => l !== 'SENT' && l !== 'DRAFT')
         if (missingLabels.length > 0) {
           try {
-            await fetch(
+            await fetchWithTimeout(
               `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/${result.id}/modify`,
               {
                 method: 'POST',
@@ -843,7 +844,7 @@ async function gmailResumableInsert(
   url.searchParams.set('uploadType', 'multipart')
   url.searchParams.set('internalDateSource', 'dateHeader')
 
-  const res = await fetch(url.toString(), {
+  const res = await fetchWithTimeout(url.toString(), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -878,7 +879,7 @@ export async function gmailModifyLabels(params: {
   if (addLabelIds.length === 0 && removeLabelIds.length === 0) return
 
   const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(params.userEmail)}/messages/${params.messageId}/modify`,
     {
       method: 'POST',
