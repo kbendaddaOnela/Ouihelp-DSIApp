@@ -12,6 +12,7 @@ import { getGoogleAccessTokenForUser } from '../migration/googleService'
 
 const SCOPE_DIRECTORY_GROUP = 'https://www.googleapis.com/auth/admin.directory.group'
 const SCOPE_GROUPS_MIGRATION = 'https://www.googleapis.com/auth/apps.groups.migration'
+const SCOPE_GROUPS_SETTINGS = 'https://www.googleapis.com/auth/apps.groups.settings'
 
 function adminEmail(): string {
   const e = process.env['GOOGLE_ADMIN_EMAIL']
@@ -120,4 +121,59 @@ export async function archiveMessageToGroup(params: {
     }
     throw new Error(`Groups Migration error (${status}): ${errBody.slice(0, 500)}`)
   }
+}
+
+// ── Groups Settings (permissions de publication) ─────────────────────────────
+// Pour le dual delivery : par défaut un Google Group n'accepte les mails que de
+// ses membres. Si on forward depuis Exchange (expéditeur externe), il faut
+// ouvrir les permissions, sinon les mails bouncent.
+
+export interface GroupSettings {
+  whoCanPostMessage?:
+    | 'NONE_CAN_POST'
+    | 'ALL_MANAGERS_CAN_POST'
+    | 'ALL_OWNERS_CAN_POST'
+    | 'ALL_MEMBERS_CAN_POST'
+    | 'ALL_IN_DOMAIN_CAN_POST'
+    | 'ANYONE_CAN_POST'
+  allowExternalMembers?: 'true' | 'false'
+  messageModerationLevel?: 'MODERATE_ALL_MESSAGES' | 'MODERATE_NON_MEMBERS' | 'MODERATE_NEW_MEMBERS' | 'MODERATE_NONE'
+}
+
+export async function getGroupSettings(groupEmail: string): Promise<GroupSettings> {
+  const token = await getGoogleAccessTokenForUser(adminEmail(), SCOPE_GROUPS_SETTINGS)
+  const res = await fetchWithTimeout(
+    `https://www.googleapis.com/groups/v1/groups/${encodeURIComponent(groupEmail)}?alt=json`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Group settings get error (${res.status}): ${err}`)
+  }
+  return res.json() as Promise<GroupSettings>
+}
+
+export async function updateGroupSettings(groupEmail: string, patch: Partial<GroupSettings>): Promise<GroupSettings> {
+  const token = await getGoogleAccessTokenForUser(adminEmail(), SCOPE_GROUPS_SETTINGS)
+  const res = await fetchWithTimeout(
+    `https://www.googleapis.com/groups/v1/groups/${encodeURIComponent(groupEmail)}?alt=json`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Group settings update error (${res.status}): ${err}`)
+  }
+  return res.json() as Promise<GroupSettings>
+}
+
+/** Ouvre le groupe aux posts externes (nécessaire pour le dual delivery depuis Exchange). */
+export async function allowExternalPostsOnGroup(groupEmail: string): Promise<GroupSettings> {
+  return updateGroupSettings(groupEmail, {
+    whoCanPostMessage: 'ANYONE_CAN_POST',
+    messageModerationLevel: 'MODERATE_NONE',
+  })
 }

@@ -1,9 +1,13 @@
-import { Play, Square, Trash2, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
+import { Play, Square, Trash2, AlertCircle, CheckCircle2, Loader2, Mailbox, ShieldOff } from 'lucide-react'
 import type { SharedMigrationRecord } from '@dsi-app/shared'
 import {
   useRunSharedMigration,
   useStopSharedMigration,
   useDeleteSharedMigration,
+  useSharedDualDeliveryStatus,
+  useEnableSharedDualDelivery,
+  useDisableSharedDualDelivery,
+  useAllowExternalGroupPosts,
 } from '../hooks/useSharedMailbox'
 
 interface Props {
@@ -123,6 +127,104 @@ export function SharedMailboxCard({ migration }: Props) {
           {migration.mailError && <div>Mail : {migration.mailError}</div>}
         </div>
       )}
+
+      <DualDeliveryPanel migration={migration} />
     </div>
   )
 }
+
+function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const groupReady = migration.stepCreateGroup === 'success'
+  const { data, isLoading } = useSharedDualDeliveryStatus(migration.id, groupReady)
+  const { mutate: enable, isPending: enabling } = useEnableSharedDualDelivery()
+  const { mutate: disable, isPending: disabling } = useDisableSharedDualDelivery()
+  const { mutate: allowExternal, isPending: opening } = useAllowExternalGroupPosts()
+
+  if (!groupReady) return null
+
+  const forwarding = data?.forwarding
+  const allowsExternal = data?.groupAllowsExternalPosts ?? false
+  const isActive = !!forwarding?.active
+  const wrongTarget =
+    isActive && forwarding?.forwardTo?.toLowerCase() !== migration.targetGroupEmail.toLowerCase()
+
+  return (
+    <div className="mt-4 border-t border-gray-100 pt-3">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
+          <Mailbox className="h-3.5 w-3.5" />
+          Dual delivery
+        </div>
+        {isLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400" />}
+      </div>
+
+      <div className="space-y-1.5 text-xs text-gray-600">
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block h-2 w-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-gray-300'}`} />
+          Forwarding Exchange&nbsp;:{' '}
+          {isActive ? (
+            <span className="font-mono text-gray-800">
+              {forwarding!.forwardTo}
+              {wrongTarget && (
+                <span className="ml-1 text-orange-600">(⚠ cible ≠ groupe ; cliquer pour corriger)</span>
+              )}
+            </span>
+          ) : (
+            <span className="text-gray-500">désactivé</span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block h-2 w-2 rounded-full ${allowsExternal ? 'bg-green-500' : 'bg-gray-300'}`} />
+          Groupe accepte les posts externes&nbsp;:{' '}
+          <span className={allowsExternal ? 'text-gray-800' : 'text-gray-500'}>
+            {data?.groupPostPermission ?? 'inconnu'}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {!isActive || wrongTarget ? (
+          <button
+            onClick={() => enable(migration.id)}
+            disabled={enabling}
+            className="inline-flex items-center gap-1 rounded bg-green-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            <Mailbox className="h-3 w-3" />
+            {enabling ? 'Activation…' : 'Activer dual delivery'}
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              if (window.confirm('Désactiver le forwarding Exchange → Google Group ?')) {
+                disable(migration.id)
+              }
+            }}
+            disabled={disabling}
+            className="inline-flex items-center gap-1 rounded bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+          >
+            <ShieldOff className="h-3 w-3" />
+            {disabling ? 'Désactivation…' : 'Désactiver dual delivery'}
+          </button>
+        )}
+        {!allowsExternal && (
+          <button
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Ouvrir le groupe à TOUS les expéditeurs externes (ANYONE_CAN_POST) ?\n\nNécessaire pour que les mails forwardés depuis Exchange arrivent dans l\'archive. Tu pourras durcir après cutover.',
+                )
+              ) {
+                allowExternal(migration.id)
+              }
+            }}
+            disabled={opening}
+            className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {opening ? 'Ouverture…' : 'Ouvrir le groupe aux externes'}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+

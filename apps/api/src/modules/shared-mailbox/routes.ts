@@ -8,6 +8,12 @@ import { db } from '../../db/index'
 import { sharedMigrations, sharedMigratedMessages } from './schema'
 import { listSharedMailboxes } from './exchangeService'
 import { signalStopShared } from './worker'
+import {
+  setOnelaMailForwarding,
+  removeOnelaMailForwarding,
+  checkOnelaMailForwarding,
+} from '../migration/service'
+import { allowExternalPostsOnGroup, getGroupSettings } from './googleGroupsService'
 import type {
   SearchSharedMailboxesResponse,
   SharedMigrationHistoryResponse,
@@ -111,6 +117,67 @@ sharedMailboxRouter.delete('/:id', requirePermission('migration:write'), async (
   await db.delete(sharedMigratedMessages).where(eq(sharedMigratedMessages.sharedMigrationId, id))
   await db.delete(sharedMigrations).where(eq(sharedMigrations.id, id))
   return c.json({ ok: true })
+})
+
+// ── Dual delivery (forwarding Exchange → Google Group) ──────────────────────
+
+/** GET : statut forwarding + permissions de post du groupe. */
+sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const [forwarding, groupSettings] = await Promise.all([
+      checkOnelaMailForwarding(row.onelaUpn),
+      getGroupSettings(row.targetGroupEmail).catch(() => null),
+    ])
+    return c.json({
+      forwarding,
+      groupPostPermission: groupSettings?.whoCanPostMessage ?? null,
+      groupAllowsExternalPosts: groupSettings?.whoCanPostMessage === 'ANYONE_CAN_POST',
+    })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+  }
+})
+
+/** POST : active le forwarding Exchange → Google Group (DeliverToMailboxAndForward = true). */
+sharedMailboxRouter.post('/:id/dual-delivery', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    await setOnelaMailForwarding(row.onelaUpn, row.targetGroupEmail)
+    return c.json({ ok: true, forwardTo: row.targetGroupEmail })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+  }
+})
+
+/** DELETE : retire le forwarding Exchange. */
+sharedMailboxRouter.delete('/:id/dual-delivery', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    await removeOnelaMailForwarding(row.onelaUpn)
+    return c.json({ ok: true })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+  }
+})
+
+/** POST : ouvre le groupe aux posts externes (ANYONE_CAN_POST). */
+sharedMailboxRouter.post('/:id/group/allow-external', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const settings = await allowExternalPostsOnGroup(row.targetGroupEmail)
+    return c.json({ ok: true, settings })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+  }
 })
 
 // ── Erreurs détaillées ───────────────────────────────────────────────────────

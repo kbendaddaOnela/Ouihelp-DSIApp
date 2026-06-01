@@ -24,6 +24,29 @@ export const sharedMailboxApi = {
   stop: (id: string) =>
     apiClient.post<{ ok: boolean }>(`/shared-mailbox/${id}/stop`).then((r) => r.data),
 
+  // Dual delivery
+  checkDualDelivery: (id: string) =>
+    apiClient
+      .get<{
+        forwarding: { active: boolean; forwardTo: string | null }
+        groupPostPermission: string | null
+        groupAllowsExternalPosts: boolean
+      }>(`/shared-mailbox/${id}/dual-delivery`)
+      .then((r) => r.data),
+
+  enableDualDelivery: (id: string) =>
+    apiClient
+      .post<{ ok: boolean; forwardTo: string }>(`/shared-mailbox/${id}/dual-delivery`)
+      .then((r) => r.data),
+
+  disableDualDelivery: (id: string) =>
+    apiClient.delete<{ ok: boolean }>(`/shared-mailbox/${id}/dual-delivery`).then((r) => r.data),
+
+  allowExternalGroupPosts: (id: string) =>
+    apiClient
+      .post<{ ok: boolean }>(`/shared-mailbox/${id}/group/allow-external`)
+      .then((r) => r.data),
+
   remove: (id: string) =>
     apiClient.delete(`/shared-mailbox/${id}`).then((r) => r.data),
 

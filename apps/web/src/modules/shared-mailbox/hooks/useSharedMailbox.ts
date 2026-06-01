@@ -48,6 +48,39 @@ export function useStopSharedMigration() {
   })
 }
 
+export function useSharedDualDeliveryStatus(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['shared-dual-delivery', id],
+    queryFn: () => sharedMailboxApi.checkDualDelivery(id),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
+export function useEnableSharedDualDelivery() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.enableDualDelivery(id),
+    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ['shared-dual-delivery', id] }),
+  })
+}
+
+export function useDisableSharedDualDelivery() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.disableDualDelivery(id),
+    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ['shared-dual-delivery', id] }),
+  })
+}
+
+export function useAllowExternalGroupPosts() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.allowExternalGroupPosts(id),
+    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ['shared-dual-delivery', id] }),
+  })
+}
+
 export function useDeleteSharedMigration() {
   const qc = useQueryClient()
   return useMutation({
