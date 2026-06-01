@@ -27,6 +27,12 @@ const HEARTBEAT_MS = 60_000
 const ORPHAN_STALE_MS = 15 * 60 * 1000
 
 const RUNNING = new Set<string>()
+const STOP_SIGNALS = new Set<string>()
+
+/** Demande l'arrêt propre d'une migration en cours (vérifié entre deux batches). */
+export function signalStopShared(id: string) {
+  STOP_SIGNALS.add(id)
+}
 
 let workerStarted = false
 
@@ -235,16 +241,35 @@ async function processSharedMailbox(job: SharedMigration) {
         .where(eq(sharedMigrations.id, job.id))
     }
 
+    let stoppedByUser = false
     for await (const msg of iter) {
       buffer.push(msg)
       if (buffer.length >= BATCH_SIZE) {
         await flush(buffer)
         buffer = []
+        if (STOP_SIGNALS.has(job.id)) {
+          stoppedByUser = true
+          break
+        }
         // Délai léger anti-throttle
         await new Promise((r) => setTimeout(r, 500))
       }
     }
-    if (buffer.length > 0) await flush(buffer)
+    if (!stoppedByUser && buffer.length > 0) await flush(buffer)
+
+    if (stoppedByUser) {
+      STOP_SIGNALS.delete(job.id)
+      await db
+        .update(sharedMigrations)
+        .set({
+          stepMailImport: 'error',
+          mailFinishedAt: new Date(),
+          mailError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+        })
+        .where(eq(sharedMigrations.id, job.id))
+      console.log(`[shared] stopped ${job.id}: ${migrated}/${total} OK avant arrêt`)
+      return
+    }
 
     const success = failed === 0
     await db

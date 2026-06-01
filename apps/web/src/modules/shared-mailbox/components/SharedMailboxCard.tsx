@@ -1,6 +1,10 @@
-import { Play, Trash2, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
+import { Play, Square, Trash2, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
 import type { SharedMigrationRecord } from '@dsi-app/shared'
-import { useRunSharedMigration, useDeleteSharedMigration } from '../hooks/useSharedMailbox'
+import {
+  useRunSharedMigration,
+  useStopSharedMigration,
+  useDeleteSharedMigration,
+} from '../hooks/useSharedMailbox'
 
 interface Props {
   migration: SharedMigrationRecord
@@ -25,7 +29,10 @@ function StepBadge({ status, label }: { status: SharedMigrationRecord['stepMailI
 
 export function SharedMailboxCard({ migration }: Props) {
   const { mutate: runMigration, isPending: isRunning } = useRunSharedMigration()
+  const { mutate: stopMigration, isPending: isStopping } = useStopSharedMigration()
   const { mutate: deleteMigration, isPending: isDeleting } = useDeleteSharedMigration()
+
+  const isInFlight = migration.stepMailImport === 'running' || migration.stepMailImport === 'pending'
 
   const pct = migration.mailTotal > 0
     ? Math.min(100, Math.round((migration.mailMigrated / migration.mailTotal) * 100))
@@ -57,6 +64,20 @@ export function SharedMailboxCard({ migration }: Props) {
             >
               <Play className="h-3.5 w-3.5" />
               {migration.stepMailImport === 'success' ? 'Resynchroniser' : 'Lancer'}
+            </button>
+          )}
+          {isInFlight && (
+            <button
+              onClick={() => {
+                if (window.confirm("Arrêter la migration en cours ? Les messages déjà importés sont conservés ; tu pourras la relancer (reprise idempotente).")) {
+                  stopMigration(migration.id)
+                }
+              }}
+              disabled={isStopping}
+              className="inline-flex items-center gap-1 rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+            >
+              <Square className="h-3.5 w-3.5" />
+              {isStopping ? 'Arrêt…' : 'Arrêter'}
             </button>
           )}
           {canDelete && (

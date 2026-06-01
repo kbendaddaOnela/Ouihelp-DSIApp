@@ -21,6 +21,9 @@ export const sharedMailboxApi = {
   run: (id: string) =>
     apiClient.post<SharedMigrationRecord>(`/shared-mailbox/${id}/run`).then((r) => r.data),
 
+  stop: (id: string) =>
+    apiClient.post<{ ok: boolean }>(`/shared-mailbox/${id}/stop`).then((r) => r.data),
+
   remove: (id: string) =>
     apiClient.delete(`/shared-mailbox/${id}`).then((r) => r.data),
 
