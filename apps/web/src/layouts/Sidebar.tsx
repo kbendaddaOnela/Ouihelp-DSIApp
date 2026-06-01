@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Building2,
   ArrowRightLeft,
+  Mail,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAnyPermission } from '@/hooks/usePermission'
@@ -27,6 +28,12 @@ const NAV_ITEMS: NavItem[] = [
     path: '/migration',
     label: 'Migration ONELA',
     icon: ArrowRightLeft,
+    requiredPermissions: ['migration:read'],
+  },
+  {
+    path: '/shared-mailbox',
+    label: 'Migration Shared Mailbox',
+    icon: Mail,
     requiredPermissions: ['migration:read'],
   },
   {

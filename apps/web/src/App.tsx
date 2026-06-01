@@ -18,6 +18,7 @@ const AppsInventoryPage = lazy(() => import('@/modules/apps-inventory/AppsInvent
 const LicensesPage = lazy(() => import('@/modules/licenses/LicensesPage'))
 const BudgetPage = lazy(() => import('@/modules/budget/BudgetPage'))
 const MigrationPage = lazy(() => import('@/modules/migration/MigrationPage'))
+const SharedMailboxPage = lazy(() => import('@/modules/shared-mailbox/SharedMailboxPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -102,6 +103,14 @@ export function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <MigrationPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="shared-mailbox"
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <SharedMailboxPage />
                   </Suspense>
                 }
               />

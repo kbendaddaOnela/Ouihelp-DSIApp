@@ -3,3 +3,4 @@
 export * from '../modules/auth/schema'
 export * from '../modules/migration/schema'
 export * from '../modules/inventory/schema'
+export * from '../modules/shared-mailbox/schema'
