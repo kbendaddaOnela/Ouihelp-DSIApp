@@ -65,6 +65,8 @@ async function ensureSchemaPatches() {
     // Sujet et date de réception pour les messages migrés (diagnostic erreurs)
     { table: 'migrated_messages', column: 'subject', ddl: `ALTER TABLE \`migrated_messages\` ADD COLUMN \`subject\` varchar(500)` },
     { table: 'migrated_messages', column: 'received_at', ddl: `ALTER TABLE \`migrated_messages\` ADD COLUMN \`received_at\` timestamp NULL` },
+    // Shared mailbox : delta sync
+    { table: 'shared_migrations', column: 'mail_last_sync_at', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`mail_last_sync_at\` timestamp NULL` },
   ]
   for (const p of columnPatches) {
     try {

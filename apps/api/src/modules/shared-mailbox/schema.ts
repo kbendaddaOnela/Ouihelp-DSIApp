@@ -33,6 +33,8 @@ export const sharedMigrations = mysqlTable('shared_migrations', {
   mailError: text('mail_error'),
   mailStartedAt: timestamp('mail_started_at'),
   mailFinishedAt: timestamp('mail_finished_at'),
+  // Horodatage du dernier succès complet — pour le delta sync au prochain Resync
+  mailLastSyncAt: timestamp('mail_last_sync_at'),
   // Métadonnées
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

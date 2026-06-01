@@ -39,6 +39,7 @@ export interface SharedMigrationRecord {
   mailError: string | null
   mailStartedAt: string | null
   mailFinishedAt: string | null
+  mailLastSyncAt: string | null
   initiatedBy: string
   createdAt: string
   updatedAt: string

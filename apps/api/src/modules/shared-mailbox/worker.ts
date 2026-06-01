@@ -139,9 +139,17 @@ async function processSharedMailbox(job: SharedMigration) {
       already.filter((r) => r.status === 'success' || r.status === 'skipped').map((r) => r.graphMessageId),
     )
     const alreadySuccess = already.filter((r) => r.status === 'success').length
+    const hasErrorRecords = already.some((r) => r.status === 'error')
+
+    // Delta sync : si tout est OK (aucune erreur) ET on a un mailLastSyncAt
+    // → on ne demande à Graph QUE les mails postérieurs (sinon on rescanne tout
+    // pour rattraper les erreurs antérieures).
+    const useDelta = !hasErrorRecords && !!job.mailLastSyncAt
+    const since: Date | null = useDelta ? new Date(job.mailLastSyncAt!) : null
 
     console.log(
-      `[shared] resume ${job.id}: ${alreadySuccess} OK déjà importés, ${skipSet.size} à skipper`,
+      `[shared] ${useDelta ? 'delta' : 'resume'} ${job.id}: ${alreadySuccess} OK déjà importés` +
+        (useDelta ? ` ; delta depuis ${since!.toISOString()}` : ` ; ${skipSet.size} à skipper`),
     )
 
     await db
@@ -172,10 +180,12 @@ async function processSharedMailbox(job: SharedMigration) {
     let migrated = alreadySuccess
     let failed = 0
     let skipped = 0
-    const iter = iterateOnelaMessages(job.onelaUserId, null)
+    const syncStartedAt = new Date()
+    const iter = iterateOnelaMessages(job.onelaUserId, since)
     let buffer: GraphMessageMeta[] = []
 
-    const flush = async (batch: typeof buffer) => {
+    /** Renvoie true si du travail réseau a été fait (pour décider du sleep). */
+    const flush = async (batch: typeof buffer): Promise<boolean> => {
       const toProcess = batch.filter((msg) => {
         if (skipSet.has(msg.id)) {
           skipped++
@@ -189,6 +199,8 @@ async function processSharedMailbox(job: SharedMigration) {
         return true
       })
 
+      // Si tout le batch est skippé (resume sans delta), pas d'appel API
+      if (toProcess.length === 0) return false
       const results = await Promise.allSettled(
         toProcess.map(async (msg) => {
           const rawMime = await fetchOnelaMessageMime(job.onelaUserId, msg.id)
@@ -239,20 +251,21 @@ async function processSharedMailbox(job: SharedMigration) {
         .update(sharedMigrations)
         .set({ mailMigrated: migrated, mailFailed: failed })
         .where(eq(sharedMigrations.id, job.id))
+      return true
     }
 
     let stoppedByUser = false
     for await (const msg of iter) {
       buffer.push(msg)
       if (buffer.length >= BATCH_SIZE) {
-        await flush(buffer)
+        const didWork = await flush(buffer)
         buffer = []
         if (STOP_SIGNALS.has(job.id)) {
           stoppedByUser = true
           break
         }
-        // Délai léger anti-throttle
-        await new Promise((r) => setTimeout(r, 500))
+        // Délai anti-throttle uniquement si on a vraiment appelé une API
+        if (didWork) await new Promise((r) => setTimeout(r, 500))
       }
     }
     if (!stoppedByUser && buffer.length > 0) await flush(buffer)
@@ -277,6 +290,10 @@ async function processSharedMailbox(job: SharedMigration) {
       .set({
         stepMailImport: success ? 'success' : 'error',
         mailFinishedAt: new Date(),
+        // On avance mailLastSyncAt même si quelques messages ont échoué :
+        // ils sont en DB avec status='error' et seront retentés en mode
+        // resume (non-delta) au prochain Resync, donc on ne les rate pas.
+        mailLastSyncAt: syncStartedAt,
         mailError: failed > 0 ? `${failed} message(s) en erreur` : null,
       })
       .where(eq(sharedMigrations.id, job.id))

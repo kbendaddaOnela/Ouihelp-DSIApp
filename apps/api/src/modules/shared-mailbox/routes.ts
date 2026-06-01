@@ -43,6 +43,7 @@ function toRecord(m: typeof sharedMigrations.$inferSelect): SharedMigrationRecor
     mailError: m.mailError,
     mailStartedAt: m.mailStartedAt ? m.mailStartedAt.toISOString() : null,
     mailFinishedAt: m.mailFinishedAt ? m.mailFinishedAt.toISOString() : null,
+    mailLastSyncAt: m.mailLastSyncAt ? m.mailLastSyncAt.toISOString() : null,
     initiatedBy: m.initiatedBy,
     createdAt: m.createdAt.toISOString(),
     updatedAt: m.updatedAt.toISOString(),
