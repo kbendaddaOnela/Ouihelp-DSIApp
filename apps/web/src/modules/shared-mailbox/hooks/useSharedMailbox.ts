@@ -40,6 +40,14 @@ export function useRunSharedMigration() {
   })
 }
 
+export function useStopSharedMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.stop(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['shared-migration-history'] }),
+  })
+}
+
 export function useDeleteSharedMigration() {
   const qc = useQueryClient()
   return useMutation({

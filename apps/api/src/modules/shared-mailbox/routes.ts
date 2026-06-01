@@ -7,6 +7,7 @@ import type { RbacVariables } from '../../middleware/rbac'
 import { db } from '../../db/index'
 import { sharedMigrations, sharedMigratedMessages } from './schema'
 import { listSharedMailboxes } from './exchangeService'
+import { signalStopShared } from './worker'
 import type {
   SearchSharedMailboxesResponse,
   SharedMigrationHistoryResponse,
@@ -95,6 +96,13 @@ sharedMailboxRouter.post('/:id/run', requirePermission('migration:write'), async
     .where(eq(sharedMigrations.id, id))
   const [updated] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
   return c.json<SharedMigrationRecord>(toRecord(updated!))
+})
+
+// ── Arrêt forcé (l'utilisateur clique "Arrêter") ────────────────────────────
+sharedMailboxRouter.post('/:id/stop', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  signalStopShared(id)
+  return c.json({ ok: true })
 })
 
 // ── Suppression ──────────────────────────────────────────────────────────────
