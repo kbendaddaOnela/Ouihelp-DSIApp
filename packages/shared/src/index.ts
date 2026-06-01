@@ -15,3 +15,11 @@ export type {
   SearchOnelaUsersResponse,
   MigrationHistoryResponse,
 } from './types/migration'
+
+export type {
+  SharedMailbox,
+  CreateSharedMigrationRequest,
+  SharedMigrationRecord,
+  SearchSharedMailboxesResponse,
+  SharedMigrationHistoryResponse,
+} from './types/sharedMailbox'

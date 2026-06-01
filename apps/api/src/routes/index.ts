@@ -4,6 +4,7 @@ import { migrationRouter } from '../modules/migration/routes'
 import { migrationTargetsRouter } from '../modules/migration/targetRoutes'
 import { inventoryRouter } from '../modules/inventory/routes'
 import { budgetRouter } from '../modules/budget/routes'
+import { sharedMailboxRouter } from '../modules/shared-mailbox/routes'
 
 export const apiRouter = new Hono()
 
@@ -12,6 +13,7 @@ apiRouter.route('/migration', migrationRouter)
 apiRouter.route('/migration-targets', migrationTargetsRouter)
 apiRouter.route('/inventory', inventoryRouter)
 apiRouter.route('/budget', budgetRouter)
+apiRouter.route('/shared-mailbox', sharedMailboxRouter)
 
 // Route de santé — accessible sans authentification
 apiRouter.get('/health', (c) => {

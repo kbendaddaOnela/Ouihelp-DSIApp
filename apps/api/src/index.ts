@@ -6,6 +6,7 @@ import { apiRouter } from './routes/index'
 import { requestLogger } from './middleware/logger'
 import { runMigrations } from './db/migrate'
 import { startMailWorker } from './modules/migration/mailWorker'
+import { startSharedMailboxWorker } from './modules/shared-mailbox/worker'
 
 const app = new Hono()
 
@@ -55,6 +56,7 @@ async function start() {
         dbReady = true
         console.log('[startup] DB migrations OK')
         startMailWorker()
+        startSharedMailboxWorker()
       })
       .catch((err) => {
         dbError = err instanceof Error ? err.message : String(err)
