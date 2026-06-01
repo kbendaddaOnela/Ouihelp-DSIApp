@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   Euro, AlertTriangle, Clock, Plus, Search, Pencil, Trash2, X,
   Building2, Cloud, Monitor, Key, Headphones, Phone, Package, CheckCircle2, XCircle,
-  AlertCircle,
+  AlertCircle, ChevronUp, ChevronDown, ChevronsUpDown,
 } from 'lucide-react'
 import { usePermission } from '@/hooks/usePermission'
 import { cn } from '@/lib/utils'
@@ -458,8 +458,41 @@ function BudgetForm({ item, onClose }: { item?: BudgetItem; onClose: () => void 
 }
 
 // ── Items table ───────────────────────────────────────────────────────────────
+type SortKey = 'name' | 'billingEntity' | 'category' | 'amount' | 'annual' | 'contractEnd' | 'status'
+type SortDir = 'asc' | 'desc'
+
+function SortIcon({ col, sortKey, dir }: { col: SortKey; sortKey: SortKey; dir: SortDir }) {
+  if (col !== sortKey) return <ChevronsUpDown className="h-3 w-3 opacity-30" />
+  return dir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
+}
+
 function ItemsTable({ items, onEdit }: { items: BudgetItem[]; onEdit: (item: BudgetItem) => void }) {
   const { mutate: del } = useDeleteBudgetItem()
+  const [sortKey, setSortKey] = useState<SortKey>('contractEnd')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
+
+  function handleSort(key: SortKey) {
+    if (key === sortKey) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortKey(key); setSortDir('asc') }
+  }
+
+  const sorted = useMemo(() => {
+    return [...items].sort((a, b) => {
+      let va: string | number = 0
+      let vb: string | number = 0
+      switch (sortKey) {
+        case 'name':         va = a.name.toLowerCase();                     vb = b.name.toLowerCase(); break
+        case 'billingEntity': va = (a.billingEntity ?? '').toLowerCase();   vb = (b.billingEntity ?? '').toLowerCase(); break
+        case 'category':     va = a.category;                               vb = b.category; break
+        case 'amount':       va = Number(a.amount);                         vb = Number(b.amount); break
+        case 'annual':       va = toAnnual(a);                              vb = toAnnual(b); break
+        case 'contractEnd':  va = a.contractEnd ?? '9999';                  vb = b.contractEnd ?? '9999'; break
+        case 'status':       va = a.status;                                 vb = b.status; break
+      }
+      const cmp = va < vb ? -1 : va > vb ? 1 : 0
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+  }, [items, sortKey, sortDir])
 
   if (!items.length) {
     return (
@@ -469,23 +502,41 @@ function ItemsTable({ items, onEdit }: { items: BudgetItem[]; onEdit: (item: Bud
     )
   }
 
+  function Th({ col, label, align = 'left' }: { col: SortKey; label: string; align?: 'left' | 'right' }) {
+    return (
+      <th className={cn('px-4 py-3', align === 'right' ? 'text-right' : 'text-left')}>
+        <button
+          onClick={() => handleSort(col)}
+          className={cn(
+            'inline-flex items-center gap-1 hover:text-gray-800 transition-colors',
+            align === 'right' && 'flex-row-reverse',
+            sortKey === col && 'text-gray-800'
+          )}
+        >
+          {label}
+          <SortIcon col={col} sortKey={sortKey} dir={sortDir} />
+        </button>
+      </th>
+    )
+  }
+
   return (
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-100 bg-gray-50 text-xs font-medium uppercase tracking-wide text-gray-500">
-            <th className="px-4 py-3 text-left">Contrat / Service</th>
-            <th className="px-4 py-3 text-left">Entité</th>
-            <th className="px-4 py-3 text-left">Catégorie</th>
-            <th className="px-4 py-3 text-right">Montant</th>
-            <th className="px-4 py-3 text-right">Annualisé</th>
-            <th className="px-4 py-3 text-left">Fin contrat</th>
-            <th className="px-4 py-3 text-left">Statut</th>
+            <Th col="name" label="Contrat / Service" />
+            <Th col="billingEntity" label="Entité" />
+            <Th col="category" label="Catégorie" />
+            <Th col="amount" label="Montant" align="right" />
+            <Th col="annual" label="Annualisé" align="right" />
+            <Th col="contractEnd" label="Fin contrat" />
+            <Th col="status" label="Statut" />
             <th className="px-4 py-3" />
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
-          {items.map(item => {
+          {sorted.map(item => {
             const catCfg = CATEGORY_CONFIG[item.category] ?? CATEGORY_CONFIG.other
             const statusCfg = STATUS_CONFIG[item.status]
             const StatusIcon = statusCfg.icon
