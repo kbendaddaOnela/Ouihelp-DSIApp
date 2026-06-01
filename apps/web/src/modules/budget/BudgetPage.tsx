@@ -79,7 +79,10 @@ function StatCard({ label, value, sub, icon: Icon, accent }: {
 }
 
 // ── Category bar chart ────────────────────────────────────────────────────────
-function CategoryChart({ byCategory }: { byCategory: Record<string, number> }) {
+function CategoryChart({ byCategory, onSelect }: {
+  byCategory: Record<string, number>
+  onSelect: (cat: BudgetCategory) => void
+}) {
   const entries = Object.entries(byCategory).sort(([, a], [, b]) => b - a)
   const total = entries.reduce((s, [, v]) => s + v, 0)
   if (!entries.length) return null
@@ -92,18 +95,24 @@ function CategoryChart({ byCategory }: { byCategory: Record<string, number> }) {
           const cfg = CATEGORY_CONFIG[cat as BudgetCategory] ?? CATEGORY_CONFIG.other
           const pct = total > 0 ? Math.round((amt / total) * 100) : 0
           return (
-            <div key={cat}>
+            <button
+              key={cat}
+              onClick={() => onSelect(cat as BudgetCategory)}
+              className="w-full text-left group rounded-lg p-1.5 -mx-1.5 hover:bg-gray-50 transition-colors"
+            >
               <div className="mb-1 flex items-center justify-between text-xs">
                 <span className={cn('inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-medium', cfg.color)}>
                   <cfg.icon className="h-3 w-3" />
                   {cfg.label}
                 </span>
-                <span className="text-gray-600">{formatEur(amt)} <span className="text-gray-400">({pct}%)</span></span>
+                <span className="text-gray-600 group-hover:text-primary-600 transition-colors">
+                  {formatEur(amt)} <span className="text-gray-400">({pct}%)</span>
+                </span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
-                <div className="h-full rounded-full bg-primary-500 transition-all" style={{ width: `${pct}%` }} />
+                <div className="h-full rounded-full bg-primary-500 group-hover:bg-primary-600 transition-all" style={{ width: `${pct}%` }} />
               </div>
-            </div>
+            </button>
           )
         })}
       </div>
@@ -632,25 +641,44 @@ export default function BudgetPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 rounded-lg border border-gray-200 bg-gray-50 p-1 w-fit">
-        {(['overview', 'contracts'] as const).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={cn(
-              'rounded-md px-4 py-1.5 text-sm font-medium transition-colors',
-              tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-            )}
-          >
-            {t === 'overview' ? 'Vue d\'ensemble' : 'Contrats'}
-          </button>
-        ))}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex gap-1 rounded-lg border border-gray-200 bg-gray-50 p-1 w-fit">
+          {(['overview', 'contracts'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={cn(
+                'rounded-md px-4 py-1.5 text-sm font-medium transition-colors',
+                tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              )}
+            >
+              {t === 'overview' ? "Vue d'ensemble" : 'Contrats'}
+            </button>
+          ))}
+        </div>
+        {filterCat && (() => {
+          const cfg = CATEGORY_CONFIG[filterCat as BudgetCategory] ?? CATEGORY_CONFIG.other
+          return (
+            <span className={cn('inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium', cfg.color)}>
+              <cfg.icon className="h-3 w-3" />
+              {cfg.label}
+              <button onClick={() => setFilterCat('')} className="ml-1 rounded-full hover:opacity-70">
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          )
+        })()}
       </div>
 
       {/* Overview tab */}
       {tab === 'overview' && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {stats && <CategoryChart byCategory={stats.byCategory} />}
+          {stats && (
+            <CategoryChart
+              byCategory={stats.byCategory}
+              onSelect={cat => { setFilterCat(cat); setTab('contracts') }}
+            />
+          )}
           <ExpiryTimeline items={allItems} />
         </div>
       )}
