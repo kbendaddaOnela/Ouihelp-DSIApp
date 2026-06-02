@@ -8,7 +8,11 @@ import { db } from '../../db/index'
 import { sharedMigrations, sharedMigratedMessages } from './schema'
 import { listSharedMailboxes } from './exchangeService'
 import { signalStopShared } from './worker'
-import { allowExternalPostsOnGroup, getGroupSettings } from './googleGroupsService'
+import {
+  allowExternalPostsOnGroup,
+  enableCollaborativeInbox as enableCollabInboxOnGroup,
+  getGroupSettings,
+} from './googleGroupsService'
 import {
   ensureBccTransportRule,
   deleteTransportRuleIfExists,
@@ -161,6 +165,8 @@ sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'
       },
       groupPostPermission: groupSettings?.whoCanPostMessage ?? null,
       groupAllowsExternalPosts: groupSettings?.whoCanPostMessage === 'ANYONE_CAN_POST',
+      groupCollaborativeInbox: groupSettings?.enableCollaborativeInbox === 'true',
+      groupArchived: groupSettings?.isArchived === 'true',
     })
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
@@ -225,6 +231,21 @@ sharedMailboxRouter.delete('/:id/dual-delivery', requirePermission('migration:wr
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[shared-mailbox/dual-delivery DELETE]', msg)
+    return c.json({ error: msg }, 500)
+  }
+})
+
+/** POST : transforme le groupe en boîte de réception collaborative. */
+sharedMailboxRouter.post('/:id/group/collaborative-inbox', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const settings = await enableCollabInboxOnGroup(row.targetGroupEmail)
+    return c.json({ ok: true, settings })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/group/collaborative-inbox POST]', msg)
     return c.json({ error: msg }, 500)
   }
 })

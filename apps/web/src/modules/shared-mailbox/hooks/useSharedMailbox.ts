@@ -83,6 +83,14 @@ export function useAllowExternalGroupPosts() {
   })
 }
 
+export function useEnableCollaborativeInbox() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.enableCollaborativeInbox(id),
+    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ['shared-dual-delivery', id] }),
+  })
+}
+
 export function useDeleteSharedMigration() {
   const qc = useQueryClient()
   return useMutation({
