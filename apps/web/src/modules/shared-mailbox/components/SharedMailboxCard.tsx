@@ -11,6 +11,7 @@ import {
   useAllowExternalGroupPosts,
   useEnableCollaborativeInbox,
   useSilenceMembers,
+  useAddMigAlias,
 } from '../hooks/useSharedMailbox'
 
 interface Props {
@@ -144,6 +145,7 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
   const { mutate: allowExternalRaw, isPending: opening } = useAllowExternalGroupPosts()
   const { mutate: enableCollabRaw, isPending: enablingCollab } = useEnableCollaborativeInbox()
   const { mutate: silenceRaw, isPending: silencing } = useSilenceMembers()
+  const { mutate: addAliasRaw, isPending: addingAlias } = useAddMigAlias()
 
   const onError = (action: string) => (err: unknown) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -165,6 +167,16 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           `Membres traités : ${total}\n• Mis en silencieux : ${updated}\n• Déjà silencieux : ${alreadySilent}\n• Échecs : ${failed}`,
         )
       },
+    })
+  const addAlias = (id: string) =>
+    addAliasRaw(id, {
+      onError: onError('Ajouter l\'alias @mig.onela.com'),
+      onSuccess: (data) =>
+        window.alert(
+          data.added
+            ? `Alias ajouté : ${data.alias}`
+            : `Alias déjà présent : ${data.alias}`,
+        ),
     })
 
   if (!groupReady) return null
@@ -308,6 +320,14 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
               {enablingCollab ? 'Activation…' : 'Activer boîte collaborative'}
             </button>
           )}
+          <button
+            onClick={() => addAlias(migration.id)}
+            disabled={addingAlias}
+            className="inline-flex items-center gap-1 rounded bg-teal-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+            title={`Ajouter ${localPart}@mig.onela.com comme alias du groupe`}
+          >
+            {addingAlias ? 'Ajout…' : `Ajouter alias @mig.onela.com`}
+          </button>
           <button
             onClick={() => {
               if (

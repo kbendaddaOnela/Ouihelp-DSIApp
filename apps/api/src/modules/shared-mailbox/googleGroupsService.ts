@@ -76,6 +76,25 @@ export async function ensureGoogleGroup(params: {
   return createGoogleGroup(params)
 }
 
+/** Ajoute un alias au groupe. Idempotent (409 = déjà présent). */
+export async function addGroupAlias(groupEmail: string, alias: string): Promise<{ added: boolean }> {
+  const token = await getGoogleAccessTokenForUser(adminEmail(), SCOPE_DIRECTORY_GROUP)
+  const res = await fetchWithTimeout(
+    `https://admin.googleapis.com/admin/directory/v1/groups/${encodeURIComponent(groupEmail)}/aliases`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias }),
+    },
+  )
+  if (res.status === 409) return { added: false }
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Add group alias error (${res.status}): ${err}`)
+  }
+  return { added: true }
+}
+
 /**
  * Importe un message RFC822 dans l'archive d'un Google Group via Groups Migration API.
  * Préserve la date d'origine (Date: header du MIME). Idempotence : à gérer côté appelant

@@ -15,7 +15,8 @@ import {
   type GraphFolder,
   type GraphMessageMeta,
 } from '../migration/mailService'
-import { ensureGoogleGroup, archiveMessageToGroup } from './googleGroupsService'
+import { ensureGoogleGroup, archiveMessageToGroup, addGroupAlias } from './googleGroupsService'
+import { ensureBccTransportRule, buildGoogleRoutingAddress } from './transportRuleService'
 
 // eslint-disable-next-line no-control-regex
 const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
@@ -106,12 +107,43 @@ async function processSharedMailbox(job: SharedMigration) {
           email: job.targetGroupEmail,
           name: job.targetGroupName,
         })
+
+        // Auto-provision pour le dual delivery : alias @mig.<domain> + transport rule.
+        // Best-effort : si une étape échoue (permission, doublon, etc.), on log mais
+        // on n'arrête pas la migration. L'utilisateur peut re-tenter via les boutons.
+        const routingAddress = buildGoogleRoutingAddress(job.targetGroupEmail)
+        try {
+          const aliasResult = await addGroupAlias(job.targetGroupEmail, routingAddress)
+          console.log(
+            `[shared] alias ${routingAddress} ${aliasResult.added ? 'ajouté' : 'déjà présent'} sur ${job.targetGroupEmail}`,
+          )
+        } catch (e) {
+          console.warn(
+            `[shared] auto-add alias ${routingAddress} a échoué (à refaire manuellement):`,
+            e instanceof Error ? e.message : e,
+          )
+        }
+        try {
+          await ensureBccTransportRule({
+            targetMailbox: job.onelaUpn,
+            bccAddress: routingAddress,
+            description: `Dual delivery DSI App : BCC ${routingAddress} (vers groupe ${job.targetGroupEmail}) pour la BAL partagée ${job.onelaUpn}`,
+          })
+          console.log(`[shared] transport rule activée : ${job.onelaUpn} → BCC ${routingAddress}`)
+        } catch (e) {
+          console.warn(
+            `[shared] auto-création transport rule a échoué (à refaire manuellement):`,
+            e instanceof Error ? e.message : e,
+          )
+        }
+
         await db
           .update(sharedMigrations)
           .set({
             stepCreateGroup: 'success',
             targetGroupId: group.id,
             createGroupError: null,
+            dualDeliveryBccAddress: routingAddress,
           })
           .where(eq(sharedMigrations.id, job.id))
       } catch (err) {
