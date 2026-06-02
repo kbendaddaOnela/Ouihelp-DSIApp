@@ -34,26 +34,31 @@ export function ruleNameFor(mailboxEmail: string): string {
 }
 
 /**
- * Construit l'adresse de routage Google Workspace pour le dual delivery
- * vers un groupe ayant la MÊME adresse que la BAL Exchange (ex : `dsi@onela.com`
- * sur Exchange ET sur Google Workspace).
+ * Construit l'adresse de routage de transition pour le dual delivery.
  *
- * Pattern documenté par Google : `<localpart>@<domain>.test-google-a.com`
- * → Google route automatiquement vers le compte/groupe ayant l'adresse
- *   `<localpart>@<domain>` dans le tenant.
+ * Pattern : `<localpart>@<prefix>.<domain>` (par défaut prefix="mig").
+ * Exemple : `dsi@onela.com` → `dsi@mig.onela.com`
  *
- * Avantages :
- *  - Pas de boucle (l'adresse de routage est différente de la cible)
- *  - Pas de connecteur Exchange à créer (DNS public route vers Google)
- *  - Marche dès qu'on a vérifié le domaine côté Google Workspace
+ * Pourquoi pas `test-google-a.com` :
+ *  - Pour les domaines SECONDAIRES dans Google Workspace, le test-google-a.com
+ *    peut ne pas être provisionné rapidement (24-48h) ou pas du tout
+ *  - `mig.<domain>` est le même domaine de transition déjà utilisé par le
+ *    module ONELA classique → fiable, propagation déjà effectuée
+ *
+ * Prérequis Workspace : `mig.onela.com` doit être ajouté comme domaine
+ * (secondaire ou alias) dans Google Workspace, et `dsi@mig.onela.com` doit
+ * exister comme alias du groupe `dsi@onela.com` (ou domain alias automatique).
+ *
+ * Override via env `TRANSITION_DOMAIN_PREFIX` (défaut : "mig").
  */
 export function buildGoogleRoutingAddress(targetEmail: string): string {
   const parts = targetEmail.split('@')
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error(`Adresse cible invalide pour le routage Google : ${targetEmail}`)
+    throw new Error(`Adresse cible invalide pour le routage : ${targetEmail}`)
   }
   const [local, domain] = parts
-  return `${local}@${domain}.test-google-a.com`
+  const prefix = process.env['TRANSITION_DOMAIN_PREFIX'] ?? 'mig'
+  return `${local}@${prefix}.${domain}`
 }
 
 export interface TransportRule {

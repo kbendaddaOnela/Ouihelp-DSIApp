@@ -208,7 +208,7 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           <div>
             <label className="mb-1 block text-xs text-gray-600">
               Adresse de routage BCC&nbsp;:
-              <span className="ml-1 text-gray-400">(défaut : test-google-a.com — modifiable si rejet "Address not found")</span>
+              <span className="ml-1 text-gray-400">(défaut : domaine de transition <code>mig.&lt;domaine&gt;</code>)</span>
             </label>
             <input
               type="email"
@@ -218,9 +218,9 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
               className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             <p className="mt-1 text-[11px] text-gray-500">
-              Le test-google-a.com d'un domaine <strong>secondaire</strong> peut prendre 24-48h à
-              être provisionné. En attendant, essaie celui du domaine primaire de ton Workspace
-              (ex. <code>{localPart || 'localpart'}@&lt;primaire&gt;.test-google-a.com</code>).
+              Utilise le domaine de transition <code>mig.onela.com</code> (déjà configuré côté Google
+              Workspace pour la migration classique). <code>{localPart || 'localpart'}@mig.onela.com</code>{' '}
+              doit exister comme alias du groupe ou comme domain alias automatique.
             </p>
           </div>
         )}
