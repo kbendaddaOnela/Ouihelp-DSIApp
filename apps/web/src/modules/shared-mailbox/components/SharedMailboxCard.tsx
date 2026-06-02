@@ -161,16 +161,16 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
       <div className="space-y-1.5 text-xs text-gray-600">
         <div className="flex items-center gap-1.5">
           <span className={`inline-block h-2 w-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-gray-300'}`} />
-          Forwarding Exchange&nbsp;:{' '}
+          Transport rule (BCC)&nbsp;:{' '}
           {isActive ? (
             <span className="font-mono text-gray-800">
-              {forwarding!.forwardTo}
+              → {forwarding!.forwardTo}
               {wrongTarget && (
                 <span className="ml-1 text-orange-600">(⚠ cible ≠ groupe ; cliquer pour corriger)</span>
               )}
             </span>
           ) : (
-            <span className="text-gray-500">désactivé</span>
+            <span className="text-gray-500">aucune</span>
           )}
         </div>
         <div className="flex items-center gap-1.5">

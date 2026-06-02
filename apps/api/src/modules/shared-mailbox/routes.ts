@@ -8,12 +8,13 @@ import { db } from '../../db/index'
 import { sharedMigrations, sharedMigratedMessages } from './schema'
 import { listSharedMailboxes } from './exchangeService'
 import { signalStopShared } from './worker'
-import {
-  setOnelaMailForwarding,
-  removeOnelaMailForwarding,
-  checkOnelaMailForwarding,
-} from '../migration/service'
 import { allowExternalPostsOnGroup, getGroupSettings } from './googleGroupsService'
+import {
+  ensureBccTransportRule,
+  deleteTransportRuleIfExists,
+  getTransportRule,
+  ruleNameFor,
+} from './transportRuleService'
 import type {
   SearchSharedMailboxesResponse,
   SharedMigrationHistoryResponse,
@@ -120,20 +121,32 @@ sharedMailboxRouter.delete('/:id', requirePermission('migration:write'), async (
   return c.json({ ok: true })
 })
 
-// ── Dual delivery (forwarding Exchange → Google Group) ──────────────────────
+// ── Dual delivery (Transport Rule Exchange : BCC vers Google Group) ─────────
+// On utilise une Mail Flow Rule "BlindCopyTo" plutôt qu'un ForwardingSmtpAddress :
+// les transport rules ne sont PAS impactées par le blocage anti-forward outbound
+// (politique anti-phishing M365), contrairement aux forwards user-level.
 
-/** GET : statut forwarding + permissions de post du groupe. */
+/** GET : statut de la transport rule + permissions de post du groupe. */
 sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'), async (c) => {
   const id = c.req.param('id')
   const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
   try {
-    const [forwarding, groupSettings] = await Promise.all([
-      checkOnelaMailForwarding(row.onelaUpn),
+    const ruleName = ruleNameFor(row.onelaUpn)
+    const [rule, groupSettings] = await Promise.all([
+      getTransportRule(ruleName).catch(() => null),
       getGroupSettings(row.targetGroupEmail).catch(() => null),
     ])
+    const bccTo = rule?.BlindCopyTo?.[0] ?? null
     return c.json({
-      forwarding,
+      ruleName,
+      ruleActive: !!rule && rule.State !== 'Disabled',
+      ruleBccTo: bccTo,
+      // Maintien rétro-compat avec le frontend existant :
+      forwarding: {
+        active: !!rule && rule.State !== 'Disabled',
+        forwardTo: bccTo,
+      },
       groupPostPermission: groupSettings?.whoCanPostMessage ?? null,
       groupAllowsExternalPosts: groupSettings?.whoCanPostMessage === 'ANYONE_CAN_POST',
     })
@@ -142,26 +155,29 @@ sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'
   }
 })
 
-/** POST : active le forwarding Exchange → Google Group (DeliverToMailboxAndForward = true). */
+/** POST : crée/met à jour la transport rule (BCC du Google Group). */
 sharedMailboxRouter.post('/:id/dual-delivery', requirePermission('migration:write'), async (c) => {
   const id = c.req.param('id')
   const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
   try {
-    await setOnelaMailForwarding(row.onelaUpn, row.targetGroupEmail)
+    await ensureBccTransportRule({
+      targetMailbox: row.onelaUpn,
+      bccAddress: row.targetGroupEmail,
+    })
     return c.json({ ok: true, forwardTo: row.targetGroupEmail })
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
   }
 })
 
-/** DELETE : retire le forwarding Exchange. */
+/** DELETE : supprime la transport rule. */
 sharedMailboxRouter.delete('/:id/dual-delivery', requirePermission('migration:write'), async (c) => {
   const id = c.req.param('id')
   const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
   try {
-    await removeOnelaMailForwarding(row.onelaUpn)
+    await deleteTransportRuleIfExists(row.onelaUpn)
     return c.json({ ok: true })
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
