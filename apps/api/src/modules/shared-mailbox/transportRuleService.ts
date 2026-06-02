@@ -33,6 +33,29 @@ export function ruleNameFor(mailboxEmail: string): string {
   return `DSI-Shared-BCC-${safe}`
 }
 
+/**
+ * Construit l'adresse de routage Google Workspace pour le dual delivery
+ * vers un groupe ayant la MÊME adresse que la BAL Exchange (ex : `dsi@onela.com`
+ * sur Exchange ET sur Google Workspace).
+ *
+ * Pattern documenté par Google : `<localpart>@<domain>.test-google-a.com`
+ * → Google route automatiquement vers le compte/groupe ayant l'adresse
+ *   `<localpart>@<domain>` dans le tenant.
+ *
+ * Avantages :
+ *  - Pas de boucle (l'adresse de routage est différente de la cible)
+ *  - Pas de connecteur Exchange à créer (DNS public route vers Google)
+ *  - Marche dès qu'on a vérifié le domaine côté Google Workspace
+ */
+export function buildGoogleRoutingAddress(targetEmail: string): string {
+  const parts = targetEmail.split('@')
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error(`Adresse cible invalide pour le routage Google : ${targetEmail}`)
+  }
+  const [local, domain] = parts
+  return `${local}@${domain}.test-google-a.com`
+}
+
 export interface TransportRule {
   Name: string
   Identity?: string

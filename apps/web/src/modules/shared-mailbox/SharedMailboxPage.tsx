@@ -30,9 +30,11 @@ export default function SharedMailboxPage() {
 
   const onSelect = (mb: SharedMailbox) => {
     setSelected(mb)
-    // Pré-remplir les champs cible avec une suggestion par défaut
-    const localPart = mb.email.split('@')[0] ?? ''
-    if (!targetGroupEmail) setTargetGroupEmail(`${localPart}@ouihelp.com`)
+    // Convention : le groupe Google a la MÊME adresse que la BAL Exchange
+    // (ex. dsi@onela.com sur Exchange ET sur Google Workspace).
+    // Le dual delivery utilise une adresse de routage Google (test-google-a.com)
+    // pour éviter la boucle, géré automatiquement côté API.
+    if (!targetGroupEmail) setTargetGroupEmail(mb.email)
     if (!targetGroupName) setTargetGroupName(mb.displayName)
     setSubmitError(null)
   }
@@ -181,9 +183,11 @@ export default function SharedMailboxPage() {
               </button>
             </div>
             <p className="text-xs text-gray-500">
-              Si le groupe n'existe pas, l'app le crée automatiquement (Admin SDK).
-              Active ensuite la « Collaborative Inbox » côté Google Groups si tu veux que
-              les membres puissent répondre depuis l'archive.
+              Convention : <strong>même adresse</strong> sur Exchange et Google. Si le groupe
+              n'existe pas, l'app le crée automatiquement (Admin SDK). Le dual delivery
+              utilise l'adresse de routage Google <code>&lt;localpart&gt;@&lt;domaine&gt;.test-google-a.com</code>
+              pour éviter la boucle. Active ensuite la « Collaborative Inbox » côté Google
+              Groups si tu veux que les membres puissent répondre depuis l'archive.
             </p>
           </div>
         </section>

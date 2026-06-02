@@ -14,6 +14,7 @@ import {
   deleteTransportRuleIfExists,
   getTransportRule,
   ruleNameFor,
+  buildGoogleRoutingAddress,
 } from './transportRuleService'
 import type {
   SearchSharedMailboxesResponse,
@@ -144,13 +145,17 @@ sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'
       }),
     ])
     const bccTo = rule?.BlindCopyTo?.[0] ?? null
+    const expectedRouting = buildGoogleRoutingAddress(row.targetGroupEmail)
     return c.json({
       ruleName,
       ruleActive: !!rule && rule.State !== 'Disabled',
       ruleBccTo: bccTo,
+      // L'adresse de routage Google attendue pour cette migration
+      // (le BCC réel doit être cette valeur — sinon la règle est obsolète et à recréer)
+      expectedRoutingAddress: expectedRouting,
       // Maintien rétro-compat avec le frontend existant :
       forwarding: {
-        active: !!rule && rule.State !== 'Disabled',
+        active: !!rule && rule.State !== 'Disabled' && bccTo === expectedRouting,
         forwardTo: bccTo,
       },
       groupPostPermission: groupSettings?.whoCanPostMessage ?? null,
@@ -167,11 +172,15 @@ sharedMailboxRouter.post('/:id/dual-delivery', requirePermission('migration:writ
   const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
   try {
+    // BCC vers l'adresse de routage Google (et non vers l'adresse du groupe directe),
+    // pour éviter la boucle quand le groupe a la MÊME adresse que la BAL Exchange.
+    const routingAddress = buildGoogleRoutingAddress(row.targetGroupEmail)
     await ensureBccTransportRule({
       targetMailbox: row.onelaUpn,
-      bccAddress: row.targetGroupEmail,
+      bccAddress: routingAddress,
+      description: `Dual delivery DSI App : BCC ${routingAddress} (routage Google vers ${row.targetGroupEmail}) pour la BAL partagée ${row.onelaUpn}`,
     })
-    return c.json({ ok: true, forwardTo: row.targetGroupEmail })
+    return c.json({ ok: true, forwardTo: routingAddress })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[shared-mailbox/dual-delivery POST]', msg)
