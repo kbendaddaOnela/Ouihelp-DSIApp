@@ -91,6 +91,14 @@ export function useEnableCollaborativeInbox() {
   })
 }
 
+export function useAddMigAlias() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.addMigAlias(id),
+    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ['shared-dual-delivery', id] }),
+  })
+}
+
 export function useSilenceMembers() {
   const qc = useQueryClient()
   return useMutation({

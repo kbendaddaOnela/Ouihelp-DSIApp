@@ -13,6 +13,7 @@ import {
   enableCollaborativeInbox as enableCollabInboxOnGroup,
   getGroupSettings,
   silenceAllGroupMembers,
+  addGroupAlias,
 } from './googleGroupsService'
 import {
   ensureBccTransportRule,
@@ -201,6 +202,13 @@ sharedMailboxRouter.post('/:id/dual-delivery', requirePermission('migration:writ
     const routingAddress: string =
       bodyOverride ?? row.dualDeliveryBccAddress ?? buildGoogleRoutingAddress(row.targetGroupEmail)
 
+    // Ajoute l'alias sur le groupe (best-effort, idempotent)
+    try {
+      await addGroupAlias(row.targetGroupEmail, routingAddress)
+    } catch (e) {
+      console.warn('[dual-delivery] addGroupAlias warning:', e instanceof Error ? e.message : e)
+    }
+
     await ensureBccTransportRule({
       targetMailbox: row.onelaUpn,
       bccAddress: routingAddress,
@@ -232,6 +240,22 @@ sharedMailboxRouter.delete('/:id/dual-delivery', requirePermission('migration:wr
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[shared-mailbox/dual-delivery DELETE]', msg)
+    return c.json({ error: msg }, 500)
+  }
+})
+
+/** POST : ajoute l'alias mig.<domain> au groupe (prérequis pour le dual delivery). */
+sharedMailboxRouter.post('/:id/group/add-mig-alias', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const alias = buildGoogleRoutingAddress(row.targetGroupEmail)
+    const result = await addGroupAlias(row.targetGroupEmail, alias)
+    return c.json({ ok: true, alias, added: result.added })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/group/add-mig-alias POST]', msg)
     return c.json({ error: msg }, 500)
   }
 })
