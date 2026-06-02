@@ -1,12 +1,15 @@
-// Transport Rules (Mail Flow Rules) côté Exchange Online — alternative au
-// ForwardingSmtpAddress pour le dual delivery.
+// Transport Rules (Mail Flow Rules) via Exchange Online REST — endpoint moderne
+// `InvokeCommand` qui exécute des cmdlets PowerShell via API REST.
 //
-// Pourquoi : ForwardingSmtpAddress est bloqué par défaut par la politique
-// anti-spam outbound de M365 (anti-phishing). Une transport rule "BlindCopyTo"
-// est une règle admin, pas un forward user-level → non concernée par ce blocage.
+// Pourquoi pas /adminapi/beta/.../TransportRule ? Cet ancien endpoint OData n'expose
+// qu'un sous-ensemble de cmdlets (Mailbox, Recipient...). TransportRule n'y est pas.
+// InvokeCommand permet d'appeler N'IMPORTE QUEL cmdlet Exchange (New-TransportRule,
+// Get-TransportRule, Set-TransportRule, Remove-TransportRule) en mode App-only.
 //
-// API utilisée : Exchange Online Admin REST (/adminapi/beta/{tid}/TransportRule),
-// le même endpoint que celui déjà utilisé pour /Mailbox.
+// Permission requise sur l'app reg ONELA (à vérifier si on récupère du 403) :
+// - Office 365 Exchange Online → Exchange.ManageAsApp (Application)
+// - + un rôle Entra ID sur le SPN : "Exchange Administrator" (ou "Compliance Administrator"
+//   selon le scope cmdlet utilisé).
 
 import { fetchWithTimeout } from '../migration/httpClient'
 import { getAccessToken } from '../migration/service'
@@ -19,9 +22,9 @@ async function exchangeAdminToken(): Promise<string> {
   return getAccessToken(tid, cid, sec, 'https://outlook.office365.com/.default')
 }
 
-function adminBase(): string {
+function invokeCommandUrl(): string {
   const tid = process.env['ONELA_TENANT_ID']
-  return `https://outlook.office365.com/adminapi/beta/${tid}`
+  return `https://outlook.office365.com/adminapi/beta/${tid}/InvokeCommand`
 }
 
 /** Nom déterministe d'une règle pour une BAL donnée (idempotence). */
@@ -40,29 +43,48 @@ export interface TransportRule {
   Description?: string
 }
 
-async function adminFetch(path: string, init?: Parameters<typeof fetchWithTimeout>[1]): Promise<Response> {
+interface InvokeCommandResponse<T> {
+  '@odata.context'?: string
+  value: T[]
+}
+
+/**
+ * Exécute un cmdlet Exchange via REST. Lève une erreur si le cmdlet renvoie
+ * un message d'erreur dans la réponse.
+ */
+async function invokeCommand<T = unknown>(cmdletName: string, parameters: Record<string, unknown>): Promise<T[]> {
   const token = await exchangeAdminToken()
-  return fetchWithTimeout(`${adminBase()}${path}`, {
-    ...init,
+  const res = await fetchWithTimeout(invokeCommandUrl(), {
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      ...(init?.headers ?? {}),
     },
+    body: JSON.stringify({
+      CmdletInput: { CmdletName: cmdletName, Parameters: parameters },
+    }),
   })
+  const text = await res.text()
+  if (!res.ok) {
+    throw new Error(`Exchange InvokeCommand ${res.status} on ${cmdletName}: ${text.slice(0, 600)}`)
+  }
+  const parsed = JSON.parse(text) as InvokeCommandResponse<T> & { value?: T[] }
+  return parsed.value ?? []
 }
 
 /** Récupère une règle par nom. Renvoie null si absente. */
 export async function getTransportRule(name: string): Promise<TransportRule | null> {
-  const filter = encodeURIComponent(`Name eq '${name}'`)
-  const res = await adminFetch(`/TransportRule?$filter=${filter}`)
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Exchange Admin ${res.status} on list TransportRule: ${err}`)
+  try {
+    const rows = await invokeCommand<TransportRule>('Get-TransportRule', { Identity: name })
+    return rows[0] ?? null
+  } catch (err) {
+    // Get-TransportRule renvoie "The operation couldn't be performed because object ... couldn't be found"
+    // quand la règle n'existe pas → on traite comme absent (null).
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("couldn't be found") || msg.includes('ObjectNotFoundException')) return null
+    throw err
   }
-  const data = (await res.json()) as { value: TransportRule[] }
-  return data.value[0] ?? null
 }
 
 /**
@@ -77,40 +99,31 @@ export async function ensureBccTransportRule(params: {
   const name = ruleNameFor(params.targetMailbox)
   const existing = await getTransportRule(name)
 
-  const body = {
-    Name: name,
-    Mode: 'Enforce' as const,
-    State: 'Enabled' as const,
+  const commonParams: { SentTo: string[]; BlindCopyTo: string[]; Mode: 'Enforce' } = {
     SentTo: [params.targetMailbox],
     BlindCopyTo: [params.bccAddress],
-    Description:
-      params.description ??
-      `Dual delivery DSI App : BCC ${params.bccAddress} pour la BAL partagée ${params.targetMailbox}`,
+    Mode: 'Enforce',
   }
 
   if (existing) {
-    // Update via PATCH sur l'Identity
-    const identity = encodeURIComponent(existing.Identity ?? name)
-    const res = await adminFetch(`/TransportRule('${identity}')`, {
-      method: 'PATCH',
-      body: JSON.stringify(body),
+    await invokeCommand('Set-TransportRule', {
+      Identity: existing.Identity ?? name,
+      ...commonParams,
     })
-    if (!res.ok) {
-      const err = await res.text()
-      throw new Error(`Exchange Admin ${res.status} on update TransportRule: ${err}`)
-    }
-    return { ...existing, ...body }
+    // Re-fetch pour avoir l'état à jour
+    const fresh = await getTransportRule(name)
+    return fresh ?? { Name: name, ...commonParams, State: 'Enabled' }
   }
 
-  const res = await adminFetch('/TransportRule', {
-    method: 'POST',
-    body: JSON.stringify(body),
+  await invokeCommand('New-TransportRule', {
+    Name: name,
+    ...commonParams,
+    Comments:
+      params.description ??
+      `Dual delivery DSI App : BCC ${params.bccAddress} pour la BAL partagée ${params.targetMailbox}`,
   })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Exchange Admin ${res.status} on create TransportRule: ${err}`)
-  }
-  return res.json() as Promise<TransportRule>
+  const fresh = await getTransportRule(name)
+  return fresh ?? { Name: name, ...commonParams, State: 'Enabled' }
 }
 
 /** Supprime la règle si elle existe. Idempotent. */
@@ -118,11 +131,9 @@ export async function deleteTransportRuleIfExists(targetMailbox: string): Promis
   const name = ruleNameFor(targetMailbox)
   const existing = await getTransportRule(name)
   if (!existing) return false
-  const identity = encodeURIComponent(existing.Identity ?? name)
-  const res = await adminFetch(`/TransportRule('${identity}')`, { method: 'DELETE' })
-  if (!res.ok && res.status !== 404) {
-    const err = await res.text()
-    throw new Error(`Exchange Admin ${res.status} on delete TransportRule: ${err}`)
-  }
+  await invokeCommand('Remove-TransportRule', {
+    Identity: existing.Identity ?? name,
+    Confirm: false,
+  })
   return true
 }
