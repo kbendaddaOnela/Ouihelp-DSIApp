@@ -9,6 +9,7 @@
 
 import { fetchWithTimeout } from '../migration/httpClient'
 import { getGoogleAccessTokenForUser } from '../migration/googleService'
+import { googleUserExists } from '../migration/googleService'
 
 const SCOPE_DIRECTORY_GROUP = 'https://www.googleapis.com/auth/admin.directory.group'
 const SCOPE_GROUPS_MIGRATION = 'https://www.googleapis.com/auth/apps.groups.migration'
@@ -27,7 +28,10 @@ interface DirectoryGroup {
   description?: string
 }
 
-/** Récupère un groupe par email. Renvoie null si absent (404). */
+/** Récupère un groupe par email. Renvoie null si absent (404).
+ *  Cas particulier : 403 "Not Authorized" sur l'Admin Directory API arrive
+ *  typiquement quand l'adresse existe comme USER (pas comme groupe). On vérifie
+ *  ce cas et renvoie une erreur explicite au lieu d'un 403 cryptique. */
 export async function getGoogleGroup(email: string): Promise<DirectoryGroup | null> {
   const token = await getGoogleAccessTokenForUser(adminEmail(), SCOPE_DIRECTORY_GROUP)
   const res = await fetchWithTimeout(
@@ -35,6 +39,27 @@ export async function getGoogleGroup(email: string): Promise<DirectoryGroup | nu
     { headers: { Authorization: `Bearer ${token}` } },
   )
   if (res.status === 404) return null
+  if (res.status === 403) {
+    // Diagnostic : l'adresse pointe-t-elle vers un user Workspace ?
+    let userConflict = false
+    try {
+      userConflict = await googleUserExists(email)
+    } catch {
+      // Ignorer si la lookup user échoue aussi
+    }
+    if (userConflict) {
+      throw new Error(
+        `L'adresse ${email} existe déjà comme USER Google Workspace, pas comme groupe. ` +
+          `Solutions : (A) renommer le user dans Admin Console → Users, (B) supprimer ce user, ` +
+          `ou (C) choisir une autre adresse de groupe (ex. ${email.replace('@', '-team@')}).`,
+      )
+    }
+    const err = await res.text()
+    throw new Error(
+      `Google get group error (403, accès refusé) sur ${email}: ${err.slice(0, 300)}\n` +
+        `Causes possibles : domaine non vérifié dans Workspace, OU restreinte, ou conflit avec un alias.`,
+    )
+  }
   if (!res.ok) {
     const err = await res.text()
     throw new Error(`Google get group error (${res.status}): ${err}`)
