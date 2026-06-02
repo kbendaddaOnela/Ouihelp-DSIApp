@@ -167,7 +167,9 @@ sharedMailboxRouter.post('/:id/dual-delivery', requirePermission('migration:writ
     })
     return c.json({ ok: true, forwardTo: row.targetGroupEmail })
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/dual-delivery POST]', msg)
+    return c.json({ error: msg }, 500)
   }
 })
 
@@ -180,7 +182,9 @@ sharedMailboxRouter.delete('/:id/dual-delivery', requirePermission('migration:wr
     await deleteTransportRuleIfExists(row.onelaUpn)
     return c.json({ ok: true })
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/dual-delivery DELETE]', msg)
+    return c.json({ error: msg }, 500)
   }
 })
 
