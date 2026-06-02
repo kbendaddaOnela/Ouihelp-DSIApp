@@ -46,6 +46,7 @@ function toRecord(m: typeof sharedMigrations.$inferSelect): SharedMigrationRecor
     mailStartedAt: m.mailStartedAt ? m.mailStartedAt.toISOString() : null,
     mailFinishedAt: m.mailFinishedAt ? m.mailFinishedAt.toISOString() : null,
     mailLastSyncAt: m.mailLastSyncAt ? m.mailLastSyncAt.toISOString() : null,
+    dualDeliveryBccAddress: m.dualDeliveryBccAddress ?? null,
     initiatedBy: m.initiatedBy,
     createdAt: m.createdAt.toISOString(),
     updatedAt: m.updatedAt.toISOString(),
@@ -145,7 +146,7 @@ sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'
       }),
     ])
     const bccTo = rule?.BlindCopyTo?.[0] ?? null
-    const expectedRouting = buildGoogleRoutingAddress(row.targetGroupEmail)
+    const expectedRouting = row.dualDeliveryBccAddress ?? buildGoogleRoutingAddress(row.targetGroupEmail)
     return c.json({
       ruleName,
       ruleActive: !!rule && rule.State !== 'Disabled',
@@ -166,20 +167,45 @@ sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'
   }
 })
 
-/** POST : crée/met à jour la transport rule (BCC du Google Group). */
+/** POST : crée/met à jour la transport rule (BCC vers le routage Google).
+ *  Body optionnel : { bccAddress?: string } pour override.
+ */
 sharedMailboxRouter.post('/:id/dual-delivery', requirePermission('migration:write'), async (c) => {
   const id = c.req.param('id')
   const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+
+  let bodyOverride: string | undefined
   try {
-    // BCC vers l'adresse de routage Google (et non vers l'adresse du groupe directe),
-    // pour éviter la boucle quand le groupe a la MÊME adresse que la BAL Exchange.
-    const routingAddress = buildGoogleRoutingAddress(row.targetGroupEmail)
+    const body = (await c.req.json().catch(() => ({}))) as { bccAddress?: string }
+    if (typeof body?.bccAddress === 'string' && body.bccAddress.trim().length > 0) {
+      const candidate = body.bccAddress.trim().toLowerCase()
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(candidate)) {
+        return c.json({ error: 'Adresse BCC invalide' }, 400)
+      }
+      bodyOverride = candidate
+    }
+  } catch {
+    // Pas de body, on garde l'auto
+  }
+
+  try {
+    // Priorité : override (body), puis valeur persistée, puis routage Google calculé
+    const routingAddress: string =
+      bodyOverride ?? row.dualDeliveryBccAddress ?? buildGoogleRoutingAddress(row.targetGroupEmail)
+
     await ensureBccTransportRule({
       targetMailbox: row.onelaUpn,
       bccAddress: routingAddress,
-      description: `Dual delivery DSI App : BCC ${routingAddress} (routage Google vers ${row.targetGroupEmail}) pour la BAL partagée ${row.onelaUpn}`,
+      description: `Dual delivery DSI App : BCC ${routingAddress} (vers groupe ${row.targetGroupEmail}) pour la BAL partagée ${row.onelaUpn}`,
     })
+
+    // Persiste l'adresse choisie pour mémoire au prochain affichage
+    await db
+      .update(sharedMigrations)
+      .set({ dualDeliveryBccAddress: routingAddress })
+      .where(eq(sharedMigrations.id, id))
+
     return c.json({ ok: true, forwardTo: routingAddress })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

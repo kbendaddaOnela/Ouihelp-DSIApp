@@ -34,9 +34,12 @@ export const sharedMailboxApi = {
       }>(`/shared-mailbox/${id}/dual-delivery`)
       .then((r) => r.data),
 
-  enableDualDelivery: (id: string) =>
+  enableDualDelivery: (id: string, bccAddress?: string) =>
     apiClient
-      .post<{ ok: boolean; forwardTo: string }>(`/shared-mailbox/${id}/dual-delivery`)
+      .post<{ ok: boolean; forwardTo: string }>(
+        `/shared-mailbox/${id}/dual-delivery`,
+        bccAddress ? { bccAddress } : undefined,
+      )
       .then((r) => r.data),
 
   disableDualDelivery: (id: string) =>

@@ -40,6 +40,7 @@ export interface SharedMigrationRecord {
   mailStartedAt: string | null
   mailFinishedAt: string | null
   mailLastSyncAt: string | null
+  dualDeliveryBccAddress: string | null
   initiatedBy: string
   createdAt: string
   updatedAt: string

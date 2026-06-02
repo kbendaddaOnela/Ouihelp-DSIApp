@@ -67,6 +67,8 @@ async function ensureSchemaPatches() {
     { table: 'migrated_messages', column: 'received_at', ddl: `ALTER TABLE \`migrated_messages\` ADD COLUMN \`received_at\` timestamp NULL` },
     // Shared mailbox : delta sync
     { table: 'shared_migrations', column: 'mail_last_sync_at', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`mail_last_sync_at\` timestamp NULL` },
+    // Shared mailbox : routing address override pour dual delivery
+    { table: 'shared_migrations', column: 'dual_delivery_bcc_address', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`dual_delivery_bcc_address\` varchar(320)` },
   ]
   for (const p of columnPatches) {
     try {
