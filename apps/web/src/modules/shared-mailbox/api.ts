@@ -55,6 +55,13 @@ export const sharedMailboxApi = {
       .post<{ ok: boolean }>(`/shared-mailbox/${id}/group/collaborative-inbox`)
       .then((r) => r.data),
 
+  silenceMembers: (id: string) =>
+    apiClient
+      .post<{ ok: boolean; total: number; updated: number; alreadySilent: number; failed: number; failedMembers: string[] }>(
+        `/shared-mailbox/${id}/group/silence-members`,
+      )
+      .then((r) => r.data),
+
   remove: (id: string) =>
     apiClient.delete(`/shared-mailbox/${id}`).then((r) => r.data),
 

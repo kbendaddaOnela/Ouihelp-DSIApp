@@ -12,6 +12,7 @@ import {
   allowExternalPostsOnGroup,
   enableCollaborativeInbox as enableCollabInboxOnGroup,
   getGroupSettings,
+  silenceAllGroupMembers,
 } from './googleGroupsService'
 import {
   ensureBccTransportRule,
@@ -231,6 +232,21 @@ sharedMailboxRouter.delete('/:id/dual-delivery', requirePermission('migration:wr
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[shared-mailbox/dual-delivery DELETE]', msg)
+    return c.json({ error: msg }, 500)
+  }
+})
+
+/** POST : passe tous les membres en delivery_settings='NONE' (pas de fan-out). */
+sharedMailboxRouter.post('/:id/group/silence-members', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const result = await silenceAllGroupMembers(row.targetGroupEmail)
+    return c.json({ ok: true, ...result })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/group/silence-members POST]', msg)
     return c.json({ error: msg }, 500)
   }
 })

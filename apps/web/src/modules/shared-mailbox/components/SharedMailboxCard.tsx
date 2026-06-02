@@ -10,6 +10,7 @@ import {
   useDisableSharedDualDelivery,
   useAllowExternalGroupPosts,
   useEnableCollaborativeInbox,
+  useSilenceMembers,
 } from '../hooks/useSharedMailbox'
 
 interface Props {
@@ -142,6 +143,7 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
   const { mutate: disableRaw, isPending: disabling } = useDisableSharedDualDelivery()
   const { mutate: allowExternalRaw, isPending: opening } = useAllowExternalGroupPosts()
   const { mutate: enableCollabRaw, isPending: enablingCollab } = useEnableCollaborativeInbox()
+  const { mutate: silenceRaw, isPending: silencing } = useSilenceMembers()
 
   const onError = (action: string) => (err: unknown) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -154,6 +156,16 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
   const disable = (id: string) => disableRaw(id, { onError: onError('Désactiver dual delivery') })
   const allowExternal = (id: string) => allowExternalRaw(id, { onError: onError('Ouvrir le groupe aux externes') })
   const enableCollab = (id: string) => enableCollabRaw(id, { onError: onError('Activer la boîte collaborative') })
+  const silence = (id: string) =>
+    silenceRaw(id, {
+      onError: onError('Désactiver le fan-out membres'),
+      onSuccess: (data) => {
+        const { total, updated, alreadySilent, failed } = data
+        window.alert(
+          `Membres traités : ${total}\n• Mis en silencieux : ${updated}\n• Déjà silencieux : ${alreadySilent}\n• Échecs : ${failed}`,
+        )
+      },
+    })
 
   if (!groupReady) return null
 
@@ -296,6 +308,24 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
               {enablingCollab ? 'Activation…' : 'Activer boîte collaborative'}
             </button>
           )}
+          <button
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Passer TOUS les membres en mode silencieux (delivery_settings='NONE') ?\n\n" +
+                    "Les membres ne recevront plus de copie dans leur boîte Gmail perso ; ils verront " +
+                    "les mails uniquement dans l'interface du groupe.\n\n" +
+                    "À refaire à chaque ajout d'un nouveau membre (valeur par défaut = ALL_MAIL).",
+                )
+              ) {
+                silence(migration.id)
+              }
+            }}
+            disabled={silencing}
+            className="inline-flex items-center gap-1 rounded bg-amber-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+          >
+            {silencing ? 'Application…' : 'Pas d\'email aux membres'}
+          </button>
         </div>
       </div>
     </div>
