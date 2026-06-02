@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Play, Square, Trash2, AlertCircle, CheckCircle2, Loader2, Mailbox, ShieldOff } from 'lucide-react'
 import type { SharedMigrationRecord } from '@dsi-app/shared'
 import {
@@ -146,7 +147,8 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
     const msg = apiErr || (err instanceof Error ? err.message : String(err))
     window.alert(`${action} a échoué :\n\n${msg}`)
   }
-  const enable = (id: string) => enableRaw(id, { onError: onError('Activer dual delivery') })
+  const enable = (bccAddress?: string) =>
+    enableRaw({ id: migration.id, bccAddress }, { onError: onError('Activer dual delivery') })
   const disable = (id: string) => disableRaw(id, { onError: onError('Désactiver dual delivery') })
   const allowExternal = (id: string) => allowExternalRaw(id, { onError: onError('Ouvrir le groupe aux externes') })
 
@@ -155,8 +157,16 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
   const forwarding = data?.forwarding
   const allowsExternal = data?.groupAllowsExternalPosts ?? false
   const isActive = !!forwarding?.active
+  // expectedRoutingAddress vient du backend (calculé/persisté)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const expectedRouting = (data as any)?.expectedRoutingAddress as string | undefined
   const wrongTarget =
-    isActive && forwarding?.forwardTo?.toLowerCase() !== migration.targetGroupEmail.toLowerCase()
+    isActive && expectedRouting && forwarding?.forwardTo?.toLowerCase() !== expectedRouting.toLowerCase()
+
+  // Input éditable pour l'adresse de routage (avec defaut intelligent)
+  const defaultBcc = expectedRouting ?? ''
+  const [bccInput, setBccInput] = useState<string>('')
+  const localPart = migration.targetGroupEmail.split('@')[0] ?? ''
 
   return (
     <div className="mt-4 border-t border-gray-100 pt-3">
@@ -172,16 +182,12 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
         <div className="flex items-center gap-1.5">
           <span className={`inline-block h-2 w-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-gray-300'}`} />
           Transport rule (BCC routage Google)&nbsp;:{' '}
-          {isActive ? (
-            <span className="font-mono text-gray-800">
-              → {forwarding!.forwardTo}
+          {forwarding?.forwardTo ? (
+            <span className={`font-mono ${isActive ? 'text-gray-800' : 'text-orange-600'}`}>
+              → {forwarding.forwardTo}
               {wrongTarget && (
-                <span className="ml-1 text-orange-600">(⚠ ancienne cible ; cliquer pour mettre à jour)</span>
+                <span className="ml-1 text-orange-600">(⚠ doit être {expectedRouting} ; cliquer pour mettre à jour)</span>
               )}
-            </span>
-          ) : forwarding?.forwardTo ? (
-            <span className="font-mono text-orange-600">
-              → {forwarding.forwardTo} <span className="text-xs">(ancienne config — re-cliquer "Activer")</span>
             </span>
           ) : (
             <span className="text-gray-500">aucune</span>
@@ -191,52 +197,77 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           <span className={`inline-block h-2 w-2 rounded-full ${allowsExternal ? 'bg-green-500' : 'bg-gray-300'}`} />
           Groupe accepte les posts externes&nbsp;:{' '}
           <span className={allowsExternal ? 'text-gray-800' : 'text-gray-500'}>
-            {data?.groupPostPermission ?? 'inconnu (lecture impossible — scope apps.groups.settings ?)'}
+            {data?.groupPostPermission ?? 'inconnu (scope apps.groups.settings ?)'}
           </span>
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2">
-        {!isActive || wrongTarget ? (
-          <button
-            onClick={() => enable(migration.id)}
-            disabled={enabling}
-            className="inline-flex items-center gap-1 rounded bg-green-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
-          >
-            <Mailbox className="h-3 w-3" />
-            {enabling ? 'Activation…' : 'Activer dual delivery'}
-          </button>
-        ) : (
-          <button
-            onClick={() => {
-              if (window.confirm('Désactiver le forwarding Exchange → Google Group ?')) {
-                disable(migration.id)
-              }
-            }}
-            disabled={disabling}
-            className="inline-flex items-center gap-1 rounded bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
-          >
-            <ShieldOff className="h-3 w-3" />
-            {disabling ? 'Désactivation…' : 'Désactiver dual delivery'}
-          </button>
+      {/* Actions */}
+      <div className="mt-3 space-y-2">
+        {(!isActive || wrongTarget) && (
+          <div>
+            <label className="mb-1 block text-xs text-gray-600">
+              Adresse de routage BCC&nbsp;:
+              <span className="ml-1 text-gray-400">(défaut : test-google-a.com — modifiable si rejet "Address not found")</span>
+            </label>
+            <input
+              type="email"
+              value={bccInput}
+              onChange={(e) => setBccInput(e.target.value)}
+              placeholder={defaultBcc}
+              className="w-full rounded border border-gray-300 px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-[11px] text-gray-500">
+              Le test-google-a.com d'un domaine <strong>secondaire</strong> peut prendre 24-48h à
+              être provisionné. En attendant, essaie celui du domaine primaire de ton Workspace
+              (ex. <code>{localPart || 'localpart'}@&lt;primaire&gt;.test-google-a.com</code>).
+            </p>
+          </div>
         )}
-        {!allowsExternal && (
-          <button
-            onClick={() => {
-              if (
-                window.confirm(
-                  'Ouvrir le groupe à TOUS les expéditeurs externes (ANYONE_CAN_POST) ?\n\nNécessaire pour que les mails forwardés depuis Exchange arrivent dans l\'archive. Tu pourras durcir après cutover.',
-                )
-              ) {
-                allowExternal(migration.id)
-              }
-            }}
-            disabled={opening}
-            className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          >
-            {opening ? 'Ouverture…' : 'Ouvrir le groupe aux externes'}
-          </button>
-        )}
+
+        <div className="flex flex-wrap gap-2">
+          {(!isActive || wrongTarget) && (
+            <button
+              onClick={() => enable(bccInput.trim() || undefined)}
+              disabled={enabling}
+              className="inline-flex items-center gap-1 rounded bg-green-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
+            >
+              <Mailbox className="h-3 w-3" />
+              {enabling ? 'Activation…' : isActive ? 'Mettre à jour' : 'Activer dual delivery'}
+            </button>
+          )}
+          {isActive && !wrongTarget && (
+            <button
+              onClick={() => {
+                if (window.confirm('Désactiver le dual delivery (supprimer la transport rule) ?')) {
+                  disable(migration.id)
+                }
+              }}
+              disabled={disabling}
+              className="inline-flex items-center gap-1 rounded bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+            >
+              <ShieldOff className="h-3 w-3" />
+              {disabling ? 'Désactivation…' : 'Désactiver dual delivery'}
+            </button>
+          )}
+          {!allowsExternal && (
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Ouvrir le groupe à TOUS les expéditeurs externes (ANYONE_CAN_POST) ?\n\nNécessaire pour que les mails BCC arrivent dans l'archive. Tu pourras durcir après cutover.",
+                  )
+                ) {
+                  allowExternal(migration.id)
+                }
+              }}
+              disabled={opening}
+              className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {opening ? 'Ouverture…' : 'Ouvrir le groupe aux externes'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

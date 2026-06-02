@@ -35,6 +35,9 @@ export const sharedMigrations = mysqlTable('shared_migrations', {
   mailFinishedAt: timestamp('mail_finished_at'),
   // Horodatage du dernier succès complet — pour le delta sync au prochain Resync
   mailLastSyncAt: timestamp('mail_last_sync_at'),
+  // Adresse de routage Google pour le BCC dual delivery (override possible si
+  // le test-google-a.com du domaine secondaire ne marche pas ; sinon calculé auto)
+  dualDeliveryBccAddress: varchar('dual_delivery_bcc_address', { length: 320 }),
   // Métadonnées
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

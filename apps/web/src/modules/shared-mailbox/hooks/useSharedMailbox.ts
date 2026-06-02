@@ -60,8 +60,10 @@ export function useSharedDualDeliveryStatus(id: string, enabled: boolean) {
 export function useEnableSharedDualDelivery() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => sharedMailboxApi.enableDualDelivery(id),
-    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ['shared-dual-delivery', id] }),
+    mutationFn: ({ id, bccAddress }: { id: string; bccAddress?: string }) =>
+      sharedMailboxApi.enableDualDelivery(id, bccAddress),
+    onSuccess: (_d, vars) =>
+      qc.invalidateQueries({ queryKey: ['shared-dual-delivery', vars.id] }),
   })
 }
 
