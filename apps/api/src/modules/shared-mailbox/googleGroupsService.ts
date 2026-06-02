@@ -185,6 +185,91 @@ export async function allowExternalPostsOnGroup(groupEmail: string): Promise<Gro
   })
 }
 
+// ── Préférences de livraison des membres (fan-out vs. groupe seul) ──────────
+
+interface GroupMember {
+  id: string
+  email: string
+  role: 'OWNER' | 'MANAGER' | 'MEMBER'
+  type: 'USER' | 'GROUP' | 'EXTERNAL' | 'CUSTOMER'
+  status: string
+  delivery_settings?: 'ALL_MAIL' | 'DAILY' | 'DIGEST' | 'NONE' | 'DISABLED'
+}
+
+async function listGroupMembers(groupEmail: string): Promise<GroupMember[]> {
+  const token = await getGoogleAccessTokenForUser(adminEmail(), SCOPE_DIRECTORY_GROUP)
+  const members: GroupMember[] = []
+  let pageToken: string | undefined
+  do {
+    const url = new URL(`https://admin.googleapis.com/admin/directory/v1/groups/${encodeURIComponent(groupEmail)}/members`)
+    url.searchParams.set('maxResults', '200')
+    if (pageToken) url.searchParams.set('pageToken', pageToken)
+    const res = await fetchWithTimeout(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`List members error (${res.status}): ${err}`)
+    }
+    const data = (await res.json()) as { members?: GroupMember[]; nextPageToken?: string }
+    if (data.members) members.push(...data.members)
+    pageToken = data.nextPageToken
+  } while (pageToken)
+  return members
+}
+
+async function setMemberDelivery(
+  groupEmail: string,
+  memberKey: string,
+  setting: 'ALL_MAIL' | 'DAILY' | 'DIGEST' | 'NONE',
+): Promise<void> {
+  const token = await getGoogleAccessTokenForUser(adminEmail(), SCOPE_DIRECTORY_GROUP)
+  const res = await fetchWithTimeout(
+    `https://admin.googleapis.com/admin/directory/v1/groups/${encodeURIComponent(groupEmail)}/members/${encodeURIComponent(memberKey)}`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delivery_settings: setting }),
+    },
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Update member delivery error (${res.status}): ${err}`)
+  }
+}
+
+/**
+ * Désactive le fan-out vers les boîtes Gmail perso des membres.
+ * Chaque membre garde l'accès au groupe (web/mobile) mais ne reçoit plus
+ * de copie dans son inbox perso. Idéal pour un usage shared mailbox pur.
+ *
+ * Note : ne s'applique qu'aux membres ACTUELS. Les nouveaux membres ajoutés
+ * ensuite garderont la valeur par défaut (ALL_MAIL) → re-cliquer après ajout.
+ */
+export async function silenceAllGroupMembers(
+  groupEmail: string,
+): Promise<{ total: number; updated: number; alreadySilent: number; failed: number; failedMembers: string[] }> {
+  const members = await listGroupMembers(groupEmail)
+  let updated = 0
+  let alreadySilent = 0
+  let failed = 0
+  const failedMembers: string[] = []
+  for (const m of members) {
+    if (m.type === 'GROUP') continue // ne pas modifier les groupes imbriqués
+    if (m.delivery_settings === 'NONE' || m.delivery_settings === 'DISABLED') {
+      alreadySilent++
+      continue
+    }
+    try {
+      await setMemberDelivery(groupEmail, m.id ?? m.email, 'NONE')
+      updated++
+    } catch (err) {
+      failed++
+      failedMembers.push(m.email)
+      console.warn(`[silence-members] ${m.email}:`, err instanceof Error ? err.message : err)
+    }
+  }
+  return { total: members.length, updated, alreadySilent, failed, failedMembers }
+}
+
 /**
  * Active la "Boîte de réception collaborative" (mode shared mailbox).
  * Active aussi l'historique des conversations qui est un prérequis obligatoire.

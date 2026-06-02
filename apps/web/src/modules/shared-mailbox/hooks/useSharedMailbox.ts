@@ -91,6 +91,14 @@ export function useEnableCollaborativeInbox() {
   })
 }
 
+export function useSilenceMembers() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.silenceMembers(id),
+    onSuccess: (_d, id) => qc.invalidateQueries({ queryKey: ['shared-dual-delivery', id] }),
+  })
+}
+
 export function useDeleteSharedMigration() {
   const qc = useQueryClient()
   return useMutation({
