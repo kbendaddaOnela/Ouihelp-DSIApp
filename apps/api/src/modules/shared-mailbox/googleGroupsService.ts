@@ -138,6 +138,13 @@ export interface GroupSettings {
     | 'ANYONE_CAN_POST'
   allowExternalMembers?: 'true' | 'false'
   messageModerationLevel?: 'MODERATE_ALL_MESSAGES' | 'MODERATE_NON_MEMBERS' | 'MODERATE_NEW_MEMBERS' | 'MODERATE_NONE'
+  isArchived?: 'true' | 'false'
+  enableCollaborativeInbox?: 'true' | 'false'
+  whoCanModerateContent?: 'NONE' | 'OWNERS_ONLY' | 'OWNERS_AND_MANAGERS' | 'ALL_MEMBERS'
+  whoCanModerateMembers?: 'NONE' | 'OWNERS_ONLY' | 'OWNERS_AND_MANAGERS' | 'ALL_MEMBERS'
+  whoCanAssignTopics?: 'NONE' | 'OWNERS_ONLY' | 'OWNERS_AND_MANAGERS' | 'MANAGERS_ONLY' | 'ALL_MEMBERS'
+  whoCanTakeTopics?: 'NONE' | 'OWNERS_ONLY' | 'OWNERS_AND_MANAGERS' | 'MANAGERS_ONLY' | 'ALL_MEMBERS'
+  whoCanMarkNoResponseNeeded?: 'NONE' | 'OWNERS_ONLY' | 'OWNERS_AND_MANAGERS' | 'MANAGERS_ONLY' | 'ALL_MEMBERS'
 }
 
 export async function getGroupSettings(groupEmail: string): Promise<GroupSettings> {
@@ -175,5 +182,22 @@ export async function allowExternalPostsOnGroup(groupEmail: string): Promise<Gro
   return updateGroupSettings(groupEmail, {
     whoCanPostMessage: 'ANYONE_CAN_POST',
     messageModerationLevel: 'MODERATE_NONE',
+  })
+}
+
+/**
+ * Active la "Boîte de réception collaborative" (mode shared mailbox).
+ * Active aussi l'historique des conversations qui est un prérequis obligatoire.
+ * Donne aux membres la capacité d'assigner/prendre/résoudre les threads.
+ */
+export async function enableCollaborativeInbox(groupEmail: string): Promise<GroupSettings> {
+  return updateGroupSettings(groupEmail, {
+    isArchived: 'true', // Historique des conversations (prérequis)
+    enableCollaborativeInbox: 'true',
+    whoCanModerateContent: 'ALL_MEMBERS',
+    whoCanModerateMembers: 'ALL_MEMBERS',
+    whoCanAssignTopics: 'ALL_MEMBERS',
+    whoCanTakeTopics: 'ALL_MEMBERS',
+    whoCanMarkNoResponseNeeded: 'ALL_MEMBERS',
   })
 }

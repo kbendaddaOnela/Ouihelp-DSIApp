@@ -9,6 +9,7 @@ import {
   useEnableSharedDualDelivery,
   useDisableSharedDualDelivery,
   useAllowExternalGroupPosts,
+  useEnableCollaborativeInbox,
 } from '../hooks/useSharedMailbox'
 
 interface Props {
@@ -140,6 +141,7 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
   const { mutate: enableRaw, isPending: enabling } = useEnableSharedDualDelivery()
   const { mutate: disableRaw, isPending: disabling } = useDisableSharedDualDelivery()
   const { mutate: allowExternalRaw, isPending: opening } = useAllowExternalGroupPosts()
+  const { mutate: enableCollabRaw, isPending: enablingCollab } = useEnableCollaborativeInbox()
 
   const onError = (action: string) => (err: unknown) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,11 +153,14 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
     enableRaw({ id: migration.id, bccAddress }, { onError: onError('Activer dual delivery') })
   const disable = (id: string) => disableRaw(id, { onError: onError('Désactiver dual delivery') })
   const allowExternal = (id: string) => allowExternalRaw(id, { onError: onError('Ouvrir le groupe aux externes') })
+  const enableCollab = (id: string) => enableCollabRaw(id, { onError: onError('Activer la boîte collaborative') })
 
   if (!groupReady) return null
 
   const forwarding = data?.forwarding
   const allowsExternal = data?.groupAllowsExternalPosts ?? false
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const collaborativeInboxOn = ((data as any)?.groupCollaborativeInbox ?? false) as boolean
   const isActive = !!forwarding?.active
   // expectedRoutingAddress vient du backend (calculé/persisté)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -198,6 +203,13 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           Groupe accepte les posts externes&nbsp;:{' '}
           <span className={allowsExternal ? 'text-gray-800' : 'text-gray-500'}>
             {data?.groupPostPermission ?? 'inconnu (scope apps.groups.settings ?)'}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block h-2 w-2 rounded-full ${collaborativeInboxOn ? 'bg-green-500' : 'bg-gray-300'}`} />
+          Boîte de réception collaborative&nbsp;:{' '}
+          <span className={collaborativeInboxOn ? 'text-gray-800' : 'text-gray-500'}>
+            {collaborativeInboxOn ? 'activée' : 'désactivée (le mail va aux membres, pas à la boîte du groupe)'}
           </span>
         </div>
       </div>
@@ -265,6 +277,23 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
               className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {opening ? 'Ouverture…' : 'Ouvrir le groupe aux externes'}
+            </button>
+          )}
+          {!collaborativeInboxOn && (
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Activer la boîte de réception collaborative ?\n\nLes mails apparaîtront dans l'inbox du groupe (mode shared mailbox), les membres pourront s'assigner/marquer comme résolu. Active aussi l'historique des conversations (prérequis).",
+                  )
+                ) {
+                  enableCollab(migration.id)
+                }
+              }}
+              disabled={enablingCollab}
+              className="inline-flex items-center gap-1 rounded bg-purple-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+            >
+              {enablingCollab ? 'Activation…' : 'Activer boîte collaborative'}
             </button>
           )}
         </div>

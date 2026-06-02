@@ -50,6 +50,11 @@ export const sharedMailboxApi = {
       .post<{ ok: boolean }>(`/shared-mailbox/${id}/group/allow-external`)
       .then((r) => r.data),
 
+  enableCollaborativeInbox: (id: string) =>
+    apiClient
+      .post<{ ok: boolean }>(`/shared-mailbox/${id}/group/collaborative-inbox`)
+      .then((r) => r.data),
+
   remove: (id: string) =>
     apiClient.delete(`/shared-mailbox/${id}`).then((r) => r.data),
 
