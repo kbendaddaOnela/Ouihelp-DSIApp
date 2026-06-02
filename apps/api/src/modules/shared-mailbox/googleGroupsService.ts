@@ -85,19 +85,51 @@ export async function createGoogleGroup(params: {
   })
   if (!res.ok) {
     const err = await res.text()
+    const errBody = err.toLowerCase()
+    // Détection des cas typiques
+    if (res.status === 409 || errBody.includes('duplicate') || errBody.includes('entity already exists')) {
+      throw new Error(
+        `L'adresse ${params.email} est déjà utilisée dans Google Workspace ` +
+          `(probablement comme alias d'un autre groupe/user, ou un user en période de suppression).\n` +
+          `Vérifie Admin Console → Users → "Deleted users" pour ${params.email} ` +
+          `(grâce ~20 jours), et Admin Console → Groups → cherche cette adresse comme alias.\n` +
+          `Réponse Google : ${err.slice(0, 400)}`,
+      )
+    }
+    if (res.status === 403) {
+      throw new Error(
+        `Création refusée par Google (403) pour ${params.email}. ` +
+          `Causes typiques : domaine non vérifié dans Workspace, ou l'admin impersonné ` +
+          `(GOOGLE_ADMIN_EMAIL) n'a pas les droits sur cette adresse / OU.\n` +
+          `Réponse Google : ${err.slice(0, 400)}`,
+      )
+    }
     throw new Error(`Google create group error (${res.status}): ${err}`)
   }
   return res.json() as Promise<DirectoryGroup>
 }
 
-/** Crée le groupe s'il n'existe pas. Idempotent. */
+/** Crée le groupe s'il n'existe pas. Idempotent.
+ *  Si le GET échoue (403 typiquement quand l'adresse est en conflit avec
+ *  un alias ou un user en deletion-grace), on tente quand même la création :
+ *  le POST renverra un message Google plus précis sur la vraie cause. */
 export async function ensureGoogleGroup(params: {
   email: string
   name: string
   description?: string
 }): Promise<DirectoryGroup> {
-  const existing = await getGoogleGroup(params.email)
-  if (existing) return existing
+  try {
+    const existing = await getGoogleGroup(params.email)
+    if (existing) return existing
+  } catch (err) {
+    // Si on a détecté un conflit user explicite, propager l'erreur claire
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('USER Google Workspace')) throw err
+    console.warn(
+      `[ensure-group] GET a échoué pour ${params.email}, tentative de création quand même :`,
+      msg.slice(0, 200),
+    )
+  }
   return createGoogleGroup(params)
 }
 
