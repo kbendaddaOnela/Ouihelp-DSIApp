@@ -136,9 +136,19 @@ export function SharedMailboxCard({ migration }: Props) {
 function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) {
   const groupReady = migration.stepCreateGroup === 'success'
   const { data, isLoading } = useSharedDualDeliveryStatus(migration.id, groupReady)
-  const { mutate: enable, isPending: enabling } = useEnableSharedDualDelivery()
-  const { mutate: disable, isPending: disabling } = useDisableSharedDualDelivery()
-  const { mutate: allowExternal, isPending: opening } = useAllowExternalGroupPosts()
+  const { mutate: enableRaw, isPending: enabling } = useEnableSharedDualDelivery()
+  const { mutate: disableRaw, isPending: disabling } = useDisableSharedDualDelivery()
+  const { mutate: allowExternalRaw, isPending: opening } = useAllowExternalGroupPosts()
+
+  const onError = (action: string) => (err: unknown) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const apiErr = (err as any)?.response?.data?.error
+    const msg = apiErr || (err instanceof Error ? err.message : String(err))
+    window.alert(`${action} a échoué :\n\n${msg}`)
+  }
+  const enable = (id: string) => enableRaw(id, { onError: onError('Activer dual delivery') })
+  const disable = (id: string) => disableRaw(id, { onError: onError('Désactiver dual delivery') })
+  const allowExternal = (id: string) => allowExternalRaw(id, { onError: onError('Ouvrir le groupe aux externes') })
 
   if (!groupReady) return null
 
@@ -177,7 +187,7 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           <span className={`inline-block h-2 w-2 rounded-full ${allowsExternal ? 'bg-green-500' : 'bg-gray-300'}`} />
           Groupe accepte les posts externes&nbsp;:{' '}
           <span className={allowsExternal ? 'text-gray-800' : 'text-gray-500'}>
-            {data?.groupPostPermission ?? 'inconnu'}
+            {data?.groupPostPermission ?? 'inconnu (lecture impossible — scope apps.groups.settings ?)'}
           </span>
         </div>
       </div>

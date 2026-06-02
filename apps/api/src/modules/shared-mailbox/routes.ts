@@ -134,8 +134,14 @@ sharedMailboxRouter.get('/:id/dual-delivery', requirePermission('migration:read'
   try {
     const ruleName = ruleNameFor(row.onelaUpn)
     const [rule, groupSettings] = await Promise.all([
-      getTransportRule(ruleName).catch(() => null),
-      getGroupSettings(row.targetGroupEmail).catch(() => null),
+      getTransportRule(ruleName).catch((e) => {
+        console.warn('[dual-delivery] getTransportRule failed:', e instanceof Error ? e.message : e)
+        return null
+      }),
+      getGroupSettings(row.targetGroupEmail).catch((e) => {
+        console.warn('[dual-delivery] getGroupSettings failed:', e instanceof Error ? e.message : e)
+        return null
+      }),
     ])
     const bccTo = rule?.BlindCopyTo?.[0] ?? null
     return c.json({
@@ -197,7 +203,9 @@ sharedMailboxRouter.post('/:id/group/allow-external', requirePermission('migrati
     const settings = await allowExternalPostsOnGroup(row.targetGroupEmail)
     return c.json({ ok: true, settings })
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/group/allow-external POST]', msg)
+    return c.json({ error: msg }, 500)
   }
 })
 
