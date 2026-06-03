@@ -16,7 +16,7 @@ import {
   checkOnelaMailForwarding,
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
-import { ensureSendAs } from '../shared-mailbox/gmailUserSetupService'
+import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
 import { gmailDedupeMailbox } from './mailService'
 import type {
@@ -257,10 +257,17 @@ migrationRouter.post('/:id/activate-new-format', requirePermission('migration:wr
   const targetDomain = row.onelaUpn.split('@')[1] ?? 'onela.com'
   const newAlias = `${localPart}@${targetDomain}`
 
-  const result: { alias: string; aliasAdded: boolean; sendAsAdded: boolean; warnings: string[] } = {
+  const result: {
+    alias: string
+    aliasAdded: boolean
+    sendAsAdded: boolean
+    setAsDefault: boolean
+    warnings: string[]
+  } = {
     alias: newAlias,
     aliasAdded: false,
     sendAsAdded: false,
+    setAsDefault: false,
     warnings: [],
   }
 
@@ -287,6 +294,17 @@ migrationRouter.post('/:id/activate-new-format', requirePermission('migration:wr
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[activate-new-format] sendas error:', msg)
     return c.json({ error: 'sendas', message: msg, ...result }, 502)
+  }
+
+  // 3. Marquer cette identité comme adresse par défaut (PATCH isDefault: true)
+  try {
+    await setSendAsAsDefault(row.gohUpn, newAlias)
+    result.setAsDefault = true
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[activate-new-format] setDefault error:', msg)
+    // Non bloquant : l'alias + send-as sont déjà ajoutés
+    result.warnings.push(`Mise en défaut échouée : ${msg.slice(0, 200)}`)
   }
 
   return c.json({ ok: true, ...result })

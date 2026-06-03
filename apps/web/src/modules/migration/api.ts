@@ -33,6 +33,7 @@ export const migrationApi = {
         alias: string
         aliasAdded: boolean
         sendAsAdded: boolean
+        setAsDefault: boolean
         warnings: string[]
       }>(`/migration/${id}/activate-new-format`)
       .then((r) => r.data),

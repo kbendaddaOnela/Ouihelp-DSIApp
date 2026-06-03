@@ -239,6 +239,27 @@ async function listSendAs(userEmail: string): Promise<SendAs[]> {
 }
 
 /**
+ * Marque une identité "Envoyer en tant que" comme adresse par défaut.
+ * Google contraint qu'une seule adresse soit isDefault=true à la fois, donc
+ * marquer celle-ci en défaut bascule automatiquement les autres en non-défaut.
+ */
+export async function setSendAsAsDefault(userEmail: string, sendAsEmail: string): Promise<void> {
+  const res = await gmailFetch(
+    userEmail,
+    SCOPE_GMAIL_SETTINGS_BASIC,
+    `/settings/sendAs/${encodeURIComponent(sendAsEmail)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ isDefault: true }),
+    },
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Set sendAs default error (${res.status}) on ${sendAsEmail}: ${err.slice(0, 300)}`)
+  }
+}
+
+/**
  * Ajoute une identité "Envoyer en tant que" si elle n'existe pas.
  * Avec `treatAsAlias: true`, fonctionne sans vérification SMTP si la cible
  * est une adresse dans le même Workspace.
