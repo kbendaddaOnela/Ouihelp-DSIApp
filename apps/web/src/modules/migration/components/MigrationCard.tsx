@@ -57,6 +57,8 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
         const lines = [`Nouveau format activé : ${data.alias}`]
         lines.push(`• Alias : ${data.aliasAdded ? 'ajouté' : '(déjà présent)'}`)
         lines.push(`• Envoyer en tant que : ${data.sendAsAdded ? 'ajouté' : '(déjà présent)'}`)
+        lines.push(`• Marquée comme défaut : ${data.setAsDefault ? 'oui' : 'non'}`)
+        if (data.warnings.length) lines.push('', ...data.warnings.map((w) => `⚠ ${w}`))
         window.alert(lines.join('\n'))
       },
       onError: (err: unknown) => {
