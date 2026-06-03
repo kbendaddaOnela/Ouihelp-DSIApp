@@ -41,12 +41,17 @@ async function gmailFetch(
   })
 }
 
-/** Parse JSON robuste : gère les body vides + erreurs explicites avec contexte. */
+/** Parse JSON robuste :
+ *  - 204 No Content → renvoie {} (cas Gmail "liste vide")
+ *  - body vide sur status non-204 → erreur explicite avec contexte
+ *  - body non-JSON → erreur avec contenu réel
+ */
 async function safeJson<T>(res: Response, context: string): Promise<T> {
+  if (res.status === 204) return {} as T
   const text = await res.text()
   if (!text.trim()) {
-    // Body vide alors qu'on attendait du JSON → on remonte une erreur claire
-    throw new Error(`${context}: réponse vide de Google (status ${res.status}). User sans Gmail provisionné ou alias non-impersonable ?`)
+    if (res.ok) return {} as T // body vide sur 2xx = on tolère
+    throw new Error(`${context}: réponse vide de Google (status ${res.status}).`)
   }
   try {
     return JSON.parse(text) as T
