@@ -202,7 +202,17 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
   const setupLabel = (id: string) =>
     setupLabelRaw(id, { onError: onError('Créer le libellé aux membres'), onSuccess: bulkResultAlert('Libellé Gmail créé') })
   const setupFilter = (id: string) =>
-    setupFilterRaw(id, { onError: onError('Créer le filtre aux membres'), onSuccess: bulkResultAlert('Filtre Gmail créé') })
+    setupFilterRaw(id, {
+      onError: onError('Créer le filtre aux membres'),
+      onSuccess: (data) => {
+        const { total, created, alreadyOk, failed, failedMembers, backfilledMessages } = data
+        window.alert(
+          `Filtre Gmail créé\n\nMembres traités : ${total}\n• Créés : ${created}\n• Déjà OK : ${alreadyOk}\n• Échecs : ${failed}\n\n` +
+            `Mails existants reclassés (label + archive) : ${backfilledMessages}` +
+            (failedMembers.length ? `\n\nÉchecs sur :\n- ${failedMembers.slice(0, 10).join('\n- ')}` : ''),
+        )
+      },
+    })
   const setupSendAs = (id: string) =>
     setupSendAsRaw(id, { onError: onError('Ajouter "Envoyer en tant que"'), onSuccess: bulkResultAlert('"Envoyer en tant que" ajouté') })
 
