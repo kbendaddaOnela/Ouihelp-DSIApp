@@ -227,7 +227,9 @@ interface SendAs {
 }
 
 async function listSendAs(userEmail: string): Promise<SendAs[]> {
-  const res = await gmailFetch(userEmail, SCOPE_GMAIL_SETTINGS_SHARING, '/settings/sendAs')
+  // gmail.settings.basic suffit pour LIST (et est moins sensible que sharing,
+  // donc plus fiable côté DWD). sharing reste nécessaire pour CREATE.
+  const res = await gmailFetch(userEmail, SCOPE_GMAIL_SETTINGS_BASIC, '/settings/sendAs')
   if (!res.ok) {
     const err = await res.text()
     throw new Error(`List sendAs error (${res.status}): ${err.slice(0, 300)}`)
