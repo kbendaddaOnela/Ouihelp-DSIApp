@@ -20,6 +20,7 @@ import { getGoogleAccessTokenForUser } from '../migration/googleService'
 const SCOPE_GMAIL_LABELS = 'https://www.googleapis.com/auth/gmail.labels'
 const SCOPE_GMAIL_SETTINGS_BASIC = 'https://www.googleapis.com/auth/gmail.settings.basic'
 const SCOPE_GMAIL_SETTINGS_SHARING = 'https://www.googleapis.com/auth/gmail.settings.sharing'
+const SCOPE_GMAIL_MODIFY = 'https://www.googleapis.com/auth/gmail.modify'
 
 // ── Helpers HTTP Gmail ───────────────────────────────────────────────────────
 
@@ -157,6 +158,64 @@ export async function ensureFilter(
   return { id: data.id, created: true }
 }
 
+/**
+ * Applique `labelId` + archive (skip inbox) à TOUS les messages existants
+ * matchant la query (ex. `to:dsi@onela.com`). Équivalent au checkbox
+ * "Appliquer également ce filtre à N conversations correspondantes" de l'UI Gmail.
+ *
+ * Gère la pagination (500 max par page) + le batch (1000 max par modifyBatch).
+ */
+export async function applyLabelToExistingMessages(
+  userEmail: string,
+  query: string,
+  labelId: string,
+): Promise<{ scanned: number; modified: number }> {
+  let scanned = 0
+  let modified = 0
+  let pageToken: string | undefined
+  do {
+    // 1. Lister une page de messages matchant la query
+    const listRes = await gmailFetch(
+      userEmail,
+      SCOPE_GMAIL_MODIFY,
+      `/messages?q=${encodeURIComponent(query)}&maxResults=500${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`,
+    )
+    if (!listRes.ok) {
+      const err = await listRes.text()
+      throw new Error(`List messages (${userEmail}) error ${listRes.status}: ${err.slice(0, 200)}`)
+    }
+    const listData = await safeJson<{ messages?: Array<{ id: string }>; nextPageToken?: string }>(
+      listRes,
+      `listMessages(${userEmail})`,
+    )
+    const ids = (listData.messages ?? []).map((m) => m.id)
+    scanned += ids.length
+    pageToken = listData.nextPageToken
+
+    if (ids.length === 0) continue
+
+    // 2. batchModify par chunks de 1000 (limite Gmail API)
+    for (let i = 0; i < ids.length; i += 1000) {
+      const chunk = ids.slice(i, i + 1000)
+      const modifyRes = await gmailFetch(userEmail, SCOPE_GMAIL_MODIFY, '/messages/batchModify', {
+        method: 'POST',
+        body: JSON.stringify({
+          ids: chunk,
+          addLabelIds: [labelId],
+          removeLabelIds: ['INBOX'],
+        }),
+      })
+      if (!modifyRes.ok) {
+        const err = await modifyRes.text()
+        throw new Error(`batchModify (${userEmail}) error ${modifyRes.status}: ${err.slice(0, 200)}`)
+      }
+      modified += chunk.length
+    }
+  } while (pageToken)
+
+  return { scanned, modified }
+}
+
 // ── Send As ──────────────────────────────────────────────────────────────────
 
 interface SendAs {
@@ -271,11 +330,12 @@ export async function setupFilterForAllMembers(
   groupEmail: string,
   sharedAddress: string,
   labelName: string,
-): Promise<BulkResult> {
+): Promise<BulkResult & { backfilledMessages: number }> {
   const members = await listMembers(groupEmail)
   let created = 0
   let alreadyOk = 0
   let failed = 0
+  let backfilledMessages = 0
   const failedMembers: string[] = []
   for (const m of members) {
     try {
@@ -284,13 +344,24 @@ export async function setupFilterForAllMembers(
       const r = await ensureFilter(m, sharedAddress, label.id)
       if (r.created) created++
       else alreadyOk++
+
+      // Appliquer aussi le filtre aux messages déjà reçus matchant `to:<sharedAddr>`
+      try {
+        const backfill = await applyLabelToExistingMessages(m, `to:${sharedAddress}`, label.id)
+        backfilledMessages += backfill.modified
+        if (backfill.modified > 0) {
+          console.log(`[setup-filter] ${m}: ${backfill.modified} mails existants reclassés`)
+        }
+      } catch (e) {
+        console.warn(`[setup-filter] ${m} backfill error:`, e instanceof Error ? e.message : e)
+      }
     } catch (err) {
       failed++
       failedMembers.push(m)
       console.warn(`[setup-filter] ${m}:`, err instanceof Error ? err.message : err)
     }
   }
-  return { total: members.length, created, alreadyOk, failed, failedMembers }
+  return { total: members.length, created, alreadyOk, failed, failedMembers, backfilledMessages }
 }
 
 export async function setupSendAsForAllMembers(

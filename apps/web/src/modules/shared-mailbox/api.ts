@@ -69,9 +69,15 @@ export const sharedMailboxApi = {
 
   setupFilter: (id: string) =>
     apiClient
-      .post<{ ok: boolean; total: number; created: number; alreadyOk: number; failed: number; failedMembers: string[] }>(
-        `/shared-mailbox/${id}/members/setup-filter`,
-      )
+      .post<{
+        ok: boolean
+        total: number
+        created: number
+        alreadyOk: number
+        failed: number
+        failedMembers: string[]
+        backfilledMessages: number
+      }>(`/shared-mailbox/${id}/members/setup-filter`)
       .then((r) => r.data),
 
   setupSendAs: (id: string) =>
