@@ -20,6 +20,7 @@ import {
   useForwardingStatus,
   useRelabelMail,
   useDedupeMail,
+  useActivateNewFormat,
 } from '../hooks/useMigration'
 
 export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationRecord; defaultExpanded?: boolean }) {
@@ -40,6 +41,31 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   const { mutate: removeForwarding, isPending: isRemovingFwd } = useRemoveForwarding()
   const { mutate: relabelMail, isPending: isRelabeling } = useRelabelMail()
   const { mutate: dedupeMail, isPending: isDeduping } = useDedupeMail()
+  const { mutate: activateNewFormatRaw, isPending: isActivatingNewFormat } = useActivateNewFormat()
+
+  const newFormatAlias = m.gohUpn ? `${m.gohUpn.split('@')[0]}@${m.onelaUpn.split('@')[1] ?? 'onela.com'}` : null
+  const handleActivateNewFormat = () => {
+    if (!window.confirm(
+      `Activer le nouveau format ${newFormatAlias} ?\n\n` +
+        `Ça va :\n` +
+        `1. Ajouter l'alias ${newFormatAlias} sur le compte ${m.gohUpn}\n` +
+        `2. Ajouter "Envoyer en tant que" ${newFormatAlias} dans son Gmail\n\n` +
+        `Le user pourra envoyer/recevoir avec ce nouveau format dès maintenant.`,
+    )) return
+    activateNewFormatRaw(m.id, {
+      onSuccess: (data) => {
+        const lines = [`Nouveau format activé : ${data.alias}`]
+        lines.push(`• Alias : ${data.aliasAdded ? 'ajouté' : '(déjà présent)'}`)
+        lines.push(`• Envoyer en tant que : ${data.sendAsAdded ? 'ajouté' : '(déjà présent)'}`)
+        window.alert(lines.join('\n'))
+      },
+      onError: (err: unknown) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const apiErr = (err as any)?.response?.data?.message
+        window.alert(`Activation nouveau format échouée :\n\n${apiErr || (err instanceof Error ? err.message : String(err))}`)
+      },
+    })
+  }
   const [fwdMessage, setFwdMessage] = useState<string | null>(null)
   const [relabelMessage, setRelabelMessage] = useState<string | null>(null)
   const [dedupeMessage, setDedupeMessage] = useState<string | null>(null)
@@ -332,7 +358,20 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                       )}
                     </div>
                   ) : m.stepGoogleAlias === 'success' ? (
-                    <p className="text-xs text-green-600">Alias ajouté</p>
+                    <div className="space-y-1.5">
+                      <p className="text-xs text-green-600">Alias ajouté</p>
+                      {newFormatAlias && (
+                        <button
+                          onClick={handleActivateNewFormat}
+                          disabled={isActivatingNewFormat}
+                          className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
+                          title={`Ajoute l'alias ${newFormatAlias} + "Envoyer en tant que" cette adresse`}
+                        >
+                          <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
+                          {isActivatingNewFormat ? 'Activation…' : `Activer ${newFormatAlias}`}
+                        </button>
+                      )}
+                    </div>
                   ) : m.stepGoogleAlias === 'skipped' ? (
                     <p className="text-xs text-gray-400">Ignoré</p>
                   ) : null}
