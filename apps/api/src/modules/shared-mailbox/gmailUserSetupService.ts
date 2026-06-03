@@ -244,9 +244,12 @@ async function listSendAs(userEmail: string): Promise<SendAs[]> {
  * marquer celle-ci en défaut bascule automatiquement les autres en non-défaut.
  */
 export async function setSendAsAsDefault(userEmail: string, sendAsEmail: string): Promise<void> {
+  // Google : "Missing required scope gmail.settings.sharing for modifying
+  // non-primary SendAs". Le PATCH sur un alias non-primaire exige sharing,
+  // gmail.settings.basic ne suffit pas.
   const res = await gmailFetch(
     userEmail,
-    SCOPE_GMAIL_SETTINGS_BASIC,
+    SCOPE_GMAIL_SETTINGS_SHARING,
     `/settings/sendAs/${encodeURIComponent(sendAsEmail)}`,
     {
       method: 'PATCH',
