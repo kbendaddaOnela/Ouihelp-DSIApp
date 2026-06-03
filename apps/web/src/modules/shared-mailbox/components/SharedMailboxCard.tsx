@@ -155,7 +155,17 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
 
   const onError = (action: string) => (err: unknown) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const apiErr = (err as any)?.response?.data?.error
+    const e = err as any
+    const status = e?.response?.status
+    const apiErr = e?.response?.data?.error
+    if (status === 404 && !apiErr) {
+      window.alert(
+        `${action} a échoué :\n\n` +
+          `Endpoint API introuvable (404). Le backend est probablement encore en cours de déploiement.\n` +
+          `Réessaye dans 1-2 minutes.`,
+      )
+      return
+    }
     const msg = apiErr || (err instanceof Error ? err.message : String(err))
     window.alert(`${action} a échoué :\n\n${msg}`)
   }
