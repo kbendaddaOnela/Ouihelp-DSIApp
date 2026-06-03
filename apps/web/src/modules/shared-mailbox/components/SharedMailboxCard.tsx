@@ -12,6 +12,9 @@ import {
   useEnableCollaborativeInbox,
   useSilenceMembers,
   useAddMigAlias,
+  useSetupLabel,
+  useSetupFilter,
+  useSetupSendAs,
 } from '../hooks/useSharedMailbox'
 
 interface Props {
@@ -146,6 +149,9 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
   const { mutate: enableCollabRaw, isPending: enablingCollab } = useEnableCollaborativeInbox()
   const { mutate: silenceRaw, isPending: silencing } = useSilenceMembers()
   const { mutate: addAliasRaw, isPending: addingAlias } = useAddMigAlias()
+  const { mutate: setupLabelRaw, isPending: settingUpLabel } = useSetupLabel()
+  const { mutate: setupFilterRaw, isPending: settingUpFilter } = useSetupFilter()
+  const { mutate: setupSendAsRaw, isPending: settingUpSendAs } = useSetupSendAs()
 
   const onError = (action: string) => (err: unknown) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -178,6 +184,17 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
             : `Alias déjà présent : ${data.alias}`,
         ),
     })
+  const bulkResultAlert = (action: string) => (data: { total: number; created: number; alreadyOk: number; failed: number; failedMembers: string[] }) =>
+    window.alert(
+      `${action}\n\nMembres traités : ${data.total}\n• Créés : ${data.created}\n• Déjà OK : ${data.alreadyOk}\n• Échecs : ${data.failed}` +
+        (data.failedMembers.length ? `\n\nÉchecs sur :\n- ${data.failedMembers.slice(0, 10).join('\n- ')}` : ''),
+    )
+  const setupLabel = (id: string) =>
+    setupLabelRaw(id, { onError: onError('Créer le libellé aux membres'), onSuccess: bulkResultAlert('Libellé Gmail créé') })
+  const setupFilter = (id: string) =>
+    setupFilterRaw(id, { onError: onError('Créer le filtre aux membres'), onSuccess: bulkResultAlert('Filtre Gmail créé') })
+  const setupSendAs = (id: string) =>
+    setupSendAsRaw(id, { onError: onError('Ajouter "Envoyer en tant que"'), onSuccess: bulkResultAlert('"Envoyer en tant que" ajouté') })
 
   if (!groupReady) return null
 
@@ -346,6 +363,57 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           >
             {silencing ? 'Application…' : 'Pas d\'email aux membres'}
           </button>
+        </div>
+
+        {/* Setup "shared mailbox via Gmail label" sur le Gmail perso de chaque membre */}
+        <div className="mt-3 rounded border border-gray-100 bg-gray-50 p-2.5">
+          <div className="mb-2 text-[11px] font-semibold text-gray-700">
+            Setup Gmail des membres (alternative au mode Groupe pour les users qui se perdent)
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => {
+                if (window.confirm(`Créer le libellé "${migration.targetGroupName}" dans le Gmail de tous les membres ?`))
+                  setupLabel(migration.id)
+              }}
+              disabled={settingUpLabel}
+              className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {settingUpLabel ? 'Création…' : `1. Créer libellé "${migration.targetGroupName}"`}
+            </button>
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Créer un filtre Gmail chez tous les membres ?\n\nCritère : to:${migration.targetGroupEmail}\nAction : applique le libellé "${migration.targetGroupName}" + archive (skip inbox)`,
+                  )
+                )
+                  setupFilter(migration.id)
+              }}
+              disabled={settingUpFilter}
+              className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {settingUpFilter ? 'Création…' : '2. Créer règle de tri'}
+            </button>
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Ajouter "Envoyer en tant que ${migration.targetGroupEmail}" chez tous les membres ?\n\nIls pourront répondre avec l'adresse partagée.`,
+                  )
+                )
+                  setupSendAs(migration.id)
+              }}
+              disabled={settingUpSendAs}
+              className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {settingUpSendAs ? 'Ajout…' : '3. Ajouter "Envoyer en tant que"'}
+            </button>
+          </div>
+          <p className="mt-2 text-[10px] text-gray-500">
+            Idempotent : à refaire après ajout de nouveaux membres. Les libellés/filtres/send-as déjà
+            présents sont skippés.
+          </p>
         </div>
       </div>
     </div>

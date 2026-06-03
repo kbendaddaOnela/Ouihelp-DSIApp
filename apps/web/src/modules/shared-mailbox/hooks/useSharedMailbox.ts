@@ -99,6 +99,16 @@ export function useAddMigAlias() {
   })
 }
 
+export function useSetupLabel() {
+  return useMutation({ mutationFn: (id: string) => sharedMailboxApi.setupLabel(id) })
+}
+export function useSetupFilter() {
+  return useMutation({ mutationFn: (id: string) => sharedMailboxApi.setupFilter(id) })
+}
+export function useSetupSendAs() {
+  return useMutation({ mutationFn: (id: string) => sharedMailboxApi.setupSendAs(id) })
+}
+
 export function useSilenceMembers() {
   const qc = useQueryClient()
   return useMutation({

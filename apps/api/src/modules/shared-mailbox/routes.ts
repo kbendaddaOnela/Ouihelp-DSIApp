@@ -22,6 +22,11 @@ import {
   ruleNameFor,
   buildGoogleRoutingAddress,
 } from './transportRuleService'
+import {
+  setupLabelForAllMembers,
+  setupFilterForAllMembers,
+  setupSendAsForAllMembers,
+} from './gmailUserSetupService'
 import type {
   SearchSharedMailboxesResponse,
   SharedMigrationHistoryResponse,
@@ -256,6 +261,53 @@ sharedMailboxRouter.post('/:id/group/add-mig-alias', requirePermission('migratio
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[shared-mailbox/group/add-mig-alias POST]', msg)
+    return c.json({ error: msg }, 500)
+  }
+})
+
+// ── Setup "shared mailbox via Gmail label" sur tous les membres ─────────────
+
+/** Crée un libellé du nom du groupe partagé sur le Gmail de chaque membre. */
+sharedMailboxRouter.post('/:id/members/setup-label', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const result = await setupLabelForAllMembers(row.targetGroupEmail, row.targetGroupName)
+    return c.json({ ok: true, ...result })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/members/setup-label POST]', msg)
+    return c.json({ error: msg }, 500)
+  }
+})
+
+/** Crée un filtre Gmail "to:<sharedAddr> → label + archive" chez chaque membre. */
+sharedMailboxRouter.post('/:id/members/setup-filter', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const result = await setupFilterForAllMembers(row.targetGroupEmail, row.targetGroupEmail, row.targetGroupName)
+    return c.json({ ok: true, ...result })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/members/setup-filter POST]', msg)
+    return c.json({ error: msg }, 500)
+  }
+})
+
+/** Ajoute une identité "Envoyer en tant que <sharedAddr>" pour chaque membre. */
+sharedMailboxRouter.post('/:id/members/setup-send-as', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  try {
+    const result = await setupSendAsForAllMembers(row.targetGroupEmail, row.targetGroupEmail, row.targetGroupName)
+    return c.json({ ok: true, ...result })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/members/setup-send-as POST]', msg)
     return c.json({ error: msg }, 500)
   }
 })
