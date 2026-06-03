@@ -41,6 +41,20 @@ async function gmailFetch(
   })
 }
 
+/** Parse JSON robuste : gère les body vides + erreurs explicites avec contexte. */
+async function safeJson<T>(res: Response, context: string): Promise<T> {
+  const text = await res.text()
+  if (!text.trim()) {
+    // Body vide alors qu'on attendait du JSON → on remonte une erreur claire
+    throw new Error(`${context}: réponse vide de Google (status ${res.status}). User sans Gmail provisionné ou alias non-impersonable ?`)
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error(`${context}: JSON invalide (status ${res.status}). Body: ${text.slice(0, 300)}`)
+  }
+}
+
 // ── Labels ───────────────────────────────────────────────────────────────────
 
 interface GmailLabel {
@@ -55,7 +69,7 @@ async function listLabels(userEmail: string): Promise<GmailLabel[]> {
     const err = await res.text()
     throw new Error(`List labels error (${res.status}): ${err.slice(0, 300)}`)
   }
-  const data = (await res.json()) as { labels?: GmailLabel[] }
+  const data = await safeJson<{ labels?: GmailLabel[] }>(res, `listLabels(${userEmail})`)
   return data.labels ?? []
 }
 
@@ -77,7 +91,7 @@ export async function ensureLabel(userEmail: string, labelName: string): Promise
     const err = await res.text()
     throw new Error(`Create label error (${res.status}): ${err.slice(0, 300)}`)
   }
-  const data = (await res.json()) as GmailLabel
+  const data = await safeJson<GmailLabel>(res, `createLabel(${userEmail})`)
   return { id: data.id, created: true }
 }
 
@@ -95,7 +109,7 @@ async function listFilters(userEmail: string): Promise<GmailFilter[]> {
     const err = await res.text()
     throw new Error(`List filters error (${res.status}): ${err.slice(0, 300)}`)
   }
-  const data = (await res.json()) as { filter?: GmailFilter[] }
+  const data = await safeJson<{ filter?: GmailFilter[] }>(res, `listFilters(${userEmail})`)
   return data.filter ?? []
 }
 
@@ -134,7 +148,7 @@ export async function ensureFilter(
     const err = await res.text()
     throw new Error(`Create filter error (${res.status}): ${err.slice(0, 300)}`)
   }
-  const data = (await res.json()) as GmailFilter
+  const data = await safeJson<GmailFilter>(res, `createFilter(${userEmail})`)
   return { id: data.id, created: true }
 }
 
@@ -154,7 +168,7 @@ async function listSendAs(userEmail: string): Promise<SendAs[]> {
     const err = await res.text()
     throw new Error(`List sendAs error (${res.status}): ${err.slice(0, 300)}`)
   }
-  const data = (await res.json()) as { sendAs?: SendAs[] }
+  const data = await safeJson<{ sendAs?: SendAs[] }>(res, `listSendAs(${userEmail})`)
   return data.sendAs ?? []
 }
 
@@ -185,7 +199,7 @@ export async function ensureSendAs(
     const err = await res.text()
     throw new Error(`Create sendAs error (${res.status}): ${err.slice(0, 300)}`)
   }
-  const data = (await res.json()) as SendAs
+  const data = await safeJson<SendAs>(res, `createSendAs(${userEmail})`)
   return { created: true, verificationStatus: data.verificationStatus }
 }
 
