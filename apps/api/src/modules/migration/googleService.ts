@@ -42,10 +42,19 @@ export async function getGoogleAccessTokenForUser(impersonate: string, scope: st
 
   if (!res.ok) {
     const err = await res.text()
-    throw new Error(`Google OAuth error (${res.status}): ${err}`)
+    throw new Error(`Google OAuth error (${res.status}) impersonating ${impersonate}: ${err.slice(0, 400)}`)
   }
 
-  const data = (await res.json()) as { access_token: string; expires_in: number }
+  const tokenBody = await res.text()
+  if (!tokenBody.trim()) {
+    throw new Error(`Google OAuth réponse vide impersonating ${impersonate} (le user n'a peut-être pas Gmail/le service requis activé)`)
+  }
+  let data: { access_token: string; expires_in: number }
+  try {
+    data = JSON.parse(tokenBody)
+  } catch {
+    throw new Error(`Google OAuth JSON invalide impersonating ${impersonate}: ${tokenBody.slice(0, 300)}`)
+  }
   googleTokenCache.set(cacheKey, { token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 })
   return data.access_token
 }
