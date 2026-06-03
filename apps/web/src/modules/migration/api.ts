@@ -26,6 +26,17 @@ export const migrationApi = {
   addGoogleAlias: (id: string, alias?: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/google-alias`, alias ? { alias } : {}).then((r) => r.data),
 
+  activateNewFormat: (id: string) =>
+    apiClient
+      .post<{
+        ok: boolean
+        alias: string
+        aliasAdded: boolean
+        sendAsAdded: boolean
+        warnings: string[]
+      }>(`/migration/${id}/activate-new-format`)
+      .then((r) => r.data),
+
   migrateMail: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-mail`).then((r) => r.data),
 

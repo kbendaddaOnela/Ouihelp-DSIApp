@@ -16,6 +16,7 @@ import {
   checkOnelaMailForwarding,
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
+import { ensureSendAs } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
 import { gmailDedupeMailbox } from './mailService'
 import type {
@@ -237,6 +238,58 @@ migrationRouter.get('/history', requirePermission('migration:read'), async (c) =
     total: rows.length,
   }
   return c.json(response)
+})
+
+// ── Activer le nouveau format prenom.nom@onela.com (alias + send-as) ────────
+// Le user a déjà l'alias legacy pnom@onela.com ; on ajoute ici l'alias
+// prenom.nom@onela.com PLUS une identité "Envoyer en tant que" pour qu'il
+// puisse communiquer en sortant avec le nouveau format dès la migration.
+migrationRouter.post('/:id/activate-new-format', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé à cette migration' }, 400)
+
+  // gohUpn = prenom.nom@mig.onela.com → alias = prenom.nom@onela.com
+  const localPart = row.gohUpn.split('@')[0]
+  if (!localPart) return c.json({ error: 'gohUpn invalide' }, 400)
+  // Domaine cible : récupéré depuis onelaUpn (la BAL ONELA source)
+  const targetDomain = row.onelaUpn.split('@')[1] ?? 'onela.com'
+  const newAlias = `${localPart}@${targetDomain}`
+
+  const result: { alias: string; aliasAdded: boolean; sendAsAdded: boolean; warnings: string[] } = {
+    alias: newAlias,
+    aliasAdded: false,
+    sendAsAdded: false,
+    warnings: [],
+  }
+
+  // 1. Ajouter l'alias sur le user Google (idempotent : 409 ignoré)
+  try {
+    await addGoogleAlias(row.gohUpn, newAlias)
+    result.aliasAdded = true
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('409')) {
+      result.warnings.push(`Alias déjà présent`)
+    } else {
+      console.error('[activate-new-format] alias error:', msg)
+      return c.json({ error: 'alias', message: msg, ...result }, 502)
+    }
+  }
+
+  // 2. Ajouter "Envoyer en tant que" sur le Gmail du user (idempotent)
+  try {
+    const sendAs = await ensureSendAs(row.gohUpn, newAlias, row.onelaDisplayName)
+    result.sendAsAdded = sendAs.created
+    if (!sendAs.created) result.warnings.push(`Send-as déjà présent`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[activate-new-format] sendas error:', msg)
+    return c.json({ error: 'sendas', message: msg, ...result }, 502)
+  }
+
+  return c.json({ ok: true, ...result })
 })
 
 // ── Ajouter l'alias Google (manuel, après SCIM sync) ─────────────────────────

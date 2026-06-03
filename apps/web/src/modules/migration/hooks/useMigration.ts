@@ -61,6 +61,14 @@ export function useAddGoogleAlias() {
   })
 }
 
+export function useActivateNewFormat() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => migrationApi.activateNewFormat(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+  })
+}
+
 export function useMigrateMail() {
   const queryClient = useQueryClient()
   return useMutation({
