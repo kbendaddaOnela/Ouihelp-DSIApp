@@ -69,6 +69,9 @@ async function ensureSchemaPatches() {
     { table: 'shared_migrations', column: 'mail_last_sync_at', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`mail_last_sync_at\` timestamp NULL` },
     // Shared mailbox : routing address override pour dual delivery
     { table: 'shared_migrations', column: 'dual_delivery_bcc_address', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`dual_delivery_bcc_address\` varchar(320)` },
+    // Migration users : suivi de l'activation du nouveau format prenom.nom@onela.com
+    { table: 'migrations', column: 'step_new_format', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_new_format\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'migrations', column: 'new_format_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`new_format_error\` text` },
   ]
   for (const p of columnPatches) {
     try {

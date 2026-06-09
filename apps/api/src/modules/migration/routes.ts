@@ -271,6 +271,8 @@ migrationRouter.post('/:id/activate-new-format', requirePermission('migration:wr
     warnings: [],
   }
 
+  await db.update(migrations).set({ stepNewFormat: 'running', newFormatError: null }).where(eq(migrations.id, row.id))
+
   // 1. Ajouter l'alias sur le user Google (idempotent : 409 ignoré)
   try {
     await addGoogleAlias(row.gohUpn, newAlias)
@@ -281,6 +283,7 @@ migrationRouter.post('/:id/activate-new-format', requirePermission('migration:wr
       result.warnings.push(`Alias déjà présent`)
     } else {
       console.error('[activate-new-format] alias error:', msg)
+      await db.update(migrations).set({ stepNewFormat: 'error', newFormatError: msg }).where(eq(migrations.id, row.id))
       return c.json({ error: 'alias', message: msg, ...result }, 502)
     }
   }
@@ -293,6 +296,7 @@ migrationRouter.post('/:id/activate-new-format', requirePermission('migration:wr
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[activate-new-format] sendas error:', msg)
+    await db.update(migrations).set({ stepNewFormat: 'error', newFormatError: msg }).where(eq(migrations.id, row.id))
     return c.json({ error: 'sendas', message: msg, ...result }, 502)
   }
 
@@ -306,6 +310,9 @@ migrationRouter.post('/:id/activate-new-format', requirePermission('migration:wr
     // Non bloquant : l'alias + send-as sont déjà ajoutés
     result.warnings.push(`Mise en défaut échouée : ${msg.slice(0, 200)}`)
   }
+
+  // Étape considérée comme réussie même si setDefault a warningé
+  await db.update(migrations).set({ stepNewFormat: 'success', newFormatError: null }).where(eq(migrations.id, row.id))
 
   return c.json({ ok: true, ...result })
 })

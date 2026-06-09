@@ -25,6 +25,9 @@ export const migrations = mysqlTable('migrations', {
   googleAliasError: text('google_alias_error'),
   stepOuMove: mysqlEnum('step_ou_move', stepStatus).default('pending').notNull(),
   ouMoveError: text('ou_move_error'),
+  // Activation du nouveau format prenom.nom@onela.com (alias + send-as + default)
+  stepNewFormat: mysqlEnum('step_new_format', stepStatus).default('pending').notNull(),
+  newFormatError: text('new_format_error'),
   // Mail migration progress (Phase B)
   mailTotal: int('mail_total').default(0).notNull(),
   mailMigrated: int('mail_migrated').default(0).notNull(),
