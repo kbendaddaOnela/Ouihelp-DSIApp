@@ -240,7 +240,11 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
 
               {/* Ligne 1 : Data migrations (3 colonnes) */}
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-                <StepBlock number={1} label="Mails">
+                <StepBlock
+                  number={1}
+                  label="Mails"
+                  completed={m.stepMailMigration === 'success' && m.mailTotal > 0 && m.mailMigrated >= m.mailTotal}
+                >
                   <DataMigrationSection
                     migrationId={m.id} phase="mail" label="mail" icon={Mail}
                     status={m.stepMailMigration} total={m.mailTotal}
@@ -311,7 +315,11 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                   )}
                 </StepBlock>
 
-                <StepBlock number={2} label="Calendrier">
+                <StepBlock
+                  number={2}
+                  label="Calendrier"
+                  completed={m.stepCalendarMigration === 'success' && m.calTotal > 0 && m.calMigrated >= m.calTotal}
+                >
                   <DataMigrationSection
                     migrationId={m.id} phase="calendar" label="calendrier" icon={Calendar}
                     status={m.stepCalendarMigration} total={m.calTotal}
@@ -323,7 +331,11 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                   />
                 </StepBlock>
 
-                <StepBlock number={3} label="Contacts">
+                <StepBlock
+                  number={3}
+                  label="Contacts"
+                  completed={m.stepContactsMigration === 'success' && m.contactsTotal > 0 && m.contactsMigrated >= m.contactsTotal}
+                >
                   <DataMigrationSection
                     migrationId={m.id} phase="contacts" label="contacts" icon={Users}
                     status={m.stepContactsMigration} total={m.contactsTotal}
@@ -336,9 +348,13 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                 </StepBlock>
               </div>
 
-              {/* Ligne 2 : Alias + OU + Delta (3 colonnes) */}
+              {/* Ligne 2 : Alias + Nouveau format + OU (3 colonnes) */}
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-                <StepBlock number={4} label="Alias Google">
+                <StepBlock
+                  number={4}
+                  label="Alias Google"
+                  completed={m.stepGoogleAlias === 'success'}
+                >
                   {canAddAlias ? (
                     <div className="space-y-2">
                       <div className="flex items-center gap-1.5">
@@ -360,26 +376,68 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                       )}
                     </div>
                   ) : m.stepGoogleAlias === 'success' ? (
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-green-600">Alias ajouté</p>
-                      {newFormatAlias && (
-                        <button
-                          onClick={handleActivateNewFormat}
-                          disabled={isActivatingNewFormat}
-                          className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
-                          title={`Ajoute l'alias ${newFormatAlias} + "Envoyer en tant que" cette adresse`}
-                        >
-                          <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
-                          {isActivatingNewFormat ? 'Activation…' : `Activer ${newFormatAlias}`}
-                        </button>
-                      )}
-                    </div>
+                    <p className="text-xs text-green-700">Alias <span className="font-mono">{m.onelaUpn}</span> ajouté</p>
                   ) : m.stepGoogleAlias === 'skipped' ? (
                     <p className="text-xs text-gray-400">Ignoré</p>
                   ) : null}
                 </StepBlock>
 
-                <StepBlock number={5} label="OU onela.com">
+                <StepBlock
+                  number={5}
+                  label="Nouveau format prenom.nom@onela.com"
+                  completed={m.stepNewFormat === 'success'}
+                >
+                  {!newFormatAlias ? (
+                    <p className="text-xs text-gray-400">En attente du compte Google…</p>
+                  ) : m.stepNewFormat === 'success' ? (
+                    <div className="space-y-1.5">
+                      <p className="text-xs text-green-700">
+                        <span className="font-mono">{newFormatAlias}</span> activé (alias + send-as + défaut)
+                      </p>
+                      <button
+                        onClick={handleActivateNewFormat}
+                        disabled={isActivatingNewFormat}
+                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                        title="Re-jouer (idempotent)"
+                      >
+                        <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
+                        {isActivatingNewFormat ? 'Activation…' : 'Re-jouer'}
+                      </button>
+                    </div>
+                  ) : m.stepNewFormat === 'error' ? (
+                    <div className="space-y-1.5">
+                      {m.newFormatError && (
+                        <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.newFormatError}</p>
+                      )}
+                      <button
+                        onClick={handleActivateNewFormat}
+                        disabled={isActivatingNewFormat}
+                        className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
+                      >
+                        <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
+                        {isActivatingNewFormat ? 'Activation…' : 'Réessayer'}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleActivateNewFormat}
+                      disabled={isActivatingNewFormat || m.stepGoogleAlias !== 'success'}
+                      className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
+                      title={m.stepGoogleAlias !== 'success'
+                        ? 'Ajoute d\'abord l\'alias legacy (étape 4)'
+                        : `Ajoute l'alias ${newFormatAlias} + "Envoyer en tant que" + défaut`}
+                    >
+                      <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
+                      {isActivatingNewFormat ? 'Activation…' : `Activer ${newFormatAlias}`}
+                    </button>
+                  )}
+                </StepBlock>
+
+                <StepBlock
+                  number={6}
+                  label="OU onela.com"
+                  completed={m.stepOuMove === 'success'}
+                >
                   {canMoveOu ? (
                     <div>
                       <button onClick={handleMoveOu} disabled={isMovingOu}
@@ -390,23 +448,21 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                       {ouMessage && <p className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{ouMessage}</p>}
                     </div>
                   ) : m.stepOuMove === 'success' ? (
-                    <p className="text-xs text-green-600">Déplacé</p>
+                    <p className="text-xs text-green-700">Déplacé</p>
                   ) : m.stepOuMove === 'skipped' ? (
                     <p className="text-xs text-gray-400">Ignoré</p>
                   ) : m.stepOuMove === 'error' && m.ouMoveError ? (
                     <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.ouMoveError}</p>
                   ) : null}
                 </StepBlock>
-
-                <StepBlock number={6} label="Sync delta">
-                  <p className="text-xs text-gray-500">
-                    Relancez 1→3 pour synchroniser les nouveaux éléments.
-                  </p>
-                </StepBlock>
               </div>
 
               {/* Ligne 3 : Redirection Exchange (pleine largeur) */}
-              <StepBlock number={7} label="Redirection Exchange">
+              <StepBlock
+                number={7}
+                label="Redirection Exchange"
+                completed={!!fwdStatus?.active}
+              >
                 {accountReady && m.onelaUserId ? (
                   <div className="space-y-2">
                     {isCheckingFwd && !fwdStatus ? (
@@ -478,14 +534,45 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
 }
 
 // Bloc numéroté pour chaque étape
-function StepBlock({ number, label, children }: { number: number; label: string; children: React.ReactNode }) {
+function StepBlock({
+  number,
+  label,
+  completed = false,
+  children,
+}: {
+  number: number
+  label: string
+  completed?: boolean
+  children: React.ReactNode
+}) {
   return (
-    <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-3">
+    <div
+      className={cn(
+        'rounded-lg border p-3 transition-colors',
+        completed
+          ? 'border-green-200 bg-green-50/50'
+          : 'border-gray-100 bg-gray-50/50',
+      )}
+    >
       <div className="flex items-center gap-2 mb-2">
-        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-200 text-[10px] font-bold text-gray-600">
-          {number}
+        <span
+          className={cn(
+            'flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold',
+            completed
+              ? 'bg-green-600 text-white'
+              : 'bg-gray-200 text-gray-600',
+          )}
+        >
+          {completed ? <CheckCircle2 className="h-3 w-3" /> : number}
         </span>
-        <span className="text-xs font-semibold text-gray-700">{label}</span>
+        <span
+          className={cn(
+            'text-xs font-semibold',
+            completed ? 'text-green-800' : 'text-gray-700',
+          )}
+        >
+          {label}
+        </span>
       </div>
       {children}
     </div>
