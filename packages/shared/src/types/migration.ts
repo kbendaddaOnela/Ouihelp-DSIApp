@@ -98,6 +98,8 @@ export interface SearchOnelaUsersResponse {
 
 export interface MigrateUsersResponse {
   migrations: MigrationRecord[]
+  /** Comptes ignorés (déjà une migration en cours pour ce user) */
+  skipped?: Array<{ onelaUpn: string; reason: string; existingMigrationId: string }>
 }
 
 export interface MigrationHistoryResponse {

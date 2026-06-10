@@ -36,6 +36,19 @@ export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => vo
     onSuccess: (data) => {
       onSuccess(data.migrations)
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+      // Provisioning Entra tourne en background — relancer plusieurs fois pour récupérer
+      // les transitions pending → running → success/error
+      const refreshTimes = [3000, 8000, 15000, 30000]
+      for (const ms of refreshTimes) {
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+        }, ms)
+      }
+      // Alerter pour les comptes ignorés (idempotency)
+      if (data.skipped && data.skipped.length > 0) {
+        const lines = data.skipped.map((s) => `• ${s.onelaUpn} — ${s.reason}`).join('\n')
+        alert(`${data.skipped.length} compte(s) ignoré(s) :\n\n${lines}`)
+      }
     },
   })
 }
