@@ -62,14 +62,33 @@ migrationRouter.get('/search', requirePermission('migration:read'), async (c) =>
 })
 
 // ── Lancer la migration ───────────────────────────────────────────────────────
+// Stratégie : on insère TOUS les records en pending immédiatement (synchrone, rapide),
+// on répond 202 au front, puis on traite les étapes Graph en background (par user, en
+// parallèle limité). Évite le timeout HTTP Azure (~230s) sur les gros lots.
 migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
   const body = await c.req.json<MigrateUsersRequest>()
   const initiatedBy = c.get('dbUser').email
   const db = getDb()
 
-  const results = []
+  const inserted: Array<typeof migrations.$inferSelect> = []
+  const skipped: Array<{ onelaUpn: string; reason: string; existingMigrationId: string }> = []
 
   for (const u of body.users) {
+    // ── Idempotency : refuser si déjà une migration non-archivée pour ce user ──
+    const existing = await db
+      .select({ id: migrations.id })
+      .from(migrations)
+      .where(and(eq(migrations.onelaUserId, u.onelaUserId), eq(migrations.archived, 0)))
+      .limit(1)
+    if (existing.length > 0) {
+      skipped.push({
+        onelaUpn: u.onelaUpn,
+        reason: 'Migration déjà en cours / existante pour ce compte (archive-la d\'abord pour relancer)',
+        existingMigrationId: existing[0]!.id,
+      })
+      continue
+    }
+
     const migrationId = randomUUID()
 
     // Générer UPN GOH : prenom.nom@mig.onela.com
@@ -81,7 +100,7 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
     const ext11 = `${firstName}.${lastName}@${onelaDomain}`
     const tempPassword = `Tmp-${Math.random().toString(36).slice(2, 8)}#Az1`
 
-    // Insérer l'enregistrement de migration en DB
+    // Insérer l'enregistrement avec stepCreateAccount='pending' (sera passé à 'running' par le job background)
     await db.insert(migrations).values({
       id: migrationId,
       onelaUserId: u.onelaUserId,
@@ -91,8 +110,9 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
       onelaDepartment: u.onelaDepartment,
       onelaJobTitle: u.onelaJobTitle,
       gohUpn,
+      tempPassword,
       initiatedBy,
-      stepCreateAccount: 'running',
+      stepCreateAccount: 'pending',
       stepSetAttributes: 'pending',
       stepGroupMembership: 'pending',
       stepMailMigration: 'skipped',
@@ -102,78 +122,183 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
       stepOuMove: 'skipped',
     })
 
+    const [row] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
+    if (row) inserted.push(row)
+
+    // Lancer le provisioning en background (fire-and-forget)
+    void provisionAccountBackground({
+      migrationId,
+      givenName: u.givenName,
+      surname: u.surname,
+      gohUpn,
+      onelaEmail: u.onelaEmail,
+      onelaUpn: u.onelaUpn,
+      onelaDisplayName: u.onelaDisplayName,
+      onelaDepartment: u.onelaDepartment,
+      onelaJobTitle: u.onelaJobTitle,
+      tempPassword,
+      ext10,
+      ext11,
+    })
+  }
+
+  const response: MigrateUsersResponse & { skipped?: typeof skipped } = {
+    migrations: inserted.map(serializeMigration),
+    ...(skipped.length > 0 ? { skipped } : {}),
+  }
+  return c.json(response, 202)
+})
+
+// ── Provisioning Entra en background (séparé pour éviter le timeout HTTP) ────
+// Chaque étape (create / setAttributes / link target) est tracée individuellement :
+// si l'une échoue, seules les étapes effectivement échouées passent en 'error',
+// pas les précédentes qui ont réussi.
+async function provisionAccountBackground(params: {
+  migrationId: string
+  givenName: string
+  surname: string
+  gohUpn: string
+  onelaEmail: string
+  onelaUpn: string
+  onelaDisplayName: string
+  onelaDepartment: string | null
+  onelaJobTitle: string | null
+  tempPassword: string
+  ext10: string
+  ext11: string
+}) {
+  const db = getDb()
+  const { migrationId, gohUpn, onelaUpn, onelaEmail, onelaDisplayName, onelaDepartment, onelaJobTitle, tempPassword, ext10, ext11, givenName, surname } = params
+
+  // Relire l'état actuel pour ne re-faire que les étapes pas encore en success
+  const [current] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
+  if (!current) {
+    console.error(`[provisioning] ${migrationId} introuvable, abandon`)
+    return
+  }
+
+  // ── Étape 1 : créer le compte GOH ──
+  let gohUserId: string | null = current.gohUserId
+  if (current.stepCreateAccount !== 'success') {
+    await db.update(migrations).set({ stepCreateAccount: 'running' }).where(eq(migrations.id, migrationId))
     try {
-      // Étape 1 — Vérifier si le compte existe déjà
       const exists = await checkGohUserExists(gohUpn)
       if (exists) throw new Error(`Le compte ${gohUpn} existe déjà dans Entra GOH`)
-
-      // Étape 1 — Créer le compte GOH
       const gohUser = await createGohUser({
-        givenName: u.givenName,
-        surname: u.surname,
-        upn: gohUpn,
-        displayName: u.onelaDisplayName,
-        department: u.onelaDepartment,
-        jobTitle: u.onelaJobTitle,
-        tempPassword,
+        givenName, surname, upn: gohUpn, displayName: onelaDisplayName,
+        department: onelaDepartment, jobTitle: onelaJobTitle, tempPassword,
       })
-
+      gohUserId = gohUser.id
       await db.update(migrations)
-        .set({ gohUserId: gohUser.id, stepCreateAccount: 'success', stepSetAttributes: 'running' })
+        .set({ gohUserId, stepCreateAccount: 'success' })
         .where(eq(migrations.id, migrationId))
-
-      // Étape 2 — Poser extensionAttribute10 + 11
-      // companyName="ONELA" est déjà posé à la création → groupe dynamique se déclenche
-      await setGohUserAttributes(gohUser.id, ext10, ext11)
-
-      // Générer le script PowerShell Exchange
-      const psScript = [
-        `# Forwarding Exchange ONELA → Google pour ${u.onelaDisplayName}`,
-        `# À exécuter dans Exchange Online PowerShell`,
-        `Connect-ExchangeOnline -UserPrincipalName admin@onelaservices.onmicrosoft.com -Device`,
-        `Set-Mailbox -Identity "${u.onelaEmail}" \\`,
-        `  -ForwardingSMTPAddress "${ext10}" \\`,
-        `  -DeliverToMailboxAndForward $true`,
-        `# Vérification`,
-        `Get-Mailbox -Identity "${u.onelaEmail}" | Select ForwardingSMTPAddress, DeliverToMailboxAndForward`,
-      ].join('\n')
-
-      await db.update(migrations)
-        .set({
-          tempPassword,
-          stepSetAttributes: 'success',
-          stepGroupMembership: 'success',
-          exchangePsScript: psScript,
-        })
-        .where(eq(migrations.id, migrationId))
-
-      // Lier la cible de migration si elle existe
-      await db.update(migrationTargets)
-        .set({ status: 'in_progress', migrationId })
-        .where(eq(migrationTargets.onelaUpn, u.onelaUpn))
-
-      const [updated] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
-      results.push(updated)
     } catch (err) {
-      const errorDetails = err instanceof Error ? err.message : String(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[provisioning] ${migrationId} create error:`, msg)
       await db.update(migrations)
-        .set({
-          stepCreateAccount: 'error',
-          stepSetAttributes: 'error',
-          stepGroupMembership: 'error',
-          errorDetails,
-        })
+        .set({ stepCreateAccount: 'error', errorDetails: msg })
         .where(eq(migrations.id, migrationId))
-
-      const [updated] = await db.select().from(migrations).where(eq(migrations.id, migrationId))
-      results.push(updated)
+      return
     }
   }
 
-  const response: MigrateUsersResponse = {
-    migrations: results.filter((r): r is NonNullable<typeof r> => r != null).map(serializeMigration),
+  // ── Étape 2 : poser extensionAttribute10 + 11 ──
+  if (current.stepSetAttributes !== 'success') {
+    if (!gohUserId) {
+      await db.update(migrations).set({ stepSetAttributes: 'error', errorDetails: 'gohUserId manquant' }).where(eq(migrations.id, migrationId))
+      return
+    }
+    await db.update(migrations).set({ stepSetAttributes: 'running' }).where(eq(migrations.id, migrationId))
+    try {
+      await setGohUserAttributes(gohUserId, ext10, ext11)
+      await db.update(migrations)
+        .set({ stepSetAttributes: 'success' })
+        .where(eq(migrations.id, migrationId))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[provisioning] ${migrationId} setAttributes error:`, msg)
+      await db.update(migrations)
+        .set({ stepSetAttributes: 'error', errorDetails: msg })
+        .where(eq(migrations.id, migrationId))
+      return
+    }
   }
-  return c.json(response, 201)
+
+  // ── Étape 3 : groupe dynamique (auto-géré par companyName=ONELA, mais on le marque) ──
+  // Génération du script PowerShell + liaison target → considérés comme l'étape 3
+  if (current.stepGroupMembership !== 'success') {
+    try {
+      const psScript = [
+        `# Forwarding Exchange ONELA → Google pour ${onelaDisplayName}`,
+        `# À exécuter dans Exchange Online PowerShell`,
+        `Connect-ExchangeOnline -UserPrincipalName admin@onelaservices.onmicrosoft.com -Device`,
+        `Set-Mailbox -Identity "${onelaEmail}" \\`,
+        `  -ForwardingSMTPAddress "${ext10}" \\`,
+        `  -DeliverToMailboxAndForward $true`,
+        `# Vérification`,
+        `Get-Mailbox -Identity "${onelaEmail}" | Select ForwardingSMTPAddress, DeliverToMailboxAndForward`,
+      ].join('\n')
+
+      await db.update(migrations)
+        .set({ stepGroupMembership: 'success', exchangePsScript: psScript })
+        .where(eq(migrations.id, migrationId))
+
+      await db.update(migrationTargets)
+        .set({ status: 'in_progress', migrationId })
+        .where(eq(migrationTargets.onelaUpn, onelaUpn))
+
+      console.log(`[provisioning] ${migrationId} OK (${onelaUpn} → ${gohUpn})`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[provisioning] ${migrationId} groupMembership error:`, msg)
+      await db.update(migrations)
+        .set({ stepGroupMembership: 'error', errorDetails: msg })
+        .where(eq(migrations.id, migrationId))
+    }
+  }
+}
+
+// ── Retry du provisioning (pour les comptes qui ont échoué) ──────────────────
+migrationRouter.post('/:id/retry-provisioning', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'gohUpn manquant — record corrompu' }, 400)
+
+  // On ne relance que les étapes qui sont en 'error' ou 'pending', pas celles déjà 'success'
+  const needsCreate = row.stepCreateAccount === 'error' || row.stepCreateAccount === 'pending'
+  const needsAttrs = row.stepSetAttributes === 'error' || row.stepSetAttributes === 'pending'
+  const needsGroup = row.stepGroupMembership === 'error' || row.stepGroupMembership === 'pending'
+
+  if (!needsCreate && !needsAttrs && !needsGroup) {
+    return c.json({ error: 'Toutes les étapes sont déjà en success ou skipped' }, 400)
+  }
+
+  // Reconstituer les inputs depuis le record
+  const firstName = row.gohUpn.split('.')[0] ?? ''
+  const lastName = (row.gohUpn.split('@')[0] ?? '').split('.').slice(1).join('.')
+  const onelaDomain = row.onelaEmail.split('@')[1] ?? 'onela.com'
+  const ext10 = `${firstName}.${lastName}@onela.fr`
+  const ext11 = `${firstName}.${lastName}@${onelaDomain}`
+
+  // Reset error fields avant retry
+  await db.update(migrations).set({ errorDetails: null }).where(eq(migrations.id, row.id))
+
+  void provisionAccountBackground({
+    migrationId: row.id,
+    givenName: firstName,
+    surname: lastName,
+    gohUpn: row.gohUpn,
+    onelaEmail: row.onelaEmail,
+    onelaUpn: row.onelaUpn,
+    onelaDisplayName: row.onelaDisplayName,
+    onelaDepartment: row.onelaDepartment,
+    onelaJobTitle: row.onelaJobTitle,
+    tempPassword: row.tempPassword ?? `Tmp-${Math.random().toString(36).slice(2, 8)}#Az1`,
+    ext10, ext11,
+  })
+
+  return c.json({ message: 'Retry lancé en background', migrationId: row.id }, 202)
 })
 
 // ── Migration vers compte Google existant (sans création Entra GOH) ──────────
