@@ -105,6 +105,54 @@ const SKIP_DISPLAY_NAMES = new Set([
   'local failures', 'rss feeds', 'conversation history', 'clutter',
 ])
 
+// Fallback : reconnaître un dossier well-known par son displayName si la résolution
+// par alias a échoué (typiquement à cause d'un 429 throttling Graph). Sans ça, l'inbox
+// devient un dossier "normal" et ses sous-dossiers héritent du préfixe "Boîte de réception/…".
+const WELL_KNOWN_DISPLAY_NAMES: Record<string, string> = {
+  // inbox
+  'boîte de réception': 'inbox', 'inbox': 'inbox',
+  // sentitems
+  'éléments envoyés': 'sentitems', 'sent items': 'sentitems', 'sent': 'sentitems',
+  // drafts
+  'brouillons': 'drafts', 'drafts': 'drafts', 'draft': 'drafts',
+  // deleteditems
+  'éléments supprimés': 'deleteditems', 'deleted items': 'deleteditems', 'corbeille': 'deleteditems', 'trash': 'deleteditems',
+  // junkemail
+  'courrier indésirable': 'junkemail', 'spam': 'junkemail', 'junk email': 'junkemail', 'junk': 'junkemail',
+  // archive
+  'archive': 'archive', 'archives': 'archive',
+}
+
+// Helper : fetch Graph avec retry sur 429/503/504 (throttling transitoire)
+async function graphFolderFetchWithRetry(url: string, token: string, label: string): Promise<Response | null> {
+  const RETRYABLE = new Set([429, 503, 504])
+  const MAX_ATTEMPTS = 4
+  let delay = 1500
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
+      if (res.ok || res.status === 404) return res
+      if (!RETRYABLE.has(res.status) || attempt === MAX_ATTEMPTS) {
+        console.warn(`[mail] ${label} non-retry ${res.status}`)
+        return res
+      }
+      const retryAfter = res.headers.get('Retry-After')
+      const waitMs = retryAfter ? Math.max(parseInt(retryAfter, 10) * 1000, 1000) : delay
+      console.warn(`[mail] ${label} ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs}ms`)
+      await new Promise((r) => setTimeout(r, waitMs))
+      delay = Math.min(delay * 2, 12_000)
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) {
+        console.warn(`[mail] ${label} fetch error:`, err instanceof Error ? err.message : err)
+        return null
+      }
+      await new Promise((r) => setTimeout(r, delay))
+      delay = Math.min(delay * 2, 12_000)
+    }
+  }
+  return null
+}
+
 export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   const token = await onelaToken()
   const folderById = new Map<string, GraphFolder>()
@@ -114,31 +162,26 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   const skipIds = new Set<string>()
 
   // 1. Récupérer en parallèle les folders well-known + ceux à ignorer
+  // Retry sur 429/503 : crucial quand plusieurs migrations tournent ; sans retry,
+  // un throttle silencieux fait perdre l'identification "inbox" → tous les sous-dossiers
+  // se retrouvent préfixés "Boîte de réception/…" en label Gmail.
   const wellKnownPromises = WELL_KNOWN_ALIASES.map(async (alias) => {
-    try {
-      const res = await fetchWithTimeout(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName,totalItemCount`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      )
-      if (res.ok) {
-        const f = (await res.json()) as { id: string; displayName: string; totalItemCount?: number }
-        return { type: 'keep' as const, alias, id: f.id, displayName: f.displayName, totalItemCount: f.totalItemCount }
-      }
-    } catch { /* alias absent */ }
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id,displayName,totalItemCount`
+    const res = await graphFolderFetchWithRetry(url, token, `mailFolders/${alias}`)
+    if (res?.ok) {
+      const f = (await res.json()) as { id: string; displayName: string; totalItemCount?: number }
+      return { type: 'keep' as const, alias, id: f.id, displayName: f.displayName, totalItemCount: f.totalItemCount }
+    }
     return null
   })
 
   const skipPromises = [...SKIP_WELL_KNOWN].map(async (alias) => {
-    try {
-      const res = await fetchWithTimeout(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      )
-      if (res.ok) {
-        const f = (await res.json()) as { id: string }
-        return { type: 'skip' as const, id: f.id }
-      }
-    } catch { /* absent */ }
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/mailFolders/${alias}?$select=id`
+    const res = await graphFolderFetchWithRetry(url, token, `mailFolders/${alias} (skip)`)
+    if (res?.ok) {
+      const f = (await res.json()) as { id: string }
+      return { type: 'skip' as const, id: f.id }
+    }
     return null
   })
 
@@ -165,6 +208,19 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
         // Exclure aussi par displayName (fallback si l'alias well-known n'a pas été résolu)
         if (SKIP_DISPLAY_NAMES.has(f.displayName.toLowerCase())) {
           skipIds.add(f.id)
+          continue
+        }
+        // FALLBACK well-known par displayName : si pass 1 a échoué (throttling Graph),
+        // un dossier "Boîte de réception" arrive ici comme dossier normal. On lui colle
+        // wellKnownName='inbox' pour que le crawl respecte childPrefix=null et que ses
+        // enfants ne soient pas préfixés "Boîte de réception/…".
+        const inferredWkn = WELL_KNOWN_DISPLAY_NAMES[f.displayName.toLowerCase()]
+        if (inferredWkn) {
+          if (!wellKnownIds.has(f.id)) {
+            console.warn(`[mail] well-known "${inferredWkn}" résolu par displayName fallback (pass 1 a manqué) — folder "${f.displayName}"`)
+            folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName, wellKnownName: inferredWkn, totalItemCount: f.totalItemCount })
+            wellKnownIds.add(f.id)
+          }
           continue
         }
         folderById.set(f.id, { id: f.id, displayName: f.displayName, path: f.displayName, totalItemCount: f.totalItemCount })
