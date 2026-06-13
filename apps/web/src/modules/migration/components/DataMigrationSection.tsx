@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { RefreshCcw, Eraser, Download, Square, Loader2 } from 'lucide-react'
+import { RefreshCcw, Eraser, Download, Pause, Loader2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
@@ -41,7 +41,11 @@ export function DataMigrationSection({
   const { mutate: stopPhase, isPending: isStopping } = useStopPhase()
 
   const handleStop = () => {
-    if (window.confirm(`Forcer l'arrêt de la migration ${label} ? Vous pourrez la relancer ensuite.`)) {
+    if (window.confirm(
+      `Mettre en pause la migration ${label} ?\n\n` +
+      `La progression est sauvegardée — la reprise continuera exactement ` +
+      `où tu t'es arrêté (les messages déjà migrés ne seront pas refaits).`
+    )) {
       stopPhase({ id: migrationId, phase })
     }
   }
@@ -119,10 +123,10 @@ export function DataMigrationSection({
         <button
           onClick={handleStop}
           disabled={isStopping}
-          className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
+          className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-60"
         >
-          <Square className="h-3 w-3" />
-          {isStopping ? 'Arrêt...' : 'Forcer l\'arrêt'}
+          <Pause className="h-3 w-3" />
+          {isStopping ? 'Pause...' : 'Mettre en pause'}
         </button>
       )}
 

@@ -383,17 +383,21 @@ async function processUserMail(job: Migration) {
         .set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed })
         .where(eq(migrations.id, job.id))
 
-      // Vérifier si l'utilisateur a demandé l'arrêt
+      // Vérifier si l'utilisateur a demandé une pause
+      // IMPORTANT : on n'avance PAS mailLastSyncAt — sinon la reprise deviendrait
+      // un delta qui zappe tous les mails plus anciens non encore migrés.
+      // En laissant lastSyncAt inchangé, la prochaine relance repart en mode "full
+      // descendant" et le skipSet (basé sur migrated_messages) skippe naturellement
+      // ceux déjà migrés → vraie reprise depuis le point d'arrêt.
       if (isStopRequested(job.id, 'mail')) {
-        console.log(`[mail] ${job.id}: arrêt demandé — ${migrated} migrés, ${failed} erreurs`)
+        console.log(`[mail] ${job.id}: pause demandée — ${migrated}/${total} migrés`)
         clearStopSignal(job.id, 'mail')
         await db.update(migrations)
           .set({
             stepMailMigration: 'error',
             mailTotal: total, mailMigrated: migrated, mailFailed: failed,
             mailFinishedAt: new Date(),
-            mailLastSyncAt: syncStartedAt,
-            mailError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+            mailError: `Migration en pause à ${migrated}/${total} mails — clique sur "Reprendre" pour continuer`,
           })
           .where(eq(migrations.id, job.id))
         return
@@ -526,14 +530,15 @@ async function processUserCalendar(job: Migration) {
         .where(eq(migrations.id, job.id))
 
       if (isStopRequested(job.id, 'calendar')) {
-        console.log(`[calendar] ${job.id}: arrêt demandé — ${migrated} migrés, ${failed} erreurs`)
+        console.log(`[calendar] ${job.id}: pause demandée — ${migrated}/${total} migrés`)
         clearStopSignal(job.id, 'calendar')
+        // Pas d'avance de calLastSyncAt : reprise = full descendant + skipSet
         await db.update(migrations)
           .set({
             stepCalendarMigration: 'error',
             calTotal: total, calMigrated: migrated, calFailed: failed,
-            calFinishedAt: new Date(), calLastSyncAt: calSyncStart,
-            calError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+            calFinishedAt: new Date(),
+            calError: `Migration en pause à ${migrated}/${total} événements — clique sur "Reprendre" pour continuer`,
           })
           .where(eq(migrations.id, job.id))
         return
@@ -655,14 +660,15 @@ async function processUserContacts(job: Migration) {
         .where(eq(migrations.id, job.id))
 
       if (isStopRequested(job.id, 'contacts')) {
-        console.log(`[contacts] ${job.id}: arrêt demandé — ${migrated} migrés, ${failed} erreurs`)
+        console.log(`[contacts] ${job.id}: pause demandée — ${migrated}/${total} migrés`)
         clearStopSignal(job.id, 'contacts')
+        // Pas d'avance de contactsLastSyncAt : reprise = full descendant + skipSet
         await db.update(migrations)
           .set({
             stepContactsMigration: 'error',
             contactsTotal: total, contactsMigrated: migrated, contactsFailed: failed,
-            contactsFinishedAt: new Date(), contactsLastSyncAt: ctSyncStart,
-            contactsError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+            contactsFinishedAt: new Date(),
+            contactsError: `Migration en pause à ${migrated}/${total} contacts — clique sur "Reprendre" pour continuer`,
           })
           .where(eq(migrations.id, job.id))
         return
