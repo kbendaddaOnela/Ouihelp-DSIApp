@@ -667,6 +667,49 @@ migrationRouter.post('/:id/dedupe-mail', requirePermission('migration:write'), a
   return c.json({ message: 'Déduplication lancée en background' }, 202)
 })
 
+// ── Débloquer une phase coincée en 'running' sans worker actif (worker mort/hangé) ──
+// Utilisé quand le bouton Pause ne répond plus (worker hung sur un appel Graph
+// qui n'a jamais réveillé) ou après un crash silencieux du process Node.
+// Force la phase en 'error' sans toucher au tracking → la reprise via "Reprendre"
+// fonctionnera et le skipSet reprendra exactement au point d'arrêt.
+migrationRouter.post('/:id/unstick/:phase', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const phase = c.req.param('phase')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+
+  const stamp = new Date()
+  if (phase === 'mail') {
+    await db.update(migrations).set({
+      stepMailMigration: 'error',
+      mailError: `Déblocage manuel à ${row.mailMigrated}/${row.mailTotal} mails — clique "Reprendre" pour continuer`,
+      mailFinishedAt: stamp,
+    }).where(eq(migrations.id, id))
+  } else if (phase === 'calendar') {
+    await db.update(migrations).set({
+      stepCalendarMigration: 'error',
+      calError: `Déblocage manuel à ${row.calMigrated}/${row.calTotal} événements — clique "Reprendre" pour continuer`,
+      calFinishedAt: stamp,
+    }).where(eq(migrations.id, id))
+  } else if (phase === 'contacts') {
+    await db.update(migrations).set({
+      stepContactsMigration: 'error',
+      contactsError: `Déblocage manuel à ${row.contactsMigrated}/${row.contactsTotal} contacts — clique "Reprendre" pour continuer`,
+      contactsFinishedAt: stamp,
+    }).where(eq(migrations.id, id))
+  } else {
+    return c.json({ error: 'Phase invalide (mail, calendar, contacts)' }, 400)
+  }
+
+  // Best-effort : signaler le stop au cas où le worker reprend conscience
+  signalStop(id, phase as 'mail' | 'calendar' | 'contacts')
+
+  const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!updated) return c.json({ error: 'Not Found' }, 404)
+  return c.json(serializeMigration(updated))
+})
+
 // ── Forcer l'arrêt d'une phase (running → error) ────────────────────────────
 migrationRouter.post('/:id/stop/:phase', requirePermission('migration:write'), async (c) => {
   const db = getDb()
