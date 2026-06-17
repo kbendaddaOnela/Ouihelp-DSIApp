@@ -302,13 +302,25 @@ export async function listOnelaFolders(userId: string): Promise<GraphFolder[]> {
   return [...folderById.values()]
 }
 
+// Construit un fragment de filter OData combinant `since` (lower bound exclusif)
+// et `until` (upper bound inclusif) sur receivedDateTime.
+function buildReceivedDateFilter(since?: Date | null, until?: Date | null): string {
+  const parts: string[] = []
+  if (since) parts.push(`receivedDateTime gt ${since.toISOString()}`)
+  if (until) parts.push(`receivedDateTime le ${until.toISOString()}`)
+  return parts.length > 0 ? `&$filter=${encodeURIComponent(parts.join(' and '))}` : ''
+}
+
 // Compte le nombre de messages avant l'itération pour afficher le total dès le début
 // Si `folders` est fourni, on somme les totalItemCount des dossiers visibles (exclut
 // Recoverable Items + Notes/Tasks/Calendar). Sinon, fallback sur /messages global.
+// `until` plafonne le compte aux mails reçus AVANT le démarrage du run, pour ne pas
+// inclure les mails déposés par le dual-delivery pendant que le worker tourne.
 export async function countOnelaMessages(
   userId: string,
   since?: Date | null,
-  folders?: GraphFolder[]
+  folders?: GraphFolder[],
+  until?: Date | null
 ): Promise<number> {
   // Compteur précis basé sur les dossiers visibles (mode par défaut depuis la refonte)
   // Note : en mode delta (since != null), totalItemCount n'est pas filtré par date —
@@ -318,7 +330,7 @@ export async function countOnelaMessages(
   }
 
   const token = await onelaToken()
-  const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
+  const filter = buildReceivedDateFilter(since, until)
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$count=true&$top=1${filter}`
   const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
@@ -328,12 +340,16 @@ export async function countOnelaMessages(
   return data['@odata.count'] ?? 0
 }
 
+// `until` (optionnel) plafonne l'itération à receivedDateTime <= until — empêche
+// le worker d'attraper les mails arrivés via dual-delivery PENDANT que le run tourne
+// (ces mails sont déjà dans Gmail, les retraiter ne sert qu'à faire enfler le compteur).
 export async function* iterateOnelaMessages(
   userId: string,
-  since?: Date | null
+  since?: Date | null,
+  until?: Date | null
 ): AsyncGenerator<GraphMessageMeta> {
   const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime`
-  const filter = since ? `&$filter=receivedDateTime gt ${since.toISOString()}` : ''
+  const filter = buildReceivedDateFilter(since, until)
   let url: string | null = base + filter
   while (url) {
     const token = await onelaToken()

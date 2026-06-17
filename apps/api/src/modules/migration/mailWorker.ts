@@ -256,11 +256,18 @@ async function processUserMail(job: Migration) {
     // On utilise already.length (nombre réel d'entrées en DB) plutôt que job.mailTotal qui peut être corrompu
     const previousTotal = isDelta ? already.length : 0
     let total = previousTotal
+
+    // Borne supérieure du run : capturée AVANT le précomptage pour que count et iterate
+    // utilisent exactement le même seuil. Les mails arrivés via dual-delivery PENDANT
+    // le run (receivedDateTime > syncStartedAt) sont ignorés — ils sont déjà dans Gmail
+    // via la redirection, et la prochaine synchro delta les couvrira.
+    const syncStartedAt = new Date()
+
     let preCountSet = false
     try {
       // En full-resync (pas de lastSyncAt), on utilise la somme des totalItemCount
       // des dossiers visibles : exclut Recoverable Items / Notes / Tasks / Calendar
-      const newCount = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt, folders)
+      const newCount = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt, folders, syncStartedAt)
       total = previousTotal + newCount
       preCountSet = true
       await db.update(migrations).set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed }).where(eq(migrations.id, job.id))
@@ -271,8 +278,7 @@ async function processUserMail(job: Migration) {
     let skipped = 0
     let dedupHits = 0 // compteur des messages détectés comme déjà présents dans Gmail
     let batchDelay = 500 // délai adaptatif entre les batches (ms), commence à 500ms pour éviter le burst initial
-    const syncStartedAt = new Date()
-    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt)
+    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt, syncStartedAt)
 
     // Traitement par batch de MAIL_CONCURRENCY messages en parallèle
     let batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
