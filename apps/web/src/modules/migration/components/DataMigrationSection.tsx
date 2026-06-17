@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { RefreshCcw, Eraser, Download, Pause, Loader2 } from 'lucide-react'
+import { RefreshCcw, Eraser, Download, Pause, Loader2, RotateCw } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { LucideIcon } from 'lucide-react'
 import type { StepStatus } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
@@ -61,6 +62,27 @@ export function DataMigrationSection({
   }
 
   const [isDownloading, setIsDownloading] = useState(false)
+  const [isRetrying, setIsRetrying] = useState(false)
+  const queryClient = useQueryClient()
+
+  const handleRetryErrors = async () => {
+    if (!window.confirm(
+      `Réessayer ${failed} message(s) en erreur ?\n\n` +
+      `Les mails seront déposés dans la boîte de réception Gmail ` +
+      `(rapide, sans résolution de labels). Tu pourras ensuite cliquer ` +
+      `"Re-labelliser" pour leur remettre les bons labels.`
+    )) return
+    setIsRetrying(true)
+    try {
+      const res = await migrationApi.retryMailErrors(migrationId)
+      alert(`Reprise lancée sur ${res.count} message(s). Le compteur va se mettre à jour progressivement.`)
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    } catch (err) {
+      alert(`Erreur : ${err instanceof Error ? err.message : 'inconnue'}`)
+    } finally {
+      setIsRetrying(false)
+    }
+  }
 
   const handleDownloadErrors = async () => {
     setIsDownloading(true)
@@ -174,16 +196,28 @@ export function DataMigrationSection({
             />
           </div>
 
-          {/* Erreurs : bouton de téléchargement au lieu de listing inline */}
+          {/* Erreurs : boutons de téléchargement + réessai (mail uniquement) */}
           {failed > 0 && (
-            <button
-              onClick={handleDownloadErrors}
-              disabled={isDownloading}
-              className="mt-1.5 flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
-            >
-              {isDownloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-              {isDownloading ? 'Téléchargement...' : `Télécharger les logs (${failed} ${itemUnit}(s) en erreur)`}
-            </button>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <button
+                onClick={handleDownloadErrors}
+                disabled={isDownloading}
+                className="flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
+              >
+                {isDownloading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                {isDownloading ? 'Téléchargement...' : `Télécharger les logs (${failed} ${itemUnit}(s) en erreur)`}
+              </button>
+              {phase === 'mail' && !running && (
+                <button
+                  onClick={handleRetryErrors}
+                  disabled={isRetrying}
+                  className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-60"
+                >
+                  {isRetrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCw className="h-3 w-3" />}
+                  {isRetrying ? 'Lancement...' : `Réessayer les erreurs (vers INBOX)`}
+                </button>
+              )}
+            </div>
           )}
 
           {!failed && errorMessage && (
