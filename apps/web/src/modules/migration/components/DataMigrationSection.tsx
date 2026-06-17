@@ -220,7 +220,13 @@ export function DataMigrationSection({
             </div>
           )}
 
-          {!failed && errorMessage && (
+          {/* Progression d'une tâche async (reprise erreurs, dédup, relabel...) :
+              messages préfixés "Reprise"/"Déduplication"/"Re-labellisation" → bleu info,
+              même si failed > 0. Sinon errorMessage standard en rouge si pas d'erreurs comptées. */}
+          {errorMessage && /^(Reprise|Déduplication|Re-labellisation)/.test(errorMessage) && (
+            <p className="mt-1 text-xs text-blue-600">{errorMessage}</p>
+          )}
+          {!failed && errorMessage && !/^(Reprise|Déduplication|Re-labellisation)/.test(errorMessage) && (
             <p className="mt-1 text-xs text-red-600">{errorMessage}</p>
           )}
 

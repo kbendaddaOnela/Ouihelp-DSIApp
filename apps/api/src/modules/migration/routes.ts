@@ -705,6 +705,7 @@ migrationRouter.post('/:id/retry-errors/mail', requirePermission('migration:writ
     let stillFailed = 0
     const total = errors.length
     const startedAt = Date.now()
+    console.log(`[retry-errors] ${id}: démarrage sur ${total} messages → INBOX`)
 
     for (let i = 0; i < errors.length; i++) {
       const msg = errors[i]!
@@ -735,6 +736,11 @@ migrationRouter.post('/:id/retry-errors/mail', requirePermission('migration:writ
           .set({ errorDetails })
           .where(eq(migratedMessages.id, msg.id))
         console.warn(`[retry-errors] ${msg.graphMessageId} fail: ${errorDetails.slice(0, 200)}`)
+      }
+      // Log de progression toutes les 20 messages pour le suivi en stdout
+      if ((i + 1) % 20 === 0) {
+        const pct = Math.round(((i + 1) / total) * 100)
+        console.log(`[retry-errors] ${id}: ${i + 1}/${total} (${pct}%) — ${recovered} OK, ${stillFailed} échec`)
       }
       // Tempo léger entre messages pour ne pas saturer
       if (i + 1 < errors.length) await new Promise((r) => setTimeout(r, 300))
