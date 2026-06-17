@@ -330,11 +330,16 @@ async function processUserMail(job: Migration) {
       )
 
       // Écrire les résultats en DB
+      // IMPORTANT : on n'incrémente migrated/failed que SI l'écriture DB a réussi.
+      // Sinon, au prochain resume, alreadySuccess (compté depuis migrated_messages)
+      // ne contiendra pas ce message et le compteur live "régresserait" — c'est
+      // ce qui faisait passer Emilia de 10377 à 8156 après pause/reprise.
       for (let i = 0; i < results.length; i++) {
         const msg = toProcess[i]!
         const res = results[i]!
         if (res.status === 'fulfilled') {
           const isRetry = errorSet.has(msg.id)
+          let dbOk = false
           try {
             await db.insert(migratedMessages).values({
               migrationId: job.id,
@@ -347,17 +352,21 @@ async function processUserMail(job: Migration) {
             }).onDuplicateKeyUpdate({
               set: { gmailMessageId: res.value.result.id, status: 'success', subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null, errorDetails: null },
             })
+            dbOk = true
           } catch (dbErr) {
             console.error(`[mail] DB write failed for success record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
           }
-          migrated++
-          if (res.value.dedup) {
-            dedupHits++
-            if (dedupHits % 100 === 0) console.log(`[mail] ${job.id}: ${dedupHits} doublons détectés (Message-ID déjà présent dans Gmail)`)
+          if (dbOk) {
+            migrated++
+            if (res.value.dedup) {
+              dedupHits++
+              if (dedupHits % 100 === 0) console.log(`[mail] ${job.id}: ${dedupHits} doublons détectés (Message-ID déjà présent dans Gmail)`)
+            }
+            if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
           }
-          if (isRetry) console.log(`[mail] retry OK: ${msg.id} (${msg.subject?.slice(0, 60)})`)
         } else {
           const errorDetails = sanitize(res.reason instanceof Error ? res.reason.message : String(res.reason), 2000) ?? 'unknown'
+          let dbOk = false
           try {
             await db.insert(migratedMessages).values({
               migrationId: job.id,
@@ -370,18 +379,27 @@ async function processUserMail(job: Migration) {
             }).onDuplicateKeyUpdate({
               set: { status: 'error', errorDetails, subject: sanitize(msg.subject), receivedAt: msg.receivedDateTime ? new Date(msg.receivedDateTime) : null },
             })
+            dbOk = true
           } catch (dbErr) {
             console.error(`[mail] DB write failed for error record ${msg.id}:`, dbErr instanceof Error ? dbErr.message : dbErr)
           }
-          failed++
-          console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
+          if (dbOk) {
+            failed++
+            console.warn(`[mail] msg ${msg.id} error:`, errorDetails.slice(0, 200))
+          }
         }
       }
 
+      // Garde-fou : `total` ne doit jamais régresser entre deux écritures (nouvel
+      // arrivage de mails via dual-delivery peut faire monter le compte, mais on
+      // ne veut pas qu'il chute à cause d'un dossier exclu mid-flight).
+      const persistedTotal = Math.max(total, migrated + failed)
+
       // Mettre à jour la progression après chaque batch
       await db.update(migrations)
-        .set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed })
+        .set({ mailTotal: persistedTotal, mailMigrated: migrated, mailFailed: failed })
         .where(eq(migrations.id, job.id))
+      total = persistedTotal
 
       // Vérifier si l'utilisateur a demandé une pause
       // IMPORTANT : on n'avance PAS mailLastSyncAt — sinon la reprise deviendrait
