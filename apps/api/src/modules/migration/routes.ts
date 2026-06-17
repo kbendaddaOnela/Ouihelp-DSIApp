@@ -18,7 +18,7 @@ import {
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
-import { gmailDedupeMailbox } from './mailService'
+import { gmailDedupeMailbox, fetchOnelaMessageMime, gmailImportMime } from './mailService'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -665,6 +665,93 @@ migrationRouter.post('/:id/dedupe-mail', requirePermission('migration:write'), a
     })
 
   return c.json({ message: 'Déduplication lancée en background' }, 202)
+})
+
+// ── Réessayer uniquement les messages mail en erreur ────────────────────────
+// Fast lane : on force labelIds=['INBOX'] pour éviter la résolution de labels
+// custom qui causait justement les erreurs "Invalid label: Label_XX". Les
+// messages atterrissent dans la boîte de réception Gmail, l'utilisateur peut
+// ensuite cliquer "Re-labelliser" pour leur remettre la hiérarchie propre.
+migrationRouter.post('/:id/retry-errors/mail', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé' }, 400)
+  const gohUpn = row.gohUpn
+  const onelaUserId = row.onelaUserId
+
+  // Lister les messages en erreur (sans rien charger d'autre)
+  const errors = await db
+    .select({
+      id: migratedMessages.id,
+      graphMessageId: migratedMessages.graphMessageId,
+      internetMessageId: migratedMessages.internetMessageId,
+      subject: migratedMessages.subject,
+      receivedAt: migratedMessages.receivedAt,
+    })
+    .from(migratedMessages)
+    .where(and(eq(migratedMessages.migrationId, id), eq(migratedMessages.status, 'error')))
+
+  if (errors.length === 0) {
+    return c.json({ message: 'Aucune erreur à réessayer', count: 0 }, 200)
+  }
+
+  await db.update(migrations).set({ mailError: `Reprise des erreurs : 0/${errors.length}…` }).where(eq(migrations.id, id))
+
+  // Background — pas de blocage HTTP
+  ;(async () => {
+    let recovered = 0
+    let stillFailed = 0
+    const total = errors.length
+    const startedAt = Date.now()
+
+    for (let i = 0; i < errors.length; i++) {
+      const msg = errors[i]!
+      try {
+        const rawMime = await fetchOnelaMessageMime(onelaUserId, msg.graphMessageId)
+        // Fast lane : INBOX direct, pas de label custom — atterrit en boîte
+        // de réception même si la hiérarchie a changé. "Re-labelliser" peut
+        // ensuite remettre les labels propres sans re-télécharger les MIME.
+        const result = await gmailImportMime({
+          userEmail: gohUpn,
+          rawMime,
+          labelIds: ['INBOX'],
+        })
+        await db.update(migratedMessages)
+          .set({ status: 'success', gmailMessageId: result.id, errorDetails: null })
+          .where(eq(migratedMessages.id, msg.id))
+        recovered++
+        // Recompter migrated/failed depuis la DB en live (cohérent)
+        await db.update(migrations).set({
+          mailMigrated: row.mailMigrated + recovered,
+          mailFailed: Math.max(0, row.mailFailed - recovered),
+          mailError: `Reprise des erreurs : ${recovered + stillFailed}/${total} (${recovered} OK, ${stillFailed} échec)…`,
+        }).where(eq(migrations.id, id))
+      } catch (err) {
+        stillFailed++
+        const errorDetails = err instanceof Error ? err.message.slice(0, 2000) : String(err).slice(0, 2000)
+        await db.update(migratedMessages)
+          .set({ errorDetails })
+          .where(eq(migratedMessages.id, msg.id))
+        console.warn(`[retry-errors] ${msg.graphMessageId} fail: ${errorDetails.slice(0, 200)}`)
+      }
+      // Tempo léger entre messages pour ne pas saturer
+      if (i + 1 < errors.length) await new Promise((r) => setTimeout(r, 300))
+    }
+
+    const durationS = Math.round((Date.now() - startedAt) / 1000)
+    const finalMsg = stillFailed === 0
+      ? `Reprise terminée en ${durationS}s : ${recovered}/${total} récupérés`
+      : `Reprise terminée en ${durationS}s : ${recovered} OK, ${stillFailed} encore en erreur (sur ${total})`
+    await db.update(migrations).set({ mailError: finalMsg }).where(eq(migrations.id, id))
+    console.log(`[retry-errors] ${id}: ${finalMsg}`)
+  })().catch(async (err) => {
+    const msg = `Reprise des erreurs échouée : ${err instanceof Error ? err.message : String(err)}`
+    await db.update(migrations).set({ mailError: msg }).where(eq(migrations.id, id))
+  })
+
+  return c.json({ message: `Reprise lancée en background sur ${errors.length} messages`, count: errors.length }, 202)
 })
 
 // ── Débloquer une phase coincée en 'running' sans worker actif (worker mort/hangé) ──

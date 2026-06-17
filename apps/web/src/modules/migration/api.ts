@@ -80,6 +80,9 @@ export const migrationApi = {
   dedupeMail: (id: string) =>
     apiClient.post<{ message: string }>(`/migration/${id}/dedupe-mail`).then((r) => r.data),
 
+  retryMailErrors: (id: string) =>
+    apiClient.post<{ message: string; count: number }>(`/migration/${id}/retry-errors/mail`).then((r) => r.data),
+
   moveOu: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/move-ou`).then((r) => r.data),
 
