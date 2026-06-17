@@ -57,8 +57,8 @@ const WELL_KNOWN_CHILD_CONFIG: Record<string, WellKnownChildConfig> = {
   archive:      { childPrefix: null,         skipChildren: false, systemLabelForDescendants: null },
   sentitems:    { childPrefix: 'Envoyés',    skipChildren: false, systemLabelForDescendants: 'SENT' },
   drafts:       { childPrefix: 'Brouillons', skipChildren: false, systemLabelForDescendants: 'DRAFT' },
-  deleteditems: { childPrefix: 'Corbeille',  skipChildren: false, systemLabelForDescendants: 'TRASH' },
   junkemail:    { childPrefix: null,         skipChildren: true,  systemLabelForDescendants: null },
+  // deleteditems retiré volontairement : on ne migre plus Éléments supprimés ni ses enfants.
 }
 
 // Catégories Outlook par défaut (couleurs natives) — on ne les convertit pas en label Gmail
@@ -89,10 +89,12 @@ interface GraphMessageMeta {
 
 // Liste les folders en utilisant les alias well-known (pour identifier inbox/sent/...) +
 // l'API /v1.0 standard pour les folders custom. wellKnownName n'est pas exposé sur /v1.0.
-const WELL_KNOWN_ALIASES = ['inbox', 'sentitems', 'drafts', 'deleteditems', 'junkemail', 'archive'] as const
+const WELL_KNOWN_ALIASES = ['inbox', 'sentitems', 'drafts', 'junkemail', 'archive'] as const
 
-// Dossiers système Exchange à ne PAS migrer (ni eux, ni leurs enfants)
-const SKIP_WELL_KNOWN = new Set(['outbox', 'syncissues', 'rssfeed', 'conversationhistory', 'clutter', 'scheduled', 'recoverableitemsdeletions'])
+// Dossiers système Exchange à ne PAS migrer (ni eux, ni leurs enfants).
+// `deleteditems` (Éléments supprimés / Corbeille Outlook) en fait partie depuis juin 2026 :
+// l'utilisateur ne veut pas que la Corbeille Outlook pollue Gmail.
+const SKIP_WELL_KNOWN = new Set(['outbox', 'syncissues', 'rssfeed', 'conversationhistory', 'clutter', 'scheduled', 'recoverableitemsdeletions', 'deleteditems'])
 
 // displayName français/anglais des dossiers système à ignorer (fallback quand wellKnownName absent)
 const SKIP_DISPLAY_NAMES = new Set([
@@ -100,9 +102,11 @@ const SKIP_DISPLAY_NAMES = new Set([
   'boîte d\'envoi', 'problèmes de synchronisation', 'conflits',
   'défaillances du serveur', 'défaillances locales', 'flux rss',
   'historique des conversations', 'courrier indésirable',
+  'éléments supprimés', 'corbeille',
   // EN
   'outbox', 'sync issues', 'conflicts', 'server failures',
   'local failures', 'rss feeds', 'conversation history', 'clutter',
+  'deleted items', 'trash',
 ])
 
 // Fallback : reconnaître un dossier well-known par son displayName si la résolution
@@ -115,12 +119,11 @@ const WELL_KNOWN_DISPLAY_NAMES: Record<string, string> = {
   'éléments envoyés': 'sentitems', 'sent items': 'sentitems', 'sent': 'sentitems',
   // drafts
   'brouillons': 'drafts', 'drafts': 'drafts', 'draft': 'drafts',
-  // deleteditems
-  'éléments supprimés': 'deleteditems', 'deleted items': 'deleteditems', 'corbeille': 'deleteditems', 'trash': 'deleteditems',
   // junkemail
   'courrier indésirable': 'junkemail', 'spam': 'junkemail', 'junk email': 'junkemail', 'junk': 'junkemail',
   // archive
   'archive': 'archive', 'archives': 'archive',
+  // deleteditems retiré : reconnaissable seulement comme SKIP via SKIP_DISPLAY_NAMES.
 }
 
 // Helper : fetch Graph avec retry sur 429/503/504 (throttling transitoire)
@@ -742,6 +745,23 @@ function bufferToBase64Url(buf: Buffer): string {
 // Gmail limite le JSON body à ~5 Mo ; le base64 gonfle de ~33% → seuil à 3.5 Mo bruts
 const RESUMABLE_THRESHOLD = 3.5 * 1024 * 1024
 
+// Extrait l'ID de label invalide d'un message d'erreur Gmail ("Invalid label: Label_96").
+// Renvoie null si pas un cas d'invalid label.
+function extractInvalidLabelId(errText: string): string | null {
+  const m = errText.match(/Invalid label:\s*([A-Za-z0-9_\-]+)/)
+  return m ? (m[1] ?? null) : null
+}
+
+// Retire un labelId de la liste mutable. Si elle devient vide → ['INBOX'] fallback.
+// Renvoie true si quelque chose a été retiré (donc retry pertinent).
+function stripLabelInPlace(labelIds: string[], badId: string): boolean {
+  const idx = labelIds.indexOf(badId)
+  if (idx < 0) return false
+  labelIds.splice(idx, 1)
+  if (labelIds.length === 0) labelIds.push('INBOX')
+  return true
+}
+
 export async function gmailImportMime(params: {
   userEmail: string
   rawMime: Buffer
@@ -761,7 +781,27 @@ export async function gmailImportMime(params: {
   // Retry sur 502/503/429 Gmail (erreurs transitoires)
   const GMAIL_RETRYABLE = new Set([429, 502, 503])
   const MAX_GMAIL_ATTEMPTS = 3
+  // Compteur séparé pour les retries "label invalide" : on retire le label
+  // fautif et on relance, sans dépenser nos attempts pour les erreurs transitoires.
+  // Plafonné pour éviter une boucle infinie si Gmail rejette tous les labels.
+  const MAX_LABEL_STRIPS = 10
+  let labelStrips = 0
   let lastError = ''
+
+  // Helper local : tente d'extraire un label invalide et de le retirer.
+  // Retourne true si on doit relancer la boucle (label retiré).
+  const handleInvalidLabel = (errText: string, source: 'insert' | 'import' | 'resumable'): boolean => {
+    if (labelStrips >= MAX_LABEL_STRIPS) return false
+    const badId = extractInvalidLabelId(errText)
+    if (!badId) return false
+    if (!stripLabelInPlace(labelIds, badId)) {
+      // Le label n'était pas dans notre liste — pas la peine de boucler.
+      return false
+    }
+    labelStrips++
+    console.warn(`[mail] ${source} a rejeté le label "${badId}", retiré → retry avec ${labelIds.length} labels`)
+    return true
+  }
 
   for (let attempt = 1; attempt <= MAX_GMAIL_ATTEMPTS; attempt++) {
     const token = await getGoogleAccessTokenForUser(params.userEmail, GMAIL_SCOPE)
@@ -773,6 +813,11 @@ export async function gmailImportMime(params: {
         return result
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
+        // Label invalide → strip + retry sans dépenser d'attempt
+        if (handleInvalidLabel(errMsg, 'resumable')) {
+          attempt--
+          continue
+        }
         // Retry on transient errors
         if (attempt < MAX_GMAIL_ATTEMPTS && /\b(429|502|503)\b/.test(errMsg)) {
           const waitMs = 2000 * attempt
@@ -801,6 +846,15 @@ export async function gmailImportMime(params: {
     if (insertRes.ok) return (await insertRes.json()) as { id: string }
 
     const insertErr = await insertRes.text()
+
+    // Label invalide (400 avec "Invalid label: Label_XX") → strip + retry
+    // C'est le cas le plus fréquent des erreurs 252 vues sur Emilia : un label custom
+    // existait au début du run mais a été modifié/supprimé entre temps. On enlève
+    // ce label et on relance l'import — au pire le message arrive avec INBOX seul.
+    if (insertRes.status === 400 && handleInvalidLabel(insertErr, 'insert')) {
+      attempt--
+      continue
+    }
 
     // Retry sur erreurs transitoires Gmail (502, 503, 429)
     if (GMAIL_RETRYABLE.has(insertRes.status) && attempt < MAX_GMAIL_ATTEMPTS) {
@@ -851,6 +905,11 @@ export async function gmailImportMime(params: {
         return result
       }
       const importErr = await importRes.text()
+      // Label invalide aussi sur import ? Strip + retry tout depuis le début
+      if (importRes.status === 400 && handleInvalidLabel(importErr, 'import')) {
+        attempt--
+        continue
+      }
       throw new Error(`Gmail import error (${importRes.status}): ${importErr}`)
     }
 

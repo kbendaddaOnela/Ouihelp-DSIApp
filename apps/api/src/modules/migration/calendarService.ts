@@ -7,6 +7,13 @@ import { getOnelaToken } from './service'
 
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar'
 
+// Tous les utilisateurs ONELA sont en Europe/Paris (confirmé juin 2026).
+// On demande à Graph de renvoyer les datetime dans CETTE timezone via le header
+// `Prefer: outlook.timezone`, sinon il sert tout en UTC et un événement récurrent
+// "tous les jeudis 11h Paris" devient "11h UTC" → décalage 1h selon DST.
+const TARGET_TIMEZONE = 'Europe/Paris'
+const GRAPH_TIMEZONE_PREFER = `outlook.timezone="${TARGET_TIMEZONE}"`
+
 // ── Types Graph ──────────────────────────────────────────────────────────────
 
 interface GraphDateTime {
@@ -84,7 +91,13 @@ export async function* iterateOnelaEvents(
   while (url) {
     const token = await getOnelaToken()
     const res: Response = await fetchWithTimeout(url, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        // Force Graph à renvoyer les datetime en Europe/Paris (au lieu d'UTC par défaut).
+        // Critique pour les seriesMaster récurrents : sans ça, "tous les jeudis 11h"
+        // est stocké en UTC fixe et le DST fait dériver d'1h les occurrences d'hiver.
+        Prefer: GRAPH_TIMEZONE_PREFER,
+      },
     })
     if (!res.ok) throw new Error(`Graph events error (${res.status}): ${await res.text()}`)
     const data = (await res.json()) as { value: GraphEvent[]; '@odata.nextLink'?: string }
@@ -173,18 +186,20 @@ interface GoogleCalendarEvent {
   end: { dateTime?: string; date?: string; timeZone?: string }
   recurrence?: string[]
   attendees?: Array<{ email: string; displayName?: string; optional?: boolean; responseStatus?: string }>
+  organizer?: { email: string; displayName?: string }
   iCalUID?: string
   status?: 'confirmed' | 'tentative' | 'cancelled'
   reminders?: { useDefault: boolean }
 }
 
-function buildGoogleEvent(g: GraphEvent): GoogleCalendarEvent | null {
+function buildGoogleEvent(g: GraphEvent, targetUserEmail: string): GoogleCalendarEvent | null {
   if (!g.start || !g.end) return null
 
-  // Graph retourne les dates dans la timezone originale de l'événement (sans le header Prefer)
-  // On la passe telle quelle à Google Calendar pour éviter les décalages horaires
-  const startTz = g.start.timeZone || 'Europe/Paris'
-  const endTz = g.end.timeZone || 'Europe/Paris'
+  // Avec le header Prefer côté Graph, les datetime arrivent en Europe/Paris
+  // (format "YYYY-MM-DDTHH:mm:ss.sssssss" sans suffixe Z). On passe la chaîne telle
+  // quelle à Google + le champ timeZone — Google gère ensuite le DST par occurrence
+  // pour les seriesMaster récurrents. On nettoie quand même tout suffixe Z pour
+  // robustesse au cas où Graph en mettrait un sur certains events.
 
   const ev: GoogleCalendarEvent = {
     summary: g.subject ?? '(sans titre)',
@@ -192,10 +207,10 @@ function buildGoogleEvent(g: GraphEvent): GoogleCalendarEvent | null {
     location: g.location?.displayName ?? undefined,
     start: g.isAllDay
       ? { date: g.start.dateTime.slice(0, 10) }
-      : { dateTime: g.start.dateTime.replace(/Z$/, ''), timeZone: startTz },
+      : { dateTime: g.start.dateTime.replace(/Z$/, ''), timeZone: TARGET_TIMEZONE },
     end: g.isAllDay
       ? { date: g.end.dateTime.slice(0, 10) }
-      : { dateTime: g.end.dateTime.replace(/Z$/, ''), timeZone: endTz },
+      : { dateTime: g.end.dateTime.replace(/Z$/, ''), timeZone: TARGET_TIMEZONE },
     iCalUID: g.iCalUId,
     status: g.isCancelled ? 'cancelled' : 'confirmed',
     reminders: { useDefault: true },
@@ -222,6 +237,20 @@ function buildGoogleEvent(g: GraphEvent): GoogleCalendarEvent | null {
       }))
   }
 
+  // CRITIQUE : poser explicitement l'organisateur d'origine. Sinon Google met le
+  // mailbox impersoné comme organizer par défaut → l'utilisateur croit être
+  // l'organisateur de réunions auxquelles il était juste invité, et ses
+  // modifs/suppressions se propagent à tous les participants.
+  if (g.organizer?.emailAddress?.address) {
+    ev.organizer = {
+      email: g.organizer.emailAddress.address,
+      ...(g.organizer.emailAddress.name ? { displayName: g.organizer.emailAddress.name } : {}),
+    }
+  } else {
+    // Pas d'organizer Graph → fallback sur le user lui-même (cas rare, calendar perso)
+    ev.organizer = { email: targetUserEmail }
+  }
+
   return ev
 }
 
@@ -231,7 +260,7 @@ export async function googleCalendarImportEvent(
   userEmail: string,
   graphEvent: GraphEvent
 ): Promise<{ id: string } | null> {
-  const evt = buildGoogleEvent(graphEvent)
+  const evt = buildGoogleEvent(graphEvent, userEmail)
   if (!evt) return null
 
   // import = on dépose l'événement sans envoyer d'invitations
