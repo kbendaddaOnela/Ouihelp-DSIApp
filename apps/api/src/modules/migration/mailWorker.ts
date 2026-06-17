@@ -427,10 +427,18 @@ async function processUserMail(job: Migration) {
         return
       }
 
-      // Throttle adaptatif : ralentir si Graph throttle, accélérer sinon
-      const had429 = results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('429'))
-      batchDelay = adaptiveThrottle(had429, batchDelay)
-      if (batchDelay > 0) await new Promise((r) => setTimeout(r, batchDelay))
+      // Throttle adaptatif : ralentir si Graph throttle, accélérer sinon.
+      // CRUCIAL : on ne dort QUE si on a réellement téléchargé des MIME ($value).
+      // Sur une reprise, l'immense majorité des batches ne contiennent que des
+      // messages déjà migrés (skipSet) → toProcess vide → aucun appel Gmail/$value.
+      // Dormir 500ms sur chacun ferait durer >1h le simple re-parcours d'une boîte
+      // déjà migrée (et donnait l'impression que ça "tourne sans fin"). Sans appel
+      // coûteux, on enchaîne les pages de métadonnées Graph sans tempo.
+      if (toProcess.length > 0) {
+        const had429 = results.some((r) => r.status === 'rejected' && r.reason?.message?.includes('429'))
+        batchDelay = adaptiveThrottle(had429, batchDelay)
+        if (batchDelay > 0) await new Promise((r) => setTimeout(r, batchDelay))
+      }
 
       batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
     }
