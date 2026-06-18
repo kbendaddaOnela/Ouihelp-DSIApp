@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle, Tags, Copy, BookUser } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle, Tags, Copy, BookUser, RotateCw } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { migrationApi } from '../api'
 import { cn } from '@/lib/utils'
@@ -74,6 +75,30 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   const [dedupeMessage, setDedupeMessage] = useState<string | null>(null)
   const [onelaContactsMsg, setOnelaContactsMsg] = useState<string | null>(null)
   const [isPushingOnela, setIsPushingOnela] = useState(false)
+  const [isResumingFull, setIsResumingFull] = useState(false)
+  const queryClient = useQueryClient()
+
+  const handleResumeFull = async () => {
+    if (!window.confirm(
+      `Relancer une migration mail COMPLÈTE pour ${m.onelaDisplayName} ?\n\n` +
+      `Utile si la migration a été marquée "terminée" à tort. Ça relance un ` +
+      `re-parcours complet de la boîte : les mails déjà migrés sont sautés ` +
+      `(rapide), et seuls les manquants sont traités. Aucun doublon.`
+    )) return
+    setIsResumingFull(true)
+    try {
+      await migrationApi.resumeFullMail(m.id)
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+      for (const ms of [3000, 8000, 15000]) {
+        setTimeout(() => queryClient.invalidateQueries({ queryKey: ['migration-history'] }), ms)
+      }
+    } catch (err: unknown) {
+      const apiErr = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      window.alert(`Reprise complète échouée : ${apiErr || (err instanceof Error ? err.message : String(err))}`)
+    } finally {
+      setIsResumingFull(false)
+    }
+  }
 
   const handlePushOnelaContacts = async () => {
     if (!window.confirm(
@@ -224,6 +249,15 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
             >
               <Copy className={cn('h-3 w-3', isDeduping && 'animate-spin')} />
               {isDeduping ? 'Lancement...' : 'Dédupliquer'}
+            </button>
+            <button
+              onClick={handleResumeFull}
+              disabled={isResumingFull}
+              title="Relance un re-parcours complet (corrige une migration marquée 'terminée' à tort). Skippe les déjà migrés."
+              className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+            >
+              <RotateCw className={cn('h-3 w-3', isResumingFull && 'animate-spin')} />
+              {isResumingFull ? 'Lancement...' : 'Reprise complète'}
             </button>
           </div>
           {relabelMessage && (
