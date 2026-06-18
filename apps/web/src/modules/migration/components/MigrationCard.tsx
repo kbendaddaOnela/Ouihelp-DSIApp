@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle, Tags, Copy } from 'lucide-react'
+import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle, Tags, Copy, BookUser } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
@@ -144,6 +144,274 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
 
   const summary = statusSummary()
 
+  // ── Contenu réutilisable des étapes (déclaré une fois, placé dans l'ordre 1→8) ──
+
+  const mailStepContent = (
+    <>
+      <DataMigrationSection
+        migrationId={m.id} phase="mail" label="mail" icon={Mail}
+        status={m.stepMailMigration} total={m.mailTotal}
+        migrated={m.mailMigrated} failed={m.mailFailed}
+        errorMessage={m.mailError} itemUnit="message"
+        onStart={() => migrateMail(m.id)} isStarting={isStartingMail}
+        startedAt={m.mailStartedAt} finishedAt={m.mailFinishedAt}
+        lastSyncAt={m.mailLastSyncAt} color="purple"
+      />
+      {/* Boutons d'entretien : visibles si des mails ont été migrés et la phase n'est pas en cours */}
+      {m.mailMigrated > 0 && !['pending', 'running'].includes(m.stepMailMigration) && (
+        <div className="mt-2 space-y-1">
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => {
+                setRelabelMessage(null)
+                relabelMail(m.id, {
+                  onSuccess: () => setRelabelMessage('Re-labellisation lancée en arrière-plan'),
+                  onError: (err: unknown) => {
+                    const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+                      ?? (err instanceof Error ? err.message : 'Erreur')
+                    setRelabelMessage(msg)
+                  },
+                })
+              }}
+              disabled={isRelabeling}
+              className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-60"
+            >
+              <Tags className={cn('h-3 w-3', isRelabeling && 'animate-spin')} />
+              {isRelabeling ? 'Lancement...' : 'Re-labelliser'}
+            </button>
+            <button
+              onClick={() => {
+                if (!window.confirm(
+                  `Dédupliquer la boîte Gmail ?\n\n` +
+                  `Cela va scanner tous les messages et envoyer les doublons (même Message-ID) à la Corbeille Gmail.\n` +
+                  `Les messages supprimés sont récupérables pendant 30 jours.\n\n` +
+                  `L'opération peut durer plusieurs minutes selon la taille de la mailbox.`
+                )) return
+                setDedupeMessage(null)
+                dedupeMail(m.id, {
+                  onSuccess: () => setDedupeMessage('Déduplication lancée en arrière-plan'),
+                  onError: (err: unknown) => {
+                    const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+                      ?? (err instanceof Error ? err.message : 'Erreur')
+                    setDedupeMessage(msg)
+                  },
+                })
+              }}
+              disabled={isDeduping}
+              className="flex items-center gap-1.5 rounded-lg border border-orange-200 bg-orange-50 px-2 py-1.5 text-xs font-medium text-orange-700 hover:bg-orange-100 disabled:opacity-60"
+            >
+              <Copy className={cn('h-3 w-3', isDeduping && 'animate-spin')} />
+              {isDeduping ? 'Lancement...' : 'Dédupliquer'}
+            </button>
+          </div>
+          {relabelMessage && (
+            <p className={cn('rounded px-2 py-1 text-xs',
+              relabelMessage.includes('lancée') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+            )}>{relabelMessage}</p>
+          )}
+          {dedupeMessage && (
+            <p className={cn('rounded px-2 py-1 text-xs',
+              dedupeMessage.includes('lancée') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+            )}>{dedupeMessage}</p>
+          )}
+        </div>
+      )}
+    </>
+  )
+
+  const aliasStepContent = canAddAlias ? (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <input type="text" value={aliasInput}
+          onChange={(e) => setAliasInput(e.target.value)}
+          placeholder="alias@domaine.com"
+          className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2 py-1.5 text-xs font-mono focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+        <button onClick={handleAddAlias}
+          disabled={isAddingAlias || !aliasInput.trim()}
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60">
+          <RefreshCw className={cn('h-3 w-3', isAddingAlias && 'animate-spin')} />
+          {isAddingAlias ? '...' : 'Ajouter'}
+        </button>
+      </div>
+      {aliasMessage && (
+        <p className={cn('rounded px-2 py-1 text-xs',
+          aliasMessage.includes('pas encore') ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'
+        )}>{aliasMessage}</p>
+      )}
+    </div>
+  ) : m.stepGoogleAlias === 'success' ? (
+    <p className="text-xs text-green-700">Alias <span className="font-mono">{m.onelaUpn}</span> ajouté</p>
+  ) : m.stepGoogleAlias === 'skipped' ? (
+    <p className="text-xs text-gray-400">Ignoré</p>
+  ) : null
+
+  const newFormatStepContent = !newFormatAlias ? (
+    <p className="text-xs text-gray-400">En attente du compte Google…</p>
+  ) : m.stepNewFormat === 'success' ? (
+    <div className="space-y-1.5">
+      <p className="text-xs text-green-700">
+        <span className="font-mono">{newFormatAlias}</span> activé (alias + send-as + défaut)
+      </p>
+      <button
+        onClick={handleActivateNewFormat}
+        disabled={isActivatingNewFormat}
+        className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+        title="Re-jouer (idempotent)"
+      >
+        <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
+        {isActivatingNewFormat ? 'Activation…' : 'Re-jouer'}
+      </button>
+    </div>
+  ) : m.stepNewFormat === 'error' ? (
+    <div className="space-y-1.5">
+      {m.newFormatError && (
+        <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.newFormatError}</p>
+      )}
+      <button
+        onClick={handleActivateNewFormat}
+        disabled={isActivatingNewFormat}
+        className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
+      >
+        <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
+        {isActivatingNewFormat ? 'Activation…' : 'Réessayer'}
+      </button>
+    </div>
+  ) : (
+    <button
+      onClick={handleActivateNewFormat}
+      disabled={isActivatingNewFormat || m.stepGoogleAlias !== 'success'}
+      className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
+      title={m.stepGoogleAlias !== 'success'
+        ? 'Ajoute d\'abord l\'alias legacy (étape 2)'
+        : `Ajoute l'alias ${newFormatAlias} + "Envoyer en tant que" + défaut`}
+    >
+      <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
+      {isActivatingNewFormat ? 'Activation…' : `Activer ${newFormatAlias}`}
+    </button>
+  )
+
+  const ouStepContent = canMoveOu ? (
+    <div>
+      <button onClick={handleMoveOu} disabled={isMovingOu}
+        className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-60">
+        <FolderInput className={cn('h-3.5 w-3.5', isMovingOu && 'animate-pulse')} />
+        {isMovingOu ? 'En cours...' : 'Déplacer'}
+      </button>
+      {ouMessage && <p className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{ouMessage}</p>}
+    </div>
+  ) : m.stepOuMove === 'success' ? (
+    <p className="text-xs text-green-700">Déplacé</p>
+  ) : m.stepOuMove === 'skipped' ? (
+    <p className="text-xs text-gray-400">Ignoré</p>
+  ) : m.stepOuMove === 'error' && m.ouMoveError ? (
+    <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.ouMoveError}</p>
+  ) : null
+
+  const forwardingStepContent = accountReady && m.onelaUserId ? (
+    <div className="space-y-2">
+      {isCheckingFwd && !fwdStatus ? (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Vérification...
+        </div>
+      ) : fwdStatus?.active ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 rounded bg-green-50 px-2.5 py-1.5 text-xs text-green-700">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            <span>Redirection active vers <strong>{fwdStatus.forwardTo}</strong></span>
+          </div>
+          <button
+            onClick={() => {
+              setFwdMessage(null)
+              removeForwarding(m.id, {
+                onError: (err: unknown) => {
+                  const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+                    ?? (err instanceof Error ? err.message : 'Erreur inconnue')
+                  setFwdMessage(msg)
+                },
+              })
+            }}
+            disabled={isRemovingFwd}
+            className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
+          >
+            <XCircle className={cn('h-3.5 w-3.5', isRemovingFwd && 'animate-spin')} />
+            {isRemovingFwd ? 'Désactivation...' : 'Désactiver la redirection'}
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-gray-500">
+            Active une règle de transfert sur la boîte Exchange ONELA vers <strong>{m.gohUpn}</strong>
+          </p>
+          <button
+            onClick={() => {
+              setFwdMessage(null)
+              setForwarding(m.id, {
+                onError: (err: unknown) => {
+                  const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+                    ?? (err instanceof Error ? err.message : 'Erreur inconnue')
+                  setFwdMessage(msg)
+                },
+              })
+            }}
+            disabled={isSettingFwd}
+            className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+          >
+            <Send className={cn('h-3.5 w-3.5', isSettingFwd && 'animate-spin')} />
+            {isSettingFwd ? 'Activation...' : 'Activer la redirection'}
+          </button>
+        </div>
+      )}
+      {fwdMessage && (
+        <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{fwdMessage}</p>
+      )}
+    </div>
+  ) : (
+    <p className="text-xs text-gray-400">Disponible après création du compte.</p>
+  )
+
+  const calendarStepContent = (
+    <DataMigrationSection
+      migrationId={m.id} phase="calendar" label="calendrier" icon={Calendar}
+      status={m.stepCalendarMigration} total={m.calTotal}
+      migrated={m.calMigrated} failed={m.calFailed}
+      errorMessage={m.calError} itemUnit="événement"
+      onStart={() => migrateCalendar(m.id)} isStarting={isStartingCalendar}
+      startedAt={m.calStartedAt} finishedAt={m.calFinishedAt}
+      lastSyncAt={m.calLastSyncAt} color="blue"
+    />
+  )
+
+  const contactsStepContent = (
+    <DataMigrationSection
+      migrationId={m.id} phase="contacts" label="contacts" icon={Users}
+      status={m.stepContactsMigration} total={m.contactsTotal}
+      migrated={m.contactsMigrated} failed={m.contactsFailed}
+      errorMessage={m.contactsError} itemUnit="contact"
+      onStart={() => migrateContacts(m.id)} isStarting={isStartingContacts}
+      startedAt={m.contactsStartedAt} finishedAt={m.contactsFinishedAt}
+      lastSyncAt={m.contactsLastSyncAt} color="emerald"
+    />
+  )
+
+  // ÉTAPE 8 — Intégration de l'annuaire ONELA partagé dans les contacts Google du user.
+  // Backend à venir : import d'un CSV ONELA stocké côté app, puis push via People API.
+  const onelaContactsStepContent = (
+    <div className="space-y-2">
+      <p className="text-xs text-gray-500">
+        Pousse l'annuaire ONELA partagé (collègues pas encore migrés + listes de diffusion)
+        dans les contacts Google de cet utilisateur, pour qu'il les retrouve facilement.
+      </p>
+      <button
+        disabled
+        title="Base de contacts ONELA en cours de préparation (import CSV à venir)"
+        className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs font-medium text-gray-400 cursor-not-allowed"
+      >
+        <BookUser className="h-3.5 w-3.5" />
+        Intégrer les contacts ONELA (bientôt)
+      </button>
+    </div>
+  )
+
   return (
     <div className={cn('rounded-xl border bg-white', hasError ? 'border-red-200' : 'border-gray-200')}>
       {/* En-tête compact (toujours visible) */}
@@ -233,298 +501,83 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
             </div>
           )}
 
-          {/* ── Étapes numérotées ──────────────────────────────── */}
+          {/* ── Étapes numérotées (ordre opératoire 1 → 8) ──────────────────── */}
           {accountReady && (
             <div className="space-y-3">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Étapes de migration</h4>
 
-              {/* Ligne 1 : Data migrations (3 colonnes) */}
+              {/* Ligne 1 : 1 Mail · 2 Alias Google · 3 Nouveau format */}
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <StepBlock
                   number={1}
-                  label="Mails"
+                  label="Migration mail"
                   completed={m.stepMailMigration === 'success' && m.mailTotal > 0 && m.mailMigrated >= m.mailTotal}
                 >
-                  <DataMigrationSection
-                    migrationId={m.id} phase="mail" label="mail" icon={Mail}
-                    status={m.stepMailMigration} total={m.mailTotal}
-                    migrated={m.mailMigrated} failed={m.mailFailed}
-                    errorMessage={m.mailError} itemUnit="message"
-                    onStart={() => migrateMail(m.id)} isStarting={isStartingMail}
-                    startedAt={m.mailStartedAt} finishedAt={m.mailFinishedAt}
-                    lastSyncAt={m.mailLastSyncAt} color="purple"
-                  />
-                  {/* Boutons d'entretien : visibles si des mails ont été migrés et la phase n'est pas en cours */}
-                  {m.mailMigrated > 0 && !['pending', 'running'].includes(m.stepMailMigration) && (
-                    <div className="mt-2 space-y-1">
-                      <div className="flex flex-wrap gap-1.5">
-                        <button
-                          onClick={() => {
-                            setRelabelMessage(null)
-                            relabelMail(m.id, {
-                              onSuccess: () => setRelabelMessage('Re-labellisation lancée en arrière-plan'),
-                              onError: (err: unknown) => {
-                                const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-                                  ?? (err instanceof Error ? err.message : 'Erreur')
-                                setRelabelMessage(msg)
-                              },
-                            })
-                          }}
-                          disabled={isRelabeling}
-                          className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-60"
-                        >
-                          <Tags className={cn('h-3 w-3', isRelabeling && 'animate-spin')} />
-                          {isRelabeling ? 'Lancement...' : 'Re-labelliser'}
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (!window.confirm(
-                              `Dédupliquer la boîte Gmail ?\n\n` +
-                              `Cela va scanner tous les messages et envoyer les doublons (même Message-ID) à la Corbeille Gmail.\n` +
-                              `Les messages supprimés sont récupérables pendant 30 jours.\n\n` +
-                              `L'opération peut durer plusieurs minutes selon la taille de la mailbox.`
-                            )) return
-                            setDedupeMessage(null)
-                            dedupeMail(m.id, {
-                              onSuccess: () => setDedupeMessage('Déduplication lancée en arrière-plan'),
-                              onError: (err: unknown) => {
-                                const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-                                  ?? (err instanceof Error ? err.message : 'Erreur')
-                                setDedupeMessage(msg)
-                              },
-                            })
-                          }}
-                          disabled={isDeduping}
-                          className="flex items-center gap-1.5 rounded-lg border border-orange-200 bg-orange-50 px-2 py-1.5 text-xs font-medium text-orange-700 hover:bg-orange-100 disabled:opacity-60"
-                        >
-                          <Copy className={cn('h-3 w-3', isDeduping && 'animate-spin')} />
-                          {isDeduping ? 'Lancement...' : 'Dédupliquer'}
-                        </button>
-                      </div>
-                      {relabelMessage && (
-                        <p className={cn('rounded px-2 py-1 text-xs',
-                          relabelMessage.includes('lancée') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
-                        )}>{relabelMessage}</p>
-                      )}
-                      {dedupeMessage && (
-                        <p className={cn('rounded px-2 py-1 text-xs',
-                          dedupeMessage.includes('lancée') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
-                        )}>{dedupeMessage}</p>
-                      )}
-                    </div>
-                  )}
+                  {mailStepContent}
                 </StepBlock>
 
                 <StepBlock
                   number={2}
-                  label="Calendrier"
-                  completed={m.stepCalendarMigration === 'success' && m.calTotal > 0 && m.calMigrated >= m.calTotal}
+                  label="Alias Google"
+                  completed={m.stepGoogleAlias === 'success'}
                 >
-                  <DataMigrationSection
-                    migrationId={m.id} phase="calendar" label="calendrier" icon={Calendar}
-                    status={m.stepCalendarMigration} total={m.calTotal}
-                    migrated={m.calMigrated} failed={m.calFailed}
-                    errorMessage={m.calError} itemUnit="événement"
-                    onStart={() => migrateCalendar(m.id)} isStarting={isStartingCalendar}
-                    startedAt={m.calStartedAt} finishedAt={m.calFinishedAt}
-                    lastSyncAt={m.calLastSyncAt} color="blue"
-                  />
+                  {aliasStepContent}
                 </StepBlock>
 
                 <StepBlock
                   number={3}
-                  label="Contacts"
-                  completed={m.stepContactsMigration === 'success' && m.contactsTotal > 0 && m.contactsMigrated >= m.contactsTotal}
+                  label="Nouveau format prenom.nom@onela.com"
+                  completed={m.stepNewFormat === 'success'}
                 >
-                  <DataMigrationSection
-                    migrationId={m.id} phase="contacts" label="contacts" icon={Users}
-                    status={m.stepContactsMigration} total={m.contactsTotal}
-                    migrated={m.contactsMigrated} failed={m.contactsFailed}
-                    errorMessage={m.contactsError} itemUnit="contact"
-                    onStart={() => migrateContacts(m.id)} isStarting={isStartingContacts}
-                    startedAt={m.contactsStartedAt} finishedAt={m.contactsFinishedAt}
-                    lastSyncAt={m.contactsLastSyncAt} color="emerald"
-                  />
+                  {newFormatStepContent}
                 </StepBlock>
               </div>
 
-              {/* Ligne 2 : Alias + Nouveau format + OU (3 colonnes) */}
+              {/* Ligne 2 : 4 OU onela.com · 5 Redirection Exchange · 6 Calendrier */}
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <StepBlock
                   number={4}
-                  label="Alias Google"
-                  completed={m.stepGoogleAlias === 'success'}
+                  label="OU onela.com"
+                  completed={m.stepOuMove === 'success'}
                 >
-                  {canAddAlias ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-1.5">
-                        <input type="text" value={aliasInput}
-                          onChange={(e) => setAliasInput(e.target.value)}
-                          placeholder="alias@domaine.com"
-                          className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2 py-1.5 text-xs font-mono focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                        <button onClick={handleAddAlias}
-                          disabled={isAddingAlias || !aliasInput.trim()}
-                          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60">
-                          <RefreshCw className={cn('h-3 w-3', isAddingAlias && 'animate-spin')} />
-                          {isAddingAlias ? '...' : 'Ajouter'}
-                        </button>
-                      </div>
-                      {aliasMessage && (
-                        <p className={cn('rounded px-2 py-1 text-xs',
-                          aliasMessage.includes('pas encore') ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'
-                        )}>{aliasMessage}</p>
-                      )}
-                    </div>
-                  ) : m.stepGoogleAlias === 'success' ? (
-                    <p className="text-xs text-green-700">Alias <span className="font-mono">{m.onelaUpn}</span> ajouté</p>
-                  ) : m.stepGoogleAlias === 'skipped' ? (
-                    <p className="text-xs text-gray-400">Ignoré</p>
-                  ) : null}
+                  {ouStepContent}
                 </StepBlock>
 
                 <StepBlock
                   number={5}
-                  label="Nouveau format prenom.nom@onela.com"
-                  completed={m.stepNewFormat === 'success'}
+                  label="Redirection Exchange"
+                  completed={!!fwdStatus?.active}
                 >
-                  {!newFormatAlias ? (
-                    <p className="text-xs text-gray-400">En attente du compte Google…</p>
-                  ) : m.stepNewFormat === 'success' ? (
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-green-700">
-                        <span className="font-mono">{newFormatAlias}</span> activé (alias + send-as + défaut)
-                      </p>
-                      <button
-                        onClick={handleActivateNewFormat}
-                        disabled={isActivatingNewFormat}
-                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-                        title="Re-jouer (idempotent)"
-                      >
-                        <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
-                        {isActivatingNewFormat ? 'Activation…' : 'Re-jouer'}
-                      </button>
-                    </div>
-                  ) : m.stepNewFormat === 'error' ? (
-                    <div className="space-y-1.5">
-                      {m.newFormatError && (
-                        <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.newFormatError}</p>
-                      )}
-                      <button
-                        onClick={handleActivateNewFormat}
-                        disabled={isActivatingNewFormat}
-                        className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
-                      >
-                        <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
-                        {isActivatingNewFormat ? 'Activation…' : 'Réessayer'}
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={handleActivateNewFormat}
-                      disabled={isActivatingNewFormat || m.stepGoogleAlias !== 'success'}
-                      className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-700 hover:bg-teal-100 disabled:opacity-60"
-                      title={m.stepGoogleAlias !== 'success'
-                        ? 'Ajoute d\'abord l\'alias legacy (étape 4)'
-                        : `Ajoute l'alias ${newFormatAlias} + "Envoyer en tant que" + défaut`}
-                    >
-                      <RefreshCw className={cn('h-3 w-3', isActivatingNewFormat && 'animate-spin')} />
-                      {isActivatingNewFormat ? 'Activation…' : `Activer ${newFormatAlias}`}
-                    </button>
-                  )}
+                  {forwardingStepContent}
                 </StepBlock>
 
                 <StepBlock
                   number={6}
-                  label="OU onela.com"
-                  completed={m.stepOuMove === 'success'}
+                  label="Migration calendrier"
+                  completed={m.stepCalendarMigration === 'success' && m.calTotal > 0 && m.calMigrated >= m.calTotal}
                 >
-                  {canMoveOu ? (
-                    <div>
-                      <button onClick={handleMoveOu} disabled={isMovingOu}
-                        className="flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-60">
-                        <FolderInput className={cn('h-3.5 w-3.5', isMovingOu && 'animate-pulse')} />
-                        {isMovingOu ? 'En cours...' : 'Déplacer'}
-                      </button>
-                      {ouMessage && <p className="mt-1 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{ouMessage}</p>}
-                    </div>
-                  ) : m.stepOuMove === 'success' ? (
-                    <p className="text-xs text-green-700">Déplacé</p>
-                  ) : m.stepOuMove === 'skipped' ? (
-                    <p className="text-xs text-gray-400">Ignoré</p>
-                  ) : m.stepOuMove === 'error' && m.ouMoveError ? (
-                    <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.ouMoveError}</p>
-                  ) : null}
+                  {calendarStepContent}
                 </StepBlock>
               </div>
 
-              {/* Ligne 3 : Redirection Exchange (pleine largeur) */}
-              <StepBlock
-                number={7}
-                label="Redirection Exchange"
-                completed={!!fwdStatus?.active}
-              >
-                {accountReady && m.onelaUserId ? (
-                  <div className="space-y-2">
-                    {isCheckingFwd && !fwdStatus ? (
-                      <div className="flex items-center gap-2 text-xs text-gray-500">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Vérification...
-                      </div>
-                    ) : fwdStatus?.active ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2 rounded bg-green-50 px-2.5 py-1.5 text-xs text-green-700">
-                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                          <span>Redirection active vers <strong>{fwdStatus.forwardTo}</strong></span>
-                        </div>
-                        <button
-                          onClick={() => {
-                            setFwdMessage(null)
-                            removeForwarding(m.id, {
-                              onError: (err: unknown) => {
-                                const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-                                  ?? (err instanceof Error ? err.message : 'Erreur inconnue')
-                                setFwdMessage(msg)
-                              },
-                            })
-                          }}
-                          disabled={isRemovingFwd}
-                          className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
-                        >
-                          <XCircle className={cn('h-3.5 w-3.5', isRemovingFwd && 'animate-spin')} />
-                          {isRemovingFwd ? 'Désactivation...' : 'Désactiver la redirection'}
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <p className="text-xs text-gray-500">
-                          Active une règle de transfert sur la boîte Exchange ONELA vers <strong>{m.gohUpn}</strong>
-                        </p>
-                        <button
-                          onClick={() => {
-                            setFwdMessage(null)
-                            setForwarding(m.id, {
-                              onError: (err: unknown) => {
-                                const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-                                  ?? (err instanceof Error ? err.message : 'Erreur inconnue')
-                                setFwdMessage(msg)
-                              },
-                            })
-                          }}
-                          disabled={isSettingFwd}
-                          className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
-                        >
-                          <Send className={cn('h-3.5 w-3.5', isSettingFwd && 'animate-spin')} />
-                          {isSettingFwd ? 'Activation...' : 'Activer la redirection'}
-                        </button>
-                      </div>
-                    )}
-                    {fwdMessage && (
-                      <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{fwdMessage}</p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="text-xs text-gray-400">Disponible après création du compte.</p>
-                )}
-              </StepBlock>
+              {/* Ligne 3 : 7 Contacts · 8 Intégration contacts ONELA */}
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                <StepBlock
+                  number={7}
+                  label="Migration contacts"
+                  completed={m.stepContactsMigration === 'success' && m.contactsTotal > 0 && m.contactsMigrated >= m.contactsTotal}
+                >
+                  {contactsStepContent}
+                </StepBlock>
+
+                <StepBlock
+                  number={8}
+                  label="Intégration contacts ONELA"
+                  completed={false}
+                >
+                  {onelaContactsStepContent}
+                </StepBlock>
+              </div>
             </div>
           )}
         </div>
