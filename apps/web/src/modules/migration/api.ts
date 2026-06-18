@@ -83,6 +83,9 @@ export const migrationApi = {
   retryMailErrors: (id: string) =>
     apiClient.post<{ message: string; count: number }>(`/migration/${id}/retry-errors/mail`).then((r) => r.data),
 
+  resumeFullMail: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/resume-full`).then((r) => r.data),
+
   moveOu: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/move-ou`).then((r) => r.data),
 
