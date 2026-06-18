@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle, Tags, Copy, BookUser } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
+import { migrationApi } from '../api'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
 import { CopyButton } from './CopyButton'
@@ -71,6 +72,27 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   const [fwdMessage, setFwdMessage] = useState<string | null>(null)
   const [relabelMessage, setRelabelMessage] = useState<string | null>(null)
   const [dedupeMessage, setDedupeMessage] = useState<string | null>(null)
+  const [onelaContactsMsg, setOnelaContactsMsg] = useState<string | null>(null)
+  const [isPushingOnela, setIsPushingOnela] = useState(false)
+
+  const handlePushOnelaContacts = async () => {
+    if (!window.confirm(
+      `Intégrer l'annuaire ONELA dans les contacts Google de ${m.gohUpn} ?\n\n` +
+      `Les collègues ONELA pas encore migrés et les listes de diffusion seront ajoutés ` +
+      `dans ses contacts (libellé « ONELA »). Les contacts déjà présents ne seront pas dupliqués.`
+    )) return
+    setIsPushingOnela(true)
+    setOnelaContactsMsg(null)
+    try {
+      const res = await migrationApi.pushOnelaContacts(m.id)
+      setOnelaContactsMsg(`${res.message} (${res.total} contacts) — l'ajout se fait en arrière-plan.`)
+    } catch (err: unknown) {
+      const apiErr = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      setOnelaContactsMsg(apiErr || (err instanceof Error ? err.message : 'Erreur inconnue'))
+    } finally {
+      setIsPushingOnela(false)
+    }
+  }
 
   const hasError = m.stepCreateAccount === 'error'
   const accountReady = m.stepCreateAccount === 'success' || m.stepCreateAccount === 'skipped'
@@ -394,7 +416,7 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
   )
 
   // ÉTAPE 8 — Intégration de l'annuaire ONELA partagé dans les contacts Google du user.
-  // Backend à venir : import d'un CSV ONELA stocké côté app, puis push via People API.
+  // L'annuaire est importé globalement (dashboard) puis poussé par user via People API.
   const onelaContactsStepContent = (
     <div className="space-y-2">
       <p className="text-xs text-gray-500">
@@ -402,13 +424,19 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
         dans les contacts Google de cet utilisateur, pour qu'il les retrouve facilement.
       </p>
       <button
-        disabled
-        title="Base de contacts ONELA en cours de préparation (import CSV à venir)"
-        className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs font-medium text-gray-400 cursor-not-allowed"
+        onClick={handlePushOnelaContacts}
+        disabled={isPushingOnela || !m.gohUpn}
+        title={!m.gohUpn ? 'Compte Google requis' : 'Ajoute l\'annuaire ONELA dans les contacts Google du user'}
+        className="flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-60"
       >
-        <BookUser className="h-3.5 w-3.5" />
-        Intégrer les contacts ONELA (bientôt)
+        <BookUser className={cn('h-3.5 w-3.5', isPushingOnela && 'animate-pulse')} />
+        {isPushingOnela ? 'Lancement…' : 'Intégrer les contacts ONELA'}
       </button>
+      {onelaContactsMsg && (
+        <p className={cn('rounded px-2 py-1 text-xs',
+          onelaContactsMsg.includes('arrière-plan') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+        )}>{onelaContactsMsg}</p>
+      )}
     </div>
   )
 

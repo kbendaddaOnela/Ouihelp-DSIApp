@@ -288,6 +288,22 @@ async function ensureSchemaPatches() {
         KEY \`idx_budget_contract_end\` (\`contract_end\`)
       )`,
     },
+    {
+      table: 'onela_contacts',
+      ddl: `CREATE TABLE \`onela_contacts\` (
+        \`id\` varchar(36) NOT NULL,
+        \`given_name\` varchar(255),
+        \`family_name\` varchar(255),
+        \`organization\` varchar(255),
+        \`title\` varchar(255),
+        \`email\` varchar(255) NOT NULL,
+        \`phone\` varchar(64),
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`onela_contacts_email_unique\` (\`email\`)
+      )`,
+    },
   ]
   for (const p of tablePatches) {
     try {
