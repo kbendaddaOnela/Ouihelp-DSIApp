@@ -2,7 +2,7 @@
 // - Polling 5s sur step_*_migration='pending'
 // - Max 3 jobs simultanés (toutes phases confondues)
 
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { db } from '../../db/index'
 import { migrations, migratedMessages, migratedEvents, migratedContacts, type Migration } from './schema'
 import {
@@ -226,6 +226,25 @@ async function processUserMail(job: Migration) {
     const alreadySuccess = already.filter((r) => r.status === 'success').length
     const alreadyFailed = already.filter((r) => r.status === 'error').length
 
+    // ── Signet de reprise : plus ancien mail déjà TRAITÉ (success OU erreur) ──
+    // L'itération mail est descendante (du plus récent au plus ancien). Tout ce qui
+    // est au-dessus de ce floor a déjà été tenté. En reprise, on repart pile sous ce
+    // point → zéro re-parcours des milliers déjà migrés. Calculé en DB (MIN) plutôt
+    // que stocké dans une colonne : toujours cohérent avec la réalité, pas de schéma
+    // à migrer, et le floor descend naturellement à chaque reprise.
+    let resumeFloor: Date | null = null
+    try {
+      const [floorRow] = await db
+        .select({ floor: sql<Date | string | null>`MIN(${migratedMessages.receivedAt})` })
+        .from(migratedMessages)
+        .where(eq(migratedMessages.migrationId, job.id))
+      const raw = floorRow?.floor
+      if (raw) resumeFloor = raw instanceof Date ? raw : new Date(raw)
+      if (resumeFloor && isNaN(resumeFloor.getTime())) resumeFloor = null
+    } catch (err) {
+      console.warn('[mail] resume floor query failed, fallback full re-walk:', err instanceof Error ? err.message : err)
+    }
+
     console.log(`[mail] ${isDelta ? 'delta' : 'resume'} ${job.id}: ${alreadySuccess} OK + ${alreadyFailed} erreurs (à retenter), ${skipSet.size} à skipper, ${errorSet.size} à retenter`)
 
     await db.update(migrations)
@@ -278,7 +297,32 @@ async function processUserMail(job: Migration) {
     let skipped = 0
     let dedupHits = 0 // compteur des messages détectés comme déjà présents dans Gmail
     let batchDelay = 500 // délai adaptatif entre les batches (ms), commence à 500ms pour éviter le burst initial
-    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt, syncStartedAt)
+
+    // Borne supérieure effective de l'itération :
+    //  - Fresh run / delta : syncStartedAt (comportement inchangé)
+    //  - Reprise après pause (pas de lastSyncAt mais des messages déjà migrés) :
+    //    on reprend SOUS le plus ancien mail déjà traité (resumeFloor) → on saute
+    //    le re-parcours des déjà-migrés. Le skipSet reste actif sur la frontière
+    //    (mails de la même seconde que le floor) → aucun mail sauté ni dupliqué.
+    //  NB : les mails en ERREUR situés au-dessus du floor ne sont plus retentés
+    //  automatiquement ici — bouton "Réessayer les erreurs" dédié pour ça.
+    const isResume = !isDelta && already.length > 0
+    let effectiveUntil = syncStartedAt
+    if (isResume && resumeFloor) {
+      // Marge de sécurité de 60s AU-DESSUS du floor. Les received_at en DB sont
+      // tronqués à la seconde (colonne TIMESTAMP), donc resumeFloor peut être
+      // légèrement plus ancien que le vrai mail. En remontant la borne de 60s, on
+      // garantit qu'AUCUN mail non encore traité (forcément sous le floor réel)
+      // n'est exclu. Les mails déjà migrés de cette fenêtre de chevauchement sont
+      // simplement skippés (skipSet) — quelques sauts rapides, sans appel Gmail.
+      const flooredUntil = new Date(resumeFloor.getTime() + 60_000)
+      if (flooredUntil < syncStartedAt) {
+        effectiveUntil = flooredUntil
+        console.log(`[mail] ${job.id}: signet de reprise → reprise sous ${flooredUntil.toISOString()} (saute le re-parcours de ~${alreadySuccess} déjà migrés)`)
+      }
+    }
+
+    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt, effectiveUntil)
 
     // Traitement par batch de MAIL_CONCURRENCY messages en parallèle
     let batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
