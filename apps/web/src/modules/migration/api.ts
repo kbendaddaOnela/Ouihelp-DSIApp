@@ -94,6 +94,20 @@ export const migrationApi = {
 
   checkForwarding: (id: string) =>
     apiClient.get<{ active: boolean; forwardTo: string | null }>(`/migration/${id}/forwarding`).then((r) => r.data),
+
+  // ── Annuaire ONELA partagé (step 8) ──
+  pushOnelaContacts: (migrationId: string) =>
+    apiClient.post<{ message: string; total: number }>(`/onela-contacts/push/${migrationId}`).then((r) => r.data),
+}
+
+export const onelaContactsApi = {
+  importCSV: (csv: string) =>
+    apiClient
+      .post<{ imported: number; inserted: number; updated: number; excluded: number; malformed: number }>('/onela-contacts/import', { csv })
+      .then((r) => r.data),
+
+  stats: () =>
+    apiClient.get<{ count: number }>('/onela-contacts/stats').then((r) => r.data),
 }
 
 export interface MigrationStats {

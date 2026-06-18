@@ -1,7 +1,8 @@
 import { useRef, useState, useMemo } from 'react'
-import { Upload, CheckCircle2, Clock, Users, RefreshCw, RotateCcw, ArrowUp, ArrowDown } from 'lucide-react'
+import { Upload, CheckCircle2, Clock, Users, RefreshCw, RotateCcw, ArrowUp, ArrowDown, BookUser } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useMigration'
+import { onelaContactsApi } from '../api'
 import type { MigrationStats } from '../api'
 
 // ── Override local (groupes terminés non encore reflétés dans la base) ────────
@@ -159,7 +160,10 @@ export function MigrationDashboard() {
   const { mutate: importCSV, isPending: isImporting, data: importResult, reset: resetImport } = useImportTargets()
   const { mutate: resetDone, isPending: isResetting } = useResetDone()
   const fileRef = useRef<HTMLInputElement>(null)
+  const onelaFileRef = useRef<HTMLInputElement>(null)
   const [tab, setTab] = useState<'dept' | 'office'>('dept')
+  const [onelaImportMsg, setOnelaImportMsg] = useState<string | null>(null)
+  const [isImportingOnela, setIsImportingOnela] = useState(false)
 
   const hasData = stats && stats.totals.total > 0
 
@@ -172,6 +176,30 @@ export function MigrationDashboard() {
       importCSV(csv, {
         onError: (err) => alert(`Erreur import : ${err instanceof Error ? err.message : String(err)}`),
       })
+    }
+    reader.readAsText(file, 'UTF-8')
+    e.target.value = ''
+  }
+
+  function handleOnelaFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      const csv = ev.target?.result as string
+      setIsImportingOnela(true)
+      setOnelaImportMsg(null)
+      try {
+        const res = await onelaContactsApi.importCSV(csv)
+        setOnelaImportMsg(
+          `Annuaire ONELA importé — ${res.imported} contacts (${res.inserted} ajoutés, ${res.updated} mis à jour, ${res.excluded} comptes techniques exclus).`
+        )
+      } catch (err: unknown) {
+        const apiErr = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+        setOnelaImportMsg(`Erreur : ${apiErr || (err instanceof Error ? err.message : String(err))}`)
+      } finally {
+        setIsImportingOnela(false)
+      }
     }
     reader.readAsText(file, 'UTF-8')
     e.target.value = ''
@@ -232,6 +260,16 @@ export function MigrationDashboard() {
             {isImporting ? 'Import…' : 'Importer CSV'}
           </button>
           <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
+          <button
+            onClick={() => { setOnelaImportMsg(null); onelaFileRef.current?.click() }}
+            disabled={isImportingOnela}
+            className="flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:opacity-60"
+            title="Importer le CSV de l'annuaire ONELA (contacts partagés poussés ensuite à chaque user)"
+          >
+            <BookUser className="h-3 w-3" />
+            {isImportingOnela ? 'Import…' : 'Importer annuaire ONELA'}
+          </button>
+          <input ref={onelaFileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleOnelaFile} />
         </div>
       </div>
 
@@ -239,6 +277,11 @@ export function MigrationDashboard() {
       {importResult && (
         <p className="mt-2 text-xs text-emerald-600">
           Import OK — {importResult.imported} lignes ({importResult.inserted} ajoutées, {importResult.updated} mises à jour)
+        </p>
+      )}
+      {onelaImportMsg && (
+        <p className={cn('mt-2 text-xs', onelaImportMsg.startsWith('Erreur') ? 'text-red-600' : 'text-sky-600')}>
+          {onelaImportMsg}
         </p>
       )}
 
