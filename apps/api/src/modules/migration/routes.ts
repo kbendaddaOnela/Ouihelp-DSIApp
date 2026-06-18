@@ -875,6 +875,29 @@ migrationRouter.post('/:id/reset/:phase', requirePermission('migration:write'), 
   return c.json(serializeMigration(updated))
 })
 
+// ── Reprise COMPLÈTE de la migration mail (efface lastSyncAt, garde le tracking) ──
+// Utilisé pour réparer une migration marquée "terminée" à tort (ex: bug signet de
+// reprise sur Esther) : on remet mailLastSyncAt à null → la relance fait un re-parcours
+// COMPLET (et non un delta) qui skippe les déjà-migrés (skipSet) et complète le reste.
+// Ne supprime PAS migrated_messages → les milliers déjà faits ne sont pas refaits.
+migrationRouter.post('/:id/resume-full', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé' }, 400)
+
+  await db.update(migrations).set({
+    mailLastSyncAt: null,           // force un re-parcours complet (pas un delta)
+    stepMailMigration: 'pending',   // le worker le récupère
+    mailError: null, mailFinishedAt: null,
+  }).where(eq(migrations.id, id))
+
+  const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!updated) return c.json({ error: 'Not Found' }, 404)
+  return c.json(serializeMigration(updated))
+})
+
 // ── Erreurs détaillées par phase ─────────────────────────────────────────────
 migrationRouter.get('/:id/errors/:phase', requirePermission('migration:read'), async (c) => {
   const db = getDb()
