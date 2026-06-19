@@ -518,7 +518,7 @@ async function processUserCalendar(job: Migration) {
 
       const results = await Promise.allSettled(
         toProcess.map(async (ev) => {
-          const result = await googleCalendarImportEvent(job.gohUpn!, ev)
+          const result = await googleCalendarImportEvent(job.gohUpn!, ev, job.onelaUpn)
           return { ev, result }
         })
       )
