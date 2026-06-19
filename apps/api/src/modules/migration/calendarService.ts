@@ -192,7 +192,15 @@ interface GoogleCalendarEvent {
   reminders?: { useDefault: boolean }
 }
 
-function buildGoogleEvent(g: GraphEvent, targetUserEmail: string): GoogleCalendarEvent | null {
+function emailEq(a?: string | null, b?: string | null): boolean {
+  return !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase()
+}
+
+function buildGoogleEvent(
+  g: GraphEvent,
+  targetUserEmail: string,
+  sourceUserEmail?: string | null
+): GoogleCalendarEvent | null {
   if (!g.start || !g.end) return null
 
   // Avec le header Prefer côté Graph, les datetime arrivent en Europe/Paris
@@ -225,7 +233,10 @@ function buildGoogleEvent(g: GraphEvent, targetUserEmail: string): GoogleCalenda
     ev.attendees = g.attendees
       .filter((a) => !!a.emailAddress?.address)
       .map((a) => ({
-        email: a.emailAddress.address,
+        // Mapping identité source → cible : la ligne de participation de l'utilisateur
+        // migré porte son adresse @onela.com d'origine ; on la remappe vers son compte
+        // Google sinon Google ne le reconnaît pas comme propriétaire du calendrier.
+        email: emailEq(a.emailAddress.address, sourceUserEmail) ? targetUserEmail : a.emailAddress.address,
         // Pas de displayName : on laisse Google Calendar résoudre le nom depuis son annuaire
         // pour éviter les noms fantômes d'Exchange (contacts personnels de l'organisateur)
         optional: a.type === 'optional',
@@ -241,14 +252,31 @@ function buildGoogleEvent(g: GraphEvent, targetUserEmail: string): GoogleCalenda
   // mailbox impersoné comme organizer par défaut → l'utilisateur croit être
   // l'organisateur de réunions auxquelles il était juste invité, et ses
   // modifs/suppressions se propagent à tous les participants.
+  // MAIS si l'organisateur d'origine EST l'utilisateur migré (adresse @onela.com),
+  // on remappe vers son compte Google : sinon Google rejette l'import avec
+  // « participantIsNeitherOrganizerNorAttendee » (le propriétaire du calendrier doit
+  // être organisateur OU participant).
   if (g.organizer?.emailAddress?.address) {
-    ev.organizer = {
-      email: g.organizer.emailAddress.address,
-      ...(g.organizer.emailAddress.name ? { displayName: g.organizer.emailAddress.name } : {}),
-    }
+    const orgAddr = g.organizer.emailAddress.address
+    ev.organizer = emailEq(orgAddr, sourceUserEmail)
+      ? { email: targetUserEmail }
+      : {
+          email: orgAddr,
+          ...(g.organizer.emailAddress.name ? { displayName: g.organizer.emailAddress.name } : {}),
+        }
   } else {
     // Pas d'organizer Graph → fallback sur le user lui-même (cas rare, calendar perso)
     ev.organizer = { email: targetUserEmail }
+  }
+
+  // Filet de sécurité universel : Google exige que le propriétaire du calendrier soit
+  // organisateur OU participant. Si après remapping il n'est toujours ni l'un ni l'autre
+  // (ex. réunion ajoutée par un délégué, ou alias source non reconnu), on l'ajoute comme
+  // participant accepté. sendUpdates=none → aucune invitation envoyée.
+  const ownerIsOrganizer = emailEq(ev.organizer?.email, targetUserEmail)
+  const ownerIsAttendee = ev.attendees?.some((a) => emailEq(a.email, targetUserEmail)) ?? false
+  if (!ownerIsOrganizer && !ownerIsAttendee) {
+    ev.attendees = [...(ev.attendees ?? []), { email: targetUserEmail, responseStatus: 'accepted' }]
   }
 
   return ev
@@ -258,9 +286,10 @@ const CAL_MAX_RETRIES = 4
 
 export async function googleCalendarImportEvent(
   userEmail: string,
-  graphEvent: GraphEvent
+  graphEvent: GraphEvent,
+  sourceUserEmail?: string | null
 ): Promise<{ id: string } | null> {
-  const evt = buildGoogleEvent(graphEvent, userEmail)
+  const evt = buildGoogleEvent(graphEvent, userEmail, sourceUserEmail)
   if (!evt) return null
 
   // import = on dépose l'événement sans envoyer d'invitations
