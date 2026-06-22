@@ -7,6 +7,7 @@ import { requestLogger } from './middleware/logger'
 import { runMigrations } from './db/migrate'
 import { startMailWorker } from './modules/migration/mailWorker'
 import { startSharedMailboxWorker } from './modules/shared-mailbox/worker'
+import { startSharepointMigrationWorker } from './modules/sharepoint-migration/worker'
 
 const app = new Hono()
 
@@ -57,6 +58,7 @@ async function start() {
         console.log('[startup] DB migrations OK')
         startMailWorker()
         startSharedMailboxWorker()
+        startSharepointMigrationWorker()
       })
       .catch((err) => {
         dbError = err instanceof Error ? err.message : String(err)
