@@ -63,6 +63,8 @@ interface GraphEvent {
   organizer?: { emailAddress: { address: string; name?: string } }
   recurrence?: GraphRecurrence | null
   type?: 'singleInstance' | 'occurrence' | 'exception' | 'seriesMaster'
+  // Sensibilité Outlook : 'normal' | 'personal' | 'private' | 'confidential'
+  sensitivity?: string
 }
 
 export async function countOnelaEvents(userId: string, since?: Date | null): Promise<number> {
@@ -190,6 +192,21 @@ interface GoogleCalendarEvent {
   iCalUID?: string
   status?: 'confirmed' | 'tentative' | 'cancelled'
   reminders?: { useDefault: boolean }
+  visibility?: 'default' | 'public' | 'private' | 'confidential'
+  colorId?: string
+}
+
+// Couleur Google Calendar pour les rdv privés (incl. rdv passés forcés en privé).
+// '5' = Banane / jaune (choix DSI, juin 2026).
+const PRIVATE_EVENT_COLOR_ID = '5'
+
+// Fin d'événement (timed ou all-day) en ms epoch, ou null si indéterminable.
+function eventEndMs(g: GraphEvent): number | null {
+  if (!g.end?.dateTime) return null
+  // datetime en heure locale Paris sans suffixe Z ; pour un simple test "passé ?"
+  // l'écart de fuseau (1-2h) est négligeable vs des events vieux de jours/années.
+  const ms = new Date(g.end.dateTime.replace(/Z$/, '')).getTime()
+  return Number.isNaN(ms) ? null : ms
 }
 
 function emailEq(a?: string | null, b?: string | null): boolean {
@@ -277,6 +294,20 @@ function buildGoogleEvent(
   const ownerIsAttendee = ev.attendees?.some((a) => emailEq(a.email, targetUserEmail)) ?? false
   if (!ownerIsOrganizer && !ownerIsAttendee) {
     ev.attendees = [...(ev.attendees ?? []), { email: targetUserEmail, responseStatus: 'accepted' }]
+  }
+
+  // Visibilité + couleur (demande compta, juin 2026) :
+  // - les rdv déjà privés dans Outlook (sensitivity private/confidential) restent privés
+  // - les rdv PASSÉS non récurrents sont forcés en privé à la migration
+  //   (on laisse les séries récurrentes telles quelles : une série en cours n'est pas "passée")
+  // - tout rdv privé reçoit la couleur Banane pour ressortir visuellement.
+  // Politique Groupe = visibilité publique par défaut → on ne touche QUE les privés/passés.
+  const originallyPrivate = g.sensitivity === 'private' || g.sensitivity === 'confidential'
+  const endMs = eventEndMs(g)
+  const isPast = !ev.recurrence && endMs !== null && endMs < Date.now()
+  if (originallyPrivate || isPast) {
+    ev.visibility = 'private'
+    ev.colorId = PRIVATE_EVENT_COLOR_ID
   }
 
   return ev
