@@ -23,3 +23,17 @@ export type {
   SearchSharedMailboxesResponse,
   SharedMigrationHistoryResponse,
 } from './types/sharedMailbox'
+
+export type {
+  SharepointMigrationStatus,
+  SharepointDrive,
+  ResolveSiteResponse,
+  SharepointItem,
+  BrowseResponse,
+  GoogleSharedDrive,
+  SearchSharedDrivesResponse,
+  CreateSharepointMigrationRequest,
+  SharepointMigrationRecord,
+  SharepointMigrationHistoryResponse,
+  SharepointMigrationErrorsResponse,
+} from './types/sharepointMigration'

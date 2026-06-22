@@ -11,6 +11,7 @@ import {
   Building2,
   ArrowRightLeft,
   Mail,
+  HardDriveDownload,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAnyPermission } from '@/hooks/usePermission'
@@ -34,6 +35,12 @@ const NAV_ITEMS: NavItem[] = [
     path: '/shared-mailbox',
     label: 'Migration Shared Mailbox',
     icon: Mail,
+    requiredPermissions: ['migration:read'],
+  },
+  {
+    path: '/sharepoint-migration',
+    label: 'Migration SharePoint',
+    icon: HardDriveDownload,
     requiredPermissions: ['migration:read'],
   },
   {

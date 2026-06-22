@@ -19,6 +19,7 @@ const LicensesPage = lazy(() => import('@/modules/licenses/LicensesPage'))
 const BudgetPage = lazy(() => import('@/modules/budget/BudgetPage'))
 const MigrationPage = lazy(() => import('@/modules/migration/MigrationPage'))
 const SharedMailboxPage = lazy(() => import('@/modules/shared-mailbox/SharedMailboxPage'))
+const SharepointMigrationPage = lazy(() => import('@/modules/sharepoint-migration/SharepointMigrationPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -111,6 +112,14 @@ export function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <SharedMailboxPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="sharepoint-migration"
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <SharepointMigrationPage />
                   </Suspense>
                 }
               />

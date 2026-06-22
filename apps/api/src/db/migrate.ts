@@ -304,6 +304,55 @@ async function ensureSchemaPatches() {
         UNIQUE KEY \`onela_contacts_email_unique\` (\`email\`)
       )`,
     },
+    {
+      table: 'sharepoint_migrations',
+      ddl: `CREATE TABLE \`sharepoint_migrations\` (
+        \`id\` varchar(36) NOT NULL,
+        \`site_url\` varchar(1000) NOT NULL,
+        \`site_id\` varchar(500) NOT NULL,
+        \`site_name\` varchar(500) NOT NULL,
+        \`drive_id\` varchar(500) NOT NULL,
+        \`drive_name\` varchar(500) NOT NULL,
+        \`root_item_id\` varchar(500),
+        \`root_path\` varchar(1000),
+        \`gd_shared_drive_id\` varchar(255),
+        \`gd_shared_drive_name\` varchar(500) NOT NULL,
+        \`status\` enum('pending','running','paused','success','error') NOT NULL DEFAULT 'pending',
+        \`total_items\` int NOT NULL DEFAULT 0,
+        \`migrated_items\` int NOT NULL DEFAULT 0,
+        \`failed_items\` int NOT NULL DEFAULT 0,
+        \`total_bytes\` bigint NOT NULL DEFAULT 0,
+        \`migrated_bytes\` bigint NOT NULL DEFAULT 0,
+        \`error_details\` text,
+        \`started_at\` timestamp NULL,
+        \`finished_at\` timestamp NULL,
+        \`initiated_by\` varchar(255) NOT NULL,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_sp_migration_status\` (\`status\`)
+      )`,
+    },
+    {
+      table: 'sharepoint_migrated_items',
+      ddl: `CREATE TABLE \`sharepoint_migrated_items\` (
+        \`id\` int NOT NULL AUTO_INCREMENT,
+        \`migration_id\` varchar(36) NOT NULL,
+        \`sp_item_id\` varchar(500) NOT NULL,
+        \`parent_sp_item_id\` varchar(500),
+        \`name\` varchar(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`sp_path\` varchar(1500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`is_folder\` boolean NOT NULL DEFAULT false,
+        \`size_bytes\` bigint,
+        \`gd_file_id\` varchar(255),
+        \`status\` enum('success','error','skipped') NOT NULL,
+        \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`sharepoint_migrated_items_unique\` (\`migration_id\`, \`sp_item_id\`),
+        KEY \`sharepoint_migrated_items_migration_idx\` (\`migration_id\`)
+      )`,
+    },
   ]
   for (const p of tablePatches) {
     try {
