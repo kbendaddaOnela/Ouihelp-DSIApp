@@ -118,21 +118,15 @@ export async function createFolder(name: string, parentId: string, meta?: ItemMe
   return data.id
 }
 
-// Au-delà de ce seuil on streame (duplex) au lieu de bufferiser, pour ne pas
-// saturer la mémoire du conteneur. En deçà on bufferise : un Buffer est rejouable
-// par undici (évite « Response body object should not be disturbed or locked »
-// quand la connexion résumable doit retenter), ce que ne permet pas un flux.
-const MAX_BUFFER_BYTES = 200 * 1024 * 1024 // 200 Mo
-
 /**
- * Upload résumable d'un fichier vers un Shared Drive, avec métadonnées d'origine.
- * Fichiers ≤ 200 Mo → bufferisés (robuste). Au-delà → streamés.
+ * Upload résumable d'un fichier (Buffer) vers un Shared Drive, avec métadonnées
+ * d'origine. Le Buffer est rejouable par undici → robuste aux retries de
+ * connexion (contrairement à un flux à usage unique).
  */
 export async function uploadFile(params: {
   name: string
   parentId: string
-  body: ReadableStream<Uint8Array>
-  size: number | null
+  body: Buffer
   mimeType?: string
   meta?: ItemMeta
 }): Promise<string> {
@@ -159,34 +153,17 @@ export async function uploadFile(params: {
   const sessionUri = initRes.headers.get('Location')
   if (!sessionUri) throw new Error(`Pas de session URI résumable pour "${params.name}"`)
 
-  // 2) Transférer le contenu.
-  let putBody: ReadableStream<Uint8Array> | Buffer
-  const putHeaders: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': params.mimeType ?? 'application/octet-stream',
-  }
-  let size = params.size
-
-  if (size != null && size > MAX_BUFFER_BYTES) {
-    // Gros fichier : streaming direct (duplex half)
-    putHeaders['Content-Length'] = String(size)
-    putBody = params.body
-  } else {
-    // Cas courant : bufferiser (rejouable, robuste face aux retries)
-    const buf = Buffer.from(await new Response(params.body).arrayBuffer())
-    size = buf.byteLength
-    putHeaders['Content-Length'] = String(size)
-    putBody = buf
-  }
-
+  // 2) Transférer le contenu (Buffer → un seul PUT).
   const putRes = await fetchWithTimeout(sessionUri, {
     method: 'PUT',
-    headers: putHeaders,
-    body: putBody,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': params.mimeType ?? 'application/octet-stream',
+      'Content-Length': String(params.body.byteLength),
+    },
+    body: params.body,
     timeoutMs: 600_000,
-    // duplex requis par Node pour un body en streaming
-    duplex: 'half',
-  } as Parameters<typeof fetchWithTimeout>[1])
+  })
   if (!putRes.ok) {
     const err = await putRes.text()
     throw new Error(`Upload "${params.name}" échoué (${putRes.status}): ${err.slice(0, 300)}`)

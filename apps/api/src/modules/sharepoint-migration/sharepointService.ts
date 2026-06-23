@@ -214,31 +214,32 @@ export async function listChildren(
 }
 
 /**
- * Ouvre un flux de lecture sur le contenu d'un fichier SharePoint via l'endpoint
- * `/content` de Graph. Celui-ci renvoie un 302 vers une URL de stockage
- * pré-authentifiée ; `fetch` suit la redirection automatiquement.
+ * Télécharge le contenu d'un fichier SharePoint via l'endpoint `/content` de
+ * Graph (302 → URL de stockage pré-authentifiée, suivie automatiquement par
+ * `fetch`). On lit DIRECTEMENT le corps de la réponse via `res.arrayBuffer()`
+ * (consommation unique, canonique) — surtout PAS via `new Response(res.body)`,
+ * qui provoque « Response body object should not be disturbed or locked ».
  *
- * Note : undici ne propage PAS l'en-tête Authorization à travers une redirection
- * cross-origin, ce qui est exactement le comportement voulu (l'URL de stockage
- * porte déjà son propre jeton dans la query). On ne demande donc surtout PAS
- * l'annotation @microsoft.graph.downloadUrl via $select : elle est retirée par
- * Graph dès qu'un $select est présent.
+ * Note : undici ne propage pas l'en-tête Authorization à travers la redirection
+ * cross-origin (comportement voulu : l'URL de stockage porte son propre jeton).
+ * On ne demande pas non plus l'annotation @microsoft.graph.downloadUrl via
+ * $select : Graph la retire dès qu'un $select est présent.
  *
- * Retourne le corps (ReadableStream) + la taille (Content-Length) pour l'upload.
+ * Retourne un Buffer (rejouable par undici, robuste face aux retries de PUT).
  */
-export async function openItemContentStream(
+export async function downloadItemContent(
   driveId: string,
   itemId: string,
-): Promise<{ body: ReadableStream<Uint8Array>; size: number | null }> {
+): Promise<{ buffer: Buffer; size: number }> {
   const token = await getOnelaToken()
   const res = await fetchWithTimeout(
     `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`,
     { headers: { Authorization: `Bearer ${token}` }, timeoutMs: 600_000 },
   )
-  if (!res.ok || !res.body) {
-    const err = res.ok ? 'corps vide' : await res.text()
-    throw new Error(`Téléchargement SharePoint échoué (${res.status}): ${String(err).slice(0, 200)}`)
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Téléchargement SharePoint échoué (${res.status}): ${err.slice(0, 200)}`)
   }
-  const len = res.headers.get('Content-Length')
-  return { body: res.body, size: len ? parseInt(len, 10) : null }
+  const buffer = Buffer.from(await res.arrayBuffer())
+  return { buffer, size: buffer.byteLength }
 }
