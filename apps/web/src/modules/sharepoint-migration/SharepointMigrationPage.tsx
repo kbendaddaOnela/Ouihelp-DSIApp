@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Link2,
   Library,
@@ -44,10 +44,17 @@ export default function SharepointMigrationPage() {
   const [historyExpanded, setHistoryExpanded] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Debounce de la recherche Shared Drive (évite un appel par frappe)
+  const [debouncedGdQuery, setDebouncedGdQuery] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedGdQuery(gdQuery), 400)
+    return () => clearTimeout(t)
+  }, [gdQuery])
+
   const resolveSite = useResolveSite()
   const browse = useBrowse()
   const { data: gdResults, isFetching: gdSearching } = useSearchSharedDrives(
-    gdQuery,
+    debouncedGdQuery,
     !!drive && !selectedGd,
   )
   const createMigration = useCreateSharepointMigration()
