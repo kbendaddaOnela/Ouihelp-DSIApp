@@ -215,6 +215,12 @@ async function processMigration(job: SharepointMigration) {
     // (sinon, au resume, migrated/total≈1 fait sauter la barre à ~100%).
     let totalFiles = 0
     let totalBytes = 0
+    // Diagnostic d'attribution (calculé pendant le comptage) : combien de fichiers
+    // seront attribués à leur auteur vs en repli admin, et quels auteurs ne sont
+    // pas mappés (pas de compte Google migré, ou « Compte système »).
+    let attributable = 0
+    let fallbackCount = 0
+    const unmapped = new Map<string, number>()
     {
       const countQueue: (string | null)[] = [job.rootItemId]
       let sinceFlush = 0
@@ -232,10 +238,23 @@ async function processMigration(job: SharepointMigration) {
           continue
         }
         for (const k of kids) {
-          if (k.isFolder) countQueue.push(k.id)
-          else {
-            totalFiles++
-            totalBytes += k.size ?? 0
+          if (k.isFolder) {
+            countQueue.push(k.id)
+            continue
+          }
+          totalFiles++
+          totalBytes += k.size ?? 0
+          // Résolution d'attribution prévisionnelle
+          const aEmail = (k.lastModifiedByEmail ?? k.createdByEmail ?? '').toLowerCase()
+          const mapped = aEmail ? authorMap.get(aEmail) : undefined
+          if (mapped && mapped.toLowerCase() !== adminLower) {
+            attributable++
+          } else {
+            fallbackCount++
+            const label = aEmail
+              ? `${aEmail} (non migré)`
+              : `«${k.lastModifiedByName ?? k.createdByName ?? 'système'}» (sans email)`
+            unmapped.set(label, (unmapped.get(label) ?? 0) + 1)
           }
         }
         // Feedback périodique : le total grimpe pendant l'analyse (barre à 0%
@@ -252,6 +271,17 @@ async function processMigration(job: SharepointMigration) {
     console.log(
       `[sharepoint] ${job.id} pré-comptage: ${totalFiles} fichiers, ${(totalBytes / 1024 / 1024).toFixed(0)} Mo`,
     )
+    console.log(
+      `[sharepoint] ${job.id} attribution prévue: ${attributable}/${totalFiles} à leur auteur, ${fallbackCount} en repli admin`,
+    )
+    if (unmapped.size > 0) {
+      const top = [...unmapped.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(' | ')
+      console.log(`[sharepoint] ${job.id} auteurs en repli (top 20): ${top}`)
+    }
 
     await db
       .update(sharepointMigrations)
