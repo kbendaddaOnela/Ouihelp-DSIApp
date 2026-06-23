@@ -33,8 +33,11 @@ interface FolderCrumb {
   name: string
 }
 
+// Site SharePoint source par défaut (toujours le même chez ONELA).
+const DEFAULT_SITE_URL = 'https://onelaservices.sharepoint.com/sites/ALL-ONELA/'
+
 export default function SharepointMigrationPage() {
-  const [url, setUrl] = useState('')
+  const [url, setUrl] = useState(DEFAULT_SITE_URL)
   const [resolved, setResolved] = useState<ResolveSiteResponse | null>(null)
   const [drive, setDrive] = useState<SharepointDrive | null>(null)
   const [crumbs, setCrumbs] = useState<FolderCrumb[]>([])
@@ -123,7 +126,7 @@ export default function SharepointMigrationPage() {
     setDrive(null)
     setItems([])
     setCrumbs([])
-    setUrl('')
+    setUrl(DEFAULT_SITE_URL)
     setGdQuery('')
     setSelectedGd(null)
     setError(null)
