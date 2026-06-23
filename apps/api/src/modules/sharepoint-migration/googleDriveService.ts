@@ -74,18 +74,40 @@ export async function getSharedDrive(driveId: string): Promise<{ id: string; nam
  * Crée un dossier dans un Shared Drive sous `parentId` et retourne son id.
  * `parentId` peut être l'id du Shared Drive (racine) ou d'un dossier.
  */
-export async function createFolder(name: string, parentId: string): Promise<string> {
+/**
+ * Métadonnées d'origine à réinjecter sur l'objet Google.
+ * - `createdTime` / `modifiedTime` : dates SharePoint (RFC 3339), inscriptibles à
+ *   la création côté Drive → préserve les vraies dates au lieu de « maintenant ».
+ * - `appProperties` : traçabilité de l'auteur d'origine SharePoint. Le « Modifié
+ *   par » NATIF de Drive reste le compte de migration (limite Drive : dans un
+ *   Shared Drive on ne peut pas falsifier l'acteur), d'où le repli en propriété.
+ */
+export interface ItemMeta {
+  createdTime?: string | null
+  modifiedTime?: string | null
+  appProperties?: Record<string, string>
+}
+
+/** Ajoute les champs de métadonnées non vides à un corps de requête Drive. */
+function withMeta(base: Record<string, unknown>, meta?: ItemMeta): Record<string, unknown> {
+  if (meta?.createdTime) base['createdTime'] = meta.createdTime
+  if (meta?.modifiedTime) base['modifiedTime'] = meta.modifiedTime
+  if (meta?.appProperties && Object.keys(meta.appProperties).length > 0) {
+    base['appProperties'] = meta.appProperties
+  }
+  return base
+}
+
+export async function createFolder(name: string, parentId: string, meta?: ItemMeta): Promise<string> {
   const token = await driveToken()
   const res = await fetchWithTimeout(
     'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id',
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        mimeType: FOLDER_MIME,
-        parents: [parentId],
-      }),
+      body: JSON.stringify(
+        withMeta({ name, mimeType: FOLDER_MIME, parents: [parentId] }, meta),
+      ),
     },
   )
   if (!res.ok) {
@@ -96,12 +118,15 @@ export async function createFolder(name: string, parentId: string): Promise<stri
   return data.id
 }
 
+// Au-delà de ce seuil on streame (duplex) au lieu de bufferiser, pour ne pas
+// saturer la mémoire du conteneur. En deçà on bufferise : un Buffer est rejouable
+// par undici (évite « Response body object should not be disturbed or locked »
+// quand la connexion résumable doit retenter), ce que ne permet pas un flux.
+const MAX_BUFFER_BYTES = 200 * 1024 * 1024 // 200 Mo
+
 /**
- * Upload résumable d'un fichier vers un Shared Drive.
- * Streaming : le corps SharePoint est repassé tel quel à Google (pas de buffer
- * complet en mémoire → supporte les gros fichiers). Content-Length connu requis
- * pour le PUT mono-requête ; si la taille est inconnue on bufferise en dernier
- * recours.
+ * Upload résumable d'un fichier vers un Shared Drive, avec métadonnées d'origine.
+ * Fichiers ≤ 200 Mo → bufferisés (robuste). Au-delà → streamés.
  */
 export async function uploadFile(params: {
   name: string
@@ -109,10 +134,11 @@ export async function uploadFile(params: {
   body: ReadableStream<Uint8Array>
   size: number | null
   mimeType?: string
+  meta?: ItemMeta
 }): Promise<string> {
   const token = await driveToken()
 
-  // 1) Ouvrir une session résumable (metadata only)
+  // 1) Ouvrir une session résumable (metadata + dates d'origine)
   const initRes = await fetchWithTimeout(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id',
     {
@@ -121,10 +147,9 @@ export async function uploadFile(params: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json; charset=UTF-8',
       },
-      body: JSON.stringify({
-        name: params.name,
-        parents: [params.parentId],
-      }),
+      body: JSON.stringify(
+        withMeta({ name: params.name, parents: [params.parentId] }, params.meta),
+      ),
     },
   )
   if (!initRes.ok) {
@@ -134,7 +159,7 @@ export async function uploadFile(params: {
   const sessionUri = initRes.headers.get('Location')
   if (!sessionUri) throw new Error(`Pas de session URI résumable pour "${params.name}"`)
 
-  // 2) Transférer le contenu. Avec une taille connue → stream direct (duplex half).
+  // 2) Transférer le contenu.
   let putBody: ReadableStream<Uint8Array> | Buffer
   const putHeaders: Record<string, string> = {
     Authorization: `Bearer ${token}`,
@@ -142,11 +167,12 @@ export async function uploadFile(params: {
   }
   let size = params.size
 
-  if (size != null && size >= 0) {
+  if (size != null && size > MAX_BUFFER_BYTES) {
+    // Gros fichier : streaming direct (duplex half)
     putHeaders['Content-Length'] = String(size)
     putBody = params.body
   } else {
-    // Taille inconnue : bufferiser (rare — fichiers SharePoint exposent size)
+    // Cas courant : bufferiser (rejouable, robuste face aux retries)
     const buf = Buffer.from(await new Response(params.body).arrayBuffer())
     size = buf.byteLength
     putHeaders['Content-Length'] = String(size)
@@ -166,5 +192,32 @@ export async function uploadFile(params: {
     throw new Error(`Upload "${params.name}" échoué (${putRes.status}): ${err.slice(0, 300)}`)
   }
   const data = (await putRes.json()) as { id: string }
+
+  // Filet de sécurité : si la finalisation du contenu a repoussé modifiedTime à
+  // « maintenant », on le réimpose par un PATCH. Best-effort (le contenu est déjà
+  // en place ; on ne fait pas échouer le fichier pour une date).
+  if (params.meta?.modifiedTime) {
+    try {
+      const patchRes = await fetchWithTimeout(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(data.id)}?supportsAllDrives=true&fields=id`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ modifiedTime: params.meta.modifiedTime }),
+        },
+      )
+      if (!patchRes.ok) {
+        console.warn(
+          `[sharepoint] PATCH modifiedTime "${params.name}" ignoré (${patchRes.status})`,
+        )
+      }
+    } catch (e) {
+      console.warn(
+        `[sharepoint] PATCH modifiedTime "${params.name}" échoué:`,
+        e instanceof Error ? e.message : e,
+      )
+    }
+  }
+
   return data.id
 }

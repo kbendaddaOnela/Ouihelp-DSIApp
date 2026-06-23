@@ -20,8 +20,24 @@ import {
   sharepointMigratedItems,
   type SharepointMigration,
 } from './schema'
-import { listChildren, openItemContentStream } from './sharepointService'
-import { getSharedDrive, createFolder, uploadFile } from './googleDriveService'
+import { listChildren, openItemContentStream, type SpItem } from './sharepointService'
+import { getSharedDrive, createFolder, uploadFile, type ItemMeta } from './googleDriveService'
+
+/**
+ * Construit les métadonnées Google à partir d'un item SharePoint :
+ * dates d'origine (créées/modifiées) + auteurs d'origine en appProperties
+ * (le « Modifié par » natif d'un Shared Drive reste le compte de migration).
+ */
+function spMeta(item: SpItem): ItemMeta {
+  const appProperties: Record<string, string> = { sourceItemId: item.id.slice(0, 120) }
+  if (item.createdByName) appProperties['sourceCreatedBy'] = item.createdByName.slice(0, 120)
+  if (item.lastModifiedByName) appProperties['sourceModifiedBy'] = item.lastModifiedByName.slice(0, 120)
+  return {
+    createdTime: item.createdDateTime,
+    modifiedTime: item.lastModifiedDateTime,
+    appProperties,
+  }
+}
 
 const POLL_INTERVAL_MS = 5000
 const BATCH_SIZE = 3 // fichiers transférés en parallèle par dossier
@@ -167,7 +183,7 @@ async function processMigration(job: SharepointMigration) {
         let gdId = folderGdMap.get(child.id)
         const childPath = path ? `${path}/${child.name}` : child.name
         if (!gdId) {
-          gdId = await createFolder(child.name, gdParentId)
+          gdId = await createFolder(child.name, gdParentId, spMeta(child))
           folderGdMap.set(child.id, gdId)
           await db
             .insert(sharepointMigratedItems)
@@ -205,6 +221,7 @@ async function processMigration(job: SharepointMigration) {
               parentId: gdParentId,
               body,
               size: size ?? file.size,
+              meta: spMeta(file),
             })
             return { file, skipped: false as const, gdFileId, bytes: file.size ?? size ?? 0 }
           }),
