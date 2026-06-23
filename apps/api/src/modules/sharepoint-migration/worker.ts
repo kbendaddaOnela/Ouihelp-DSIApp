@@ -209,9 +209,53 @@ async function processMigration(job: SharepointMigration) {
       return p
     }
 
+    // 2c) Pré-comptage : parcours métadonnées (BFS, pas de téléchargement) pour
+    // connaître le total de fichiers + octets AVANT de transférer → barre de
+    // progression juste dès le départ. On fixe le total AVANT d'écrire migrated
+    // (sinon, au resume, migrated/total≈1 fait sauter la barre à ~100%).
+    let totalFiles = 0
+    let totalBytes = 0
+    {
+      const countQueue: (string | null)[] = [job.rootItemId]
+      let sinceFlush = 0
+      while (countQueue.length > 0) {
+        if (STOP_SIGNALS.has(job.id)) break // la pause interrompt aussi le comptage
+        const fid = countQueue.shift()!
+        let kids: SpItem[]
+        try {
+          kids = await listChildren(job.driveId, fid)
+        } catch (e) {
+          console.warn(
+            `[sharepoint] comptage: listChildren ${fid ?? 'root'} échoué:`,
+            e instanceof Error ? e.message : e,
+          )
+          continue
+        }
+        for (const k of kids) {
+          if (k.isFolder) countQueue.push(k.id)
+          else {
+            totalFiles++
+            totalBytes += k.size ?? 0
+          }
+        }
+        // Feedback périodique : le total grimpe pendant l'analyse (barre à 0%
+        // tant que migrated=0), l'opérateur voit que ça avance.
+        if (++sinceFlush >= 10) {
+          sinceFlush = 0
+          await db
+            .update(sharepointMigrations)
+            .set({ totalItems: totalFiles, totalBytes })
+            .where(eq(sharepointMigrations.id, job.id))
+        }
+      }
+    }
+    console.log(
+      `[sharepoint] ${job.id} pré-comptage: ${totalFiles} fichiers, ${(totalBytes / 1024 / 1024).toFixed(0)} Mo`,
+    )
+
     await db
       .update(sharepointMigrations)
-      .set({ migratedItems: migrated, failedItems: 0 })
+      .set({ totalItems: totalFiles, totalBytes, migratedItems: migrated, failedItems: 0 })
       .where(eq(sharepointMigrations.id, job.id))
 
     // 3) Parcours BFS
@@ -220,10 +264,11 @@ async function processMigration(job: SharepointMigration) {
     ]
     let stoppedByUser = false
 
+    // totalItems est figé par le pré-comptage : on ne l'écrase pas ici.
     const persistCounters = () =>
       db
         .update(sharepointMigrations)
-        .set({ migratedItems: migrated, failedItems: failed, totalItems: discovered, migratedBytes })
+        .set({ migratedItems: migrated, failedItems: failed, migratedBytes })
         .where(eq(sharepointMigrations.id, job.id))
 
     while (queue.length > 0) {
@@ -378,7 +423,6 @@ async function processMigration(job: SharepointMigration) {
           finishedAt: new Date(),
           migratedItems: migrated,
           failedItems: failed,
-          totalItems: discovered,
           migratedBytes,
           errorDetails: `En pause (${migrated} fichiers migrés)`,
         })
@@ -395,7 +439,6 @@ async function processMigration(job: SharepointMigration) {
         finishedAt: new Date(),
         migratedItems: migrated,
         failedItems: failed,
-        totalItems: discovered,
         migratedBytes,
         errorDetails: failed > 0 ? `${failed} fichier(s) en erreur` : null,
       })
