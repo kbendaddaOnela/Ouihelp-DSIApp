@@ -21,7 +21,40 @@ import {
   type SharepointMigration,
 } from './schema'
 import { listChildren, downloadItemContent, type SpItem } from './sharepointService'
-import { getSharedDrive, createFolder, uploadFile, type ItemMeta } from './googleDriveService'
+import {
+  getSharedDrive,
+  createFolder,
+  uploadFile,
+  addSharedDriveMember,
+  removeSharedDrivePermission,
+  type ItemMeta,
+} from './googleDriveService'
+import { migrations } from '../migration/schema'
+import { isNotNull } from 'drizzle-orm'
+
+/**
+ * Construit la table de mapping auteur ONELA → compte Google à usurper.
+ * Source : la table `migrations` (onelaEmail / onelaUpn → gohUpn = compte Google
+ * prenom.nom@mig.onela.com). Indexée sur l'email ET l'UPN, en minuscules.
+ * Seuls les users réellement migrés (gohUpn non null) sont mappables.
+ */
+async function loadAuthorMap(): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      onelaEmail: migrations.onelaEmail,
+      onelaUpn: migrations.onelaUpn,
+      gohUpn: migrations.gohUpn,
+    })
+    .from(migrations)
+    .where(isNotNull(migrations.gohUpn))
+  const map = new Map<string, string>()
+  for (const r of rows) {
+    if (!r.gohUpn) continue
+    if (r.onelaEmail) map.set(r.onelaEmail.toLowerCase(), r.gohUpn)
+    if (r.onelaUpn) map.set(r.onelaUpn.toLowerCase(), r.gohUpn)
+  }
+  return map
+}
 
 /**
  * Construit les métadonnées Google à partir d'un item SharePoint :
@@ -119,6 +152,11 @@ interface QueueEntry {
 async function processMigration(job: SharepointMigration) {
   console.log(`[sharepoint] start ${job.id} (${job.siteName} / ${job.driveName} → ${job.gdSharedDriveName})`)
   const stopHeartbeat = startHeartbeat(job.id)
+  // Membres ajoutés temporairement au Shared Drive pour l'impersonation
+  // (gohUpn → promesse d'id de permission). Retirés en fin de run (le « modifié
+  // par » historique, lui, persiste même après retrait du membre).
+  const memberPromises = new Map<string, Promise<string | null>>()
+  let sharedDriveId: string | null = null
   try {
     await db
       .update(sharepointMigrations)
@@ -126,7 +164,7 @@ async function processMigration(job: SharepointMigration) {
       .where(eq(sharepointMigrations.id, job.id))
 
     // 1) Valider le Shared Drive cible (créé manuellement par l'admin)
-    const sharedDriveId = job.gdSharedDriveId
+    sharedDriveId = job.gdSharedDriveId
     if (!sharedDriveId) {
       throw new Error('Aucun Shared Drive Google sélectionné pour cette migration')
     }
@@ -156,6 +194,20 @@ async function processMigration(job: SharepointMigration) {
     let failed = 0
     let discovered = 0
     let migratedBytes = 0
+
+    // 2b) Mapping auteur ONELA → compte Google + ajout de membre à la demande.
+    const authorMap = await loadAuthorMap()
+    const adminLower = (process.env['GOOGLE_ADMIN_EMAIL'] ?? '').toLowerCase()
+    const driveId = sharedDriveId // non-null après le check ci-dessus (pour les closures)
+    /** Ajoute (une seule fois) un user au Shared Drive ; renvoie l'id de permission ou null. */
+    const ensureMember = (gohUpn: string): Promise<string | null> => {
+      let p = memberPromises.get(gohUpn)
+      if (!p) {
+        p = addSharedDriveMember(driveId, gohUpn)
+        memberPromises.set(gohUpn, p)
+      }
+      return p
+    }
 
     await db
       .update(sharepointMigrations)
@@ -224,13 +276,42 @@ async function processMigration(job: SharepointMigration) {
                 `Fichier trop volumineux (${Math.round(file.size / 1024 / 1024)} Mo, limite ${MAX_FILE_BYTES / 1024 / 1024} Mo) — à transférer manuellement`,
               )
             }
+
+            // Auteur SharePoint → compte Google à usurper (pour le « modifié par »).
+            // Repli sur le compte admin si auteur non mappé, sans compte, ou échec.
+            const authorEmail = (file.lastModifiedByEmail ?? file.createdByEmail ?? '').toLowerCase()
+            const gohUpn = authorEmail ? authorMap.get(authorEmail) : undefined
+            let impersonate: string | undefined
+            if (gohUpn && gohUpn.toLowerCase() !== adminLower) {
+              const permId = await ensureMember(gohUpn)
+              if (permId) impersonate = gohUpn
+            }
+
             const { buffer, size } = await downloadItemContent(job.driveId, file.id)
-            const gdFileId = await uploadFile({
-              name: file.name,
-              parentId: gdParentId,
-              body: buffer,
-              meta: spMeta(file),
-            })
+            let gdFileId: string
+            try {
+              gdFileId = await uploadFile({
+                name: file.name,
+                parentId: gdParentId,
+                body: buffer,
+                meta: spMeta(file),
+                impersonate,
+              })
+            } catch (e) {
+              if (!impersonate) throw e
+              // L'upload usurpé a échoué → on dépose en tant qu'admin (le fichier
+              // passe, mais « modifié par » = compte de migration pour celui-ci).
+              console.warn(
+                `[sharepoint] upload usurpé (${impersonate}) échoué pour ${file.name}, repli admin:`,
+                e instanceof Error ? e.message : e,
+              )
+              gdFileId = await uploadFile({
+                name: file.name,
+                parentId: gdParentId,
+                body: buffer,
+                meta: spMeta(file),
+              })
+            }
             return { file, skipped: false as const, gdFileId, bytes: file.size ?? size }
           }),
         )
@@ -329,5 +410,14 @@ async function processMigration(job: SharepointMigration) {
     console.error(`[sharepoint] ${job.id} erreur fatale:`, msg)
   } finally {
     stopHeartbeat()
+    // Retirer les membres ajoutés temporairement pour l'impersonation.
+    // Best-effort : l'attribution « modifié par » persiste après le retrait.
+    if (sharedDriveId && memberPromises.size > 0) {
+      for (const [, p] of memberPromises) {
+        const permId = await p.catch(() => null)
+        if (permId) await removeSharedDrivePermission(sharedDriveId, permId).catch(() => {})
+      }
+      console.log(`[sharepoint] ${job.id}: ${memberPromises.size} membre(s) temporaire(s) retiré(s)`)
+    }
   }
 }
