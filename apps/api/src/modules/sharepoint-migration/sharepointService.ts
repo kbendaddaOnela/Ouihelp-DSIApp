@@ -191,35 +191,27 @@ export async function listChildren(
 }
 
 /**
- * Récupère l'URL de téléchargement fraîche d'un fichier (les downloadUrl du
- * listage expirent vite ; on en redemande une au moment de transférer).
+ * Ouvre un flux de lecture sur le contenu d'un fichier SharePoint via l'endpoint
+ * `/content` de Graph. Celui-ci renvoie un 302 vers une URL de stockage
+ * pré-authentifiée ; `fetch` suit la redirection automatiquement.
+ *
+ * Note : undici ne propage PAS l'en-tête Authorization à travers une redirection
+ * cross-origin, ce qui est exactement le comportement voulu (l'URL de stockage
+ * porte déjà son propre jeton dans la query). On ne demande donc surtout PAS
+ * l'annotation @microsoft.graph.downloadUrl via $select : elle est retirée par
+ * Graph dès qu'un $select est présent.
+ *
+ * Retourne le corps (ReadableStream) + la taille (Content-Length) pour l'upload.
  */
-export async function getDownloadUrl(driveId: string, itemId: string): Promise<string> {
-  const token = await getOnelaToken()
-  const res = await graphFetchWithRetry(
-    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=id,name,size,@microsoft.graph.downloadUrl`,
-    token,
-    `getDownloadUrl ${itemId}`,
-  )
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Graph getDownloadUrl ${res.status}: ${err.slice(0, 300)}`)
-  }
-  const raw = (await res.json()) as GraphDriveItemRaw
-  const dl = raw['@microsoft.graph.downloadUrl']
-  if (!dl) throw new Error(`Pas d'URL de téléchargement pour l'item ${itemId} (dossier ou fichier vide ?)`)
-  return dl
-}
-
-/**
- * Ouvre un flux de lecture sur le contenu d'un fichier SharePoint.
- * L'URL pré-authentifiée ne nécessite PAS l'en-tête Authorization.
- * Retourne le corps (ReadableStream) + la taille pour l'upload Google.
- */
-export async function openDownloadStream(
-  downloadUrl: string,
+export async function openItemContentStream(
+  driveId: string,
+  itemId: string,
 ): Promise<{ body: ReadableStream<Uint8Array>; size: number | null }> {
-  const res = await fetchWithTimeout(downloadUrl, { timeoutMs: 600_000 })
+  const token = await getOnelaToken()
+  const res = await fetchWithTimeout(
+    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`,
+    { headers: { Authorization: `Bearer ${token}` }, timeoutMs: 600_000 },
+  )
   if (!res.ok || !res.body) {
     const err = res.ok ? 'corps vide' : await res.text()
     throw new Error(`Téléchargement SharePoint échoué (${res.status}): ${String(err).slice(0, 200)}`)

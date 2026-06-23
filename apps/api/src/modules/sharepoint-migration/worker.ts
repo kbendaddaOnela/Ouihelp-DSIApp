@@ -20,7 +20,7 @@ import {
   sharepointMigratedItems,
   type SharepointMigration,
 } from './schema'
-import { listChildren, getDownloadUrl, openDownloadStream } from './sharepointService'
+import { listChildren, openItemContentStream } from './sharepointService'
 import { getSharedDrive, createFolder, uploadFile } from './googleDriveService'
 
 const POLL_INTERVAL_MS = 5000
@@ -199,8 +199,7 @@ async function processMigration(job: SharepointMigration) {
           batch.map(async (file) => {
             discovered++
             if (doneFiles.has(file.id)) return { file, skipped: true as const }
-            const dlUrl = await getDownloadUrl(job.driveId, file.id)
-            const { body, size } = await openDownloadStream(dlUrl)
+            const { body, size } = await openItemContentStream(job.driveId, file.id)
             const gdFileId = await uploadFile({
               name: file.name,
               parentId: gdParentId,
