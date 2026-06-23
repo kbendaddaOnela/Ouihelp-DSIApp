@@ -20,7 +20,7 @@ import {
   sharepointMigratedItems,
   type SharepointMigration,
 } from './schema'
-import { listChildren, openItemContentStream, type SpItem } from './sharepointService'
+import { listChildren, downloadItemContent, type SpItem } from './sharepointService'
 import { getSharedDrive, createFolder, uploadFile, type ItemMeta } from './googleDriveService'
 
 /**
@@ -41,6 +41,10 @@ function spMeta(item: SpItem): ItemMeta {
 
 const POLL_INTERVAL_MS = 5000
 const BATCH_SIZE = 3 // fichiers transférés en parallèle par dossier
+// Garde-fou : on bufferise chaque fichier en mémoire (×BATCH_SIZE en parallèle).
+// Au-delà de cette taille on saute le fichier (évite l'OOM du conteneur et les
+// téléchargements de 10 min type backup .pst). À transférer manuellement.
+const MAX_FILE_BYTES = 300 * 1024 * 1024 // 300 Mo
 const HEARTBEAT_MS = 60_000
 const ORPHAN_STALE_MS = 15 * 60 * 1000
 
@@ -215,15 +219,19 @@ async function processMigration(job: SharepointMigration) {
           batch.map(async (file) => {
             discovered++
             if (doneFiles.has(file.id)) return { file, skipped: true as const }
-            const { body, size } = await openItemContentStream(job.driveId, file.id)
+            if (file.size != null && file.size > MAX_FILE_BYTES) {
+              throw new Error(
+                `Fichier trop volumineux (${Math.round(file.size / 1024 / 1024)} Mo, limite ${MAX_FILE_BYTES / 1024 / 1024} Mo) — à transférer manuellement`,
+              )
+            }
+            const { buffer, size } = await downloadItemContent(job.driveId, file.id)
             const gdFileId = await uploadFile({
               name: file.name,
               parentId: gdParentId,
-              body,
-              size: size ?? file.size,
+              body: buffer,
               meta: spMeta(file),
             })
-            return { file, skipped: false as const, gdFileId, bytes: file.size ?? size ?? 0 }
+            return { file, skipped: false as const, gdFileId, bytes: file.size ?? size }
           }),
         )
 
