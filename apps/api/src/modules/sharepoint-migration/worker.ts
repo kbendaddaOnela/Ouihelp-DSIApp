@@ -32,28 +32,58 @@ import {
 import { migrations } from '../migration/schema'
 import { isNotNull } from 'drizzle-orm'
 
+interface AuthorMaps {
+  byEmail: Map<string, string>
+  byName: Map<string, string>
+}
+
 /**
- * Construit la table de mapping auteur ONELA → compte Google à usurper.
- * Source : la table `migrations` (onelaEmail / onelaUpn → gohUpn = compte Google
- * prenom.nom@mig.onela.com). Indexée sur l'email ET l'UPN, en minuscules.
+ * Construit les tables de mapping auteur ONELA → compte Google à usurper.
+ * Source : la table `migrations` (gohUpn = compte Google prenom.nom@mig.onela.com).
+ * - byEmail : indexée sur onelaEmail ET onelaUpn (en minuscules).
+ * - byName  : indexée sur onelaDisplayName — filet de secours quand Microsoft
+ *   Graph ne renvoie PAS l'email dans lastModifiedBy/createdBy (fréquent : il n'y
+ *   a alors que le displayName). Sans ça, le même auteur est attribué sur les
+ *   fichiers où Graph donne l'email, et en repli admin sur les autres.
  * Seuls les users réellement migrés (gohUpn non null) sont mappables.
  */
-async function loadAuthorMap(): Promise<Map<string, string>> {
+async function loadAuthorMaps(): Promise<AuthorMaps> {
   const rows = await db
     .select({
       onelaEmail: migrations.onelaEmail,
       onelaUpn: migrations.onelaUpn,
+      onelaDisplayName: migrations.onelaDisplayName,
       gohUpn: migrations.gohUpn,
     })
     .from(migrations)
     .where(isNotNull(migrations.gohUpn))
-  const map = new Map<string, string>()
+  const byEmail = new Map<string, string>()
+  const byName = new Map<string, string>()
   for (const r of rows) {
     if (!r.gohUpn) continue
-    if (r.onelaEmail) map.set(r.onelaEmail.toLowerCase(), r.gohUpn)
-    if (r.onelaUpn) map.set(r.onelaUpn.toLowerCase(), r.gohUpn)
+    if (r.onelaEmail) byEmail.set(r.onelaEmail.toLowerCase(), r.gohUpn)
+    if (r.onelaUpn) byEmail.set(r.onelaUpn.toLowerCase(), r.gohUpn)
+    if (r.onelaDisplayName) byName.set(r.onelaDisplayName.trim().toLowerCase(), r.gohUpn)
   }
-  return map
+  return { byEmail, byName }
+}
+
+/**
+ * Résout le compte Google à usurper pour un item : email d'abord (plus fiable),
+ * puis nom d'affichage (filet quand Graph omet l'email). Renvoie le gohUpn ou
+ * undefined (→ repli admin).
+ */
+function resolveAuthorGoh(item: SpItem, maps: AuthorMaps): string | undefined {
+  const e1 = item.lastModifiedByEmail?.toLowerCase()
+  const e2 = item.createdByEmail?.toLowerCase()
+  const n1 = item.lastModifiedByName?.trim().toLowerCase()
+  const n2 = item.createdByName?.trim().toLowerCase()
+  return (
+    (e1 ? maps.byEmail.get(e1) : undefined) ??
+    (e2 ? maps.byEmail.get(e2) : undefined) ??
+    (n1 ? maps.byName.get(n1) : undefined) ??
+    (n2 ? maps.byName.get(n2) : undefined)
+  )
 }
 
 /**
@@ -196,7 +226,7 @@ async function processMigration(job: SharepointMigration) {
     let migratedBytes = 0
 
     // 2b) Mapping auteur ONELA → compte Google + ajout de membre à la demande.
-    const authorMap = await loadAuthorMap()
+    const authorMaps = await loadAuthorMaps()
     const adminLower = (process.env['GOOGLE_ADMIN_EMAIL'] ?? '').toLowerCase()
     const driveId = sharedDriveId // non-null après le check ci-dessus (pour les closures)
     /** Ajoute (une seule fois) un user au Shared Drive ; renvoie l'id de permission ou null. */
@@ -244,17 +274,19 @@ async function processMigration(job: SharepointMigration) {
           }
           totalFiles++
           totalBytes += k.size ?? 0
-          // Résolution d'attribution prévisionnelle
-          const aEmail = (k.lastModifiedByEmail ?? k.createdByEmail ?? '').toLowerCase()
-          const mapped = aEmail ? authorMap.get(aEmail) : undefined
+          // Résolution d'attribution prévisionnelle (email puis nom)
+          const mapped = resolveAuthorGoh(k, authorMaps)
           if (mapped && mapped.toLowerCase() !== adminLower) {
             attributable++
           } else {
             fallbackCount++
-            const label = aEmail
-              ? `${aEmail} (non migré)`
-              : `«${k.lastModifiedByName ?? k.createdByName ?? 'système'}» (sans email)`
-            unmapped.set(label, (unmapped.get(label) ?? 0) + 1)
+            const who =
+              k.lastModifiedByName ??
+              k.createdByName ??
+              k.lastModifiedByEmail ??
+              k.createdByEmail ??
+              'système'
+            unmapped.set(who, (unmapped.get(who) ?? 0) + 1)
           }
         }
         // Feedback périodique : le total grimpe pendant l'analyse (barre à 0%
@@ -354,8 +386,7 @@ async function processMigration(job: SharepointMigration) {
 
             // Auteur SharePoint → compte Google à usurper (pour le « modifié par »).
             // Repli sur le compte admin si auteur non mappé, sans compte, ou échec.
-            const authorEmail = (file.lastModifiedByEmail ?? file.createdByEmail ?? '').toLowerCase()
-            const gohUpn = authorEmail ? authorMap.get(authorEmail) : undefined
+            const gohUpn = resolveAuthorGoh(file, authorMaps)
             let impersonate: string | undefined
             if (gohUpn && gohUpn.toLowerCase() !== adminLower) {
               const permId = await ensureMember(gohUpn)
