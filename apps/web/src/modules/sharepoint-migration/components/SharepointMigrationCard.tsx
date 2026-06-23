@@ -78,7 +78,10 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             {m.migratedItems} / {total} fichiers
             {m.failedItems > 0 && <span className="ml-1 text-red-600">· {m.failedItems} échec(s)</span>}
           </span>
-          <span>{fmtBytes(m.migratedBytes)}</span>
+          <span>
+            {fmtBytes(m.migratedBytes)}
+            {m.totalBytes > 0 && <span className="text-gray-400"> / {fmtBytes(m.totalBytes)}</span>}
+          </span>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
           <div
