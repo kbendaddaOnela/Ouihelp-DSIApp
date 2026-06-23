@@ -35,12 +35,22 @@ export interface SpItem {
   webUrl: string | null
   /** URL de téléchargement pré-authentifiée (fichiers uniquement, courte durée) */
   downloadUrl: string | null
+  /** Métadonnées d'origine SharePoint (réinjectées côté Google Drive) */
+  createdDateTime: string | null
+  lastModifiedDateTime: string | null
+  createdByName: string | null
+  lastModifiedByName: string | null
 }
 
-// Champs demandés au listage : assez pour décider dossier/fichier + télécharger
+// Champs demandés au listage : décider dossier/fichier + métadonnées d'origine
 const ITEM_SELECT =
-  'id,name,size,webUrl,folder,file,parentReference'
-const ITEM_EXPAND = '' // downloadUrl récupéré via @microsoft.graph.downloadUrl (inclus par défaut)
+  'id,name,size,webUrl,folder,file,parentReference,createdDateTime,lastModifiedDateTime,createdBy,lastModifiedBy'
+const ITEM_EXPAND = ''
+
+interface GraphIdentitySet {
+  user?: { displayName?: string; email?: string }
+  application?: { displayName?: string }
+}
 
 interface GraphDriveItemRaw {
   id: string
@@ -50,6 +60,15 @@ interface GraphDriveItemRaw {
   folder?: { childCount?: number }
   file?: { mimeType?: string }
   ['@microsoft.graph.downloadUrl']?: string
+  createdDateTime?: string
+  lastModifiedDateTime?: string
+  createdBy?: GraphIdentitySet
+  lastModifiedBy?: GraphIdentitySet
+}
+
+/** Extrait un nom lisible d'un IdentitySet (user d'abord, sinon application). */
+function identityName(id: GraphIdentitySet | undefined): string | null {
+  return id?.user?.displayName ?? id?.application?.displayName ?? null
 }
 
 /** Fetch Graph avec retry sur throttling transitoire (429/503/504). */
@@ -80,6 +99,10 @@ function mapItem(raw: GraphDriveItemRaw): SpItem {
     childCount: raw.folder?.childCount ?? null,
     webUrl: raw.webUrl ?? null,
     downloadUrl: raw['@microsoft.graph.downloadUrl'] ?? null,
+    createdDateTime: raw.createdDateTime ?? null,
+    lastModifiedDateTime: raw.lastModifiedDateTime ?? null,
+    createdByName: identityName(raw.createdBy),
+    lastModifiedByName: identityName(raw.lastModifiedBy),
   }
 }
 
