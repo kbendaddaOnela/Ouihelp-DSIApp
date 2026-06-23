@@ -197,8 +197,8 @@ interface GoogleCalendarEvent {
 }
 
 // Couleur Google Calendar pour les rdv privés (incl. rdv passés forcés en privé).
-// '5' = Banane / jaune (choix DSI, juin 2026).
-const PRIVATE_EVENT_COLOR_ID = '5'
+// '2' = Sauge / vert #33B679 (choix DSI, juin 2026).
+const PRIVATE_EVENT_COLOR_ID = '2'
 
 // Fin d'événement (timed ou all-day) en ms epoch, ou null si indéterminable.
 function eventEndMs(g: GraphEvent): number | null {
