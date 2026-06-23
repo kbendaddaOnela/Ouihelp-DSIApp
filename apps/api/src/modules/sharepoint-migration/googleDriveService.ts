@@ -3,10 +3,13 @@
 // Scope DwD requis (à autoriser dans Google Admin Console pour le service account) :
 //   - https://www.googleapis.com/auth/drive
 //
-// On impersone GOOGLE_ADMIN_EMAIL : il devient organisateur des Shared Drives créés
-// (les membres réels seront ajoutés en phase 2, mapping pnom@onela.com →
-// prenom.nom@mig.onela.com). Tous les appels portent supportsAllDrives=true car la
-// cible est un Drive partagé (et non un Mon Drive).
+// Deux modes d'impersonation DwD :
+//  - GOOGLE_ADMIN_EMAIL pour l'administration (recherche de Drives, ajout/retrait
+//    de membres, création de dossiers).
+//  - l'AUTEUR du fichier (compte prenom.nom@mig.onela.com) pour l'upload, afin que
+//    Google enregistre le bon « modifié par ». Repli admin si l'auteur n'a pas de
+//    compte Google. Tous les appels portent supportsAllDrives=true (cible = Drive
+//    partagé, pas un Mon Drive).
 
 import { fetchWithTimeout } from '../migration/httpClient'
 import { getGoogleAccessTokenForUser } from '../migration/googleService'
@@ -22,6 +25,56 @@ function adminEmail(): string {
 
 function driveToken(): Promise<string> {
   return getGoogleAccessTokenForUser(adminEmail(), DRIVE_SCOPE)
+}
+
+/** Token Drive en usurpant un utilisateur précis (pour attribuer le « modifié par »). */
+function impersonatedToken(userEmail: string): Promise<string> {
+  return getGoogleAccessTokenForUser(userEmail, DRIVE_SCOPE)
+}
+
+/**
+ * Ajoute un utilisateur comme membre (writer) d'un Shared Drive — prérequis pour
+ * pouvoir y déposer du contenu EN TANT QUE lui (attribution du « modifié par »).
+ * Idempotent côté usage : on l'appelle une fois par user/migration et on mémorise
+ * l'id de permission pour le retirer en fin de run. Retourne l'id de permission,
+ * ou null si l'ajout a échoué (→ l'appelant repliera sur le compte admin).
+ */
+export async function addSharedDriveMember(
+  sharedDriveId: string,
+  userEmail: string,
+): Promise<string | null> {
+  const token = await driveToken()
+  const res = await fetchWithTimeout(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(sharedDriveId)}/permissions?supportsAllDrives=true&useDomainAdminAccess=true&sendNotificationEmail=false&fields=id`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'user', role: 'writer', emailAddress: userEmail }),
+    },
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    console.warn(`[sharepoint] addSharedDriveMember ${userEmail} échoué (${res.status}): ${err.slice(0, 200)}`)
+    return null
+  }
+  const data = (await res.json()) as { id: string }
+  return data.id
+}
+
+/** Retire une permission d'un Shared Drive (best-effort, nettoyage fin de run). */
+export async function removeSharedDrivePermission(
+  sharedDriveId: string,
+  permissionId: string,
+): Promise<void> {
+  const token = await driveToken()
+  const res = await fetchWithTimeout(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(sharedDriveId)}/permissions/${encodeURIComponent(permissionId)}?supportsAllDrives=true&useDomainAdminAccess=true`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+  )
+  if (!res.ok && res.status !== 404) {
+    const err = await res.text()
+    console.warn(`[sharepoint] removeSharedDrivePermission ${permissionId} échoué (${res.status}): ${err.slice(0, 150)}`)
+  }
 }
 
 /**
@@ -122,6 +175,10 @@ export async function createFolder(name: string, parentId: string, meta?: ItemMe
  * Upload résumable d'un fichier (Buffer) vers un Shared Drive, avec métadonnées
  * d'origine. Le Buffer est rejouable par undici → robuste aux retries de
  * connexion (contrairement à un flux à usage unique).
+ *
+ * `impersonate` : si fourni, l'upload se fait EN TANT QUE cet utilisateur (token
+ * DwD) → Google l'enregistre comme « modifié par ». Sinon, compte admin.
+ * Prérequis : l'utilisateur usurpé doit être membre du Shared Drive.
  */
 export async function uploadFile(params: {
   name: string
@@ -129,8 +186,9 @@ export async function uploadFile(params: {
   body: Buffer
   mimeType?: string
   meta?: ItemMeta
+  impersonate?: string
 }): Promise<string> {
-  const token = await driveToken()
+  const token = params.impersonate ? await impersonatedToken(params.impersonate) : await driveToken()
 
   // 1) Ouvrir une session résumable (metadata + dates d'origine)
   const initRes = await fetchWithTimeout(

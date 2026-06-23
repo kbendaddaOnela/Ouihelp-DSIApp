@@ -40,6 +40,8 @@ export interface SpItem {
   lastModifiedDateTime: string | null
   createdByName: string | null
   lastModifiedByName: string | null
+  createdByEmail: string | null
+  lastModifiedByEmail: string | null
 }
 
 // Champs demandés au listage : décider dossier/fichier + métadonnées d'origine
@@ -50,6 +52,11 @@ const ITEM_EXPAND = ''
 interface GraphIdentitySet {
   user?: { displayName?: string; email?: string }
   application?: { displayName?: string }
+}
+
+/** Email de l'utilisateur d'un IdentitySet (null pour application/système). */
+function identityEmail(id: GraphIdentitySet | undefined): string | null {
+  return id?.user?.email ?? null
 }
 
 interface GraphDriveItemRaw {
@@ -103,6 +110,8 @@ function mapItem(raw: GraphDriveItemRaw): SpItem {
     lastModifiedDateTime: raw.lastModifiedDateTime ?? null,
     createdByName: identityName(raw.createdBy),
     lastModifiedByName: identityName(raw.lastModifiedBy),
+    createdByEmail: identityEmail(raw.createdBy),
+    lastModifiedByEmail: identityEmail(raw.lastModifiedBy),
   }
 }
 
