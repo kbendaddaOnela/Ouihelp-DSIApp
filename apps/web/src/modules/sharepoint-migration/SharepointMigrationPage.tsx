@@ -42,6 +42,8 @@ export default function SharepointMigrationPage() {
   const [drive, setDrive] = useState<SharepointDrive | null>(null)
   const [crumbs, setCrumbs] = useState<FolderCrumb[]>([])
   const [items, setItems] = useState<SharepointItem[]>([])
+  // Dossiers cochés pour migration (chacun recréé à la racine). Vide = bibliothèque entière.
+  const [selectedRoots, setSelectedRoots] = useState<Array<{ id: string; name: string }>>([])
   const [gdQuery, setGdQuery] = useState('')
   const [selectedGd, setSelectedGd] = useState<GoogleSharedDrive | null>(null)
   const [migrateVersions, setMigrateVersions] = useState(true)
@@ -67,10 +69,6 @@ export default function SharepointMigrationPage() {
 
   const currentFolder = crumbs.length > 0 ? crumbs[crumbs.length - 1]! : null
   const currentFolderId = currentFolder?.id ?? null
-  const currentPath = crumbs
-    .filter((c) => c.id !== null)
-    .map((c) => c.name)
-    .join('/')
 
   const onResolve = () => {
     setError(null)
@@ -85,9 +83,18 @@ export default function SharepointMigrationPage() {
     })
   }
 
+  const toggleRoot = (folder: SharepointItem) => {
+    setSelectedRoots((prev) =>
+      prev.some((r) => r.id === folder.id)
+        ? prev.filter((r) => r.id !== folder.id)
+        : [...prev, { id: folder.id, name: folder.name }],
+    )
+  }
+
   const openDrive = (d: SharepointDrive) => {
     setError(null)
     setDrive(d)
+    setSelectedRoots([])
     setCrumbs([{ id: null, name: d.name }])
     browse.mutate(
       { driveId: d.id, itemId: null },
@@ -128,6 +135,7 @@ export default function SharepointMigrationPage() {
     setItems([])
     setCrumbs([])
     setUrl(DEFAULT_SITE_URL)
+    setSelectedRoots([])
     setGdQuery('')
     setSelectedGd(null)
     setMigrateVersions(true)
@@ -147,8 +155,7 @@ export default function SharepointMigrationPage() {
         siteName: resolved.site.displayName ?? resolved.site.name,
         driveId: drive.id,
         driveName: drive.name,
-        rootItemId: currentFolderId,
-        rootPath: currentPath || null,
+        selectedRoots,
         gdSharedDriveId: selectedGd.id,
         gdSharedDriveName: selectedGd.name,
         migrateVersions,
@@ -236,12 +243,35 @@ export default function SharepointMigrationPage() {
       {drive && (
         <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
           <h2 className="mb-2 text-sm font-semibold text-gray-800">
-            3. Sélectionner le dossier à migrer
+            3. Sélectionner le(s) dossier(s) à migrer
           </h2>
           <p className="mb-3 text-xs text-gray-500">
-            Navigue jusqu'au dossier voulu puis valide. Reste à la racine pour migrer toute la
-            bibliothèque.
+            <strong>Coche</strong> un ou plusieurs dossiers (chacun sera recréé à la racine du
+            Shared Drive). Clique sur un nom pour <strong>naviguer</strong> dedans. Ne coche rien
+            pour migrer <strong>toute la bibliothèque</strong>.
           </p>
+
+          {/* Dossiers sélectionnés */}
+          {selectedRoots.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+              {selectedRoots.map((r) => (
+                <span
+                  key={r.id}
+                  className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-800"
+                >
+                  <Folder className="h-3 w-3" />
+                  {r.name}
+                  <button
+                    onClick={() => setSelectedRoots((prev) => prev.filter((x) => x.id !== r.id))}
+                    className="ml-0.5 text-blue-500 hover:text-blue-800"
+                    aria-label={`Retirer ${r.name}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Fil d'Ariane */}
           <div className="mb-3 flex flex-wrap items-center gap-1 text-xs text-gray-600">
@@ -271,20 +301,37 @@ export default function SharepointMigrationPage() {
             )}
             {!browse.isPending && (
               <ul className="divide-y divide-gray-100">
-                {folders.map((f) => (
-                  <li
-                    key={f.id}
-                    className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-blue-50"
-                    onClick={() => openFolder(f)}
-                  >
-                    <Folder className="h-4 w-4 shrink-0 text-amber-500" />
-                    <span className="flex-1 truncate text-gray-800">{f.name}</span>
-                    {f.childCount != null && (
-                      <span className="text-xs text-gray-400">{f.childCount}</span>
-                    )}
-                    <ChevronRight className="h-4 w-4 text-gray-300" />
-                  </li>
-                ))}
+                {folders.map((f) => {
+                  const checked = selectedRoots.some((r) => r.id === f.id)
+                  return (
+                    <li
+                      key={f.id}
+                      className={`flex items-center gap-2 px-3 py-2 text-sm ${
+                        checked ? 'bg-blue-50' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleRoot(f)}
+                        className="shrink-0 cursor-pointer"
+                        aria-label={`Sélectionner ${f.name}`}
+                      />
+                      <button
+                        onClick={() => openFolder(f)}
+                        className="flex flex-1 items-center gap-2 truncate text-left"
+                        title="Ouvrir le dossier"
+                      >
+                        <Folder className="h-4 w-4 shrink-0 text-amber-500" />
+                        <span className="flex-1 truncate text-gray-800">{f.name}</span>
+                        {f.childCount != null && (
+                          <span className="text-xs text-gray-400">{f.childCount}</span>
+                        )}
+                        <ChevronRight className="h-4 w-4 text-gray-300" />
+                      </button>
+                    </li>
+                  )
+                })}
                 {files.map((f) => (
                   <li key={f.id} className="flex items-center gap-2 px-3 py-2 text-sm text-gray-500">
                     <FileIcon className="h-4 w-4 shrink-0 text-gray-300" />
@@ -314,7 +361,15 @@ export default function SharepointMigrationPage() {
             <div className="rounded bg-gray-50 px-3 py-2 text-xs text-gray-600">
               <FolderOpen className="mr-1 inline h-3.5 w-3.5 text-gray-400" />
               Source : <strong>{drive.name}</strong>
-              {currentPath ? ` / ${currentPath}` : ' (toute la bibliothèque)'}
+              {' — '}
+              {selectedRoots.length > 0 ? (
+                <span>
+                  {selectedRoots.length} dossier(s) recréé(s) :{' '}
+                  <strong>{selectedRoots.map((r) => r.name).join(', ')}</strong>
+                </span>
+              ) : (
+                <span>toute la bibliothèque (contenu à la racine)</span>
+              )}
             </div>
 
             {selectedGd ? (

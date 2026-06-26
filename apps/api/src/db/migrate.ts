@@ -75,6 +75,7 @@ async function ensureSchemaPatches() {
     // SharePoint : fichiers ignorés (trop volumineux) + migration des versions
     { table: 'sharepoint_migrations', column: 'skipped_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`skipped_items\` int NOT NULL DEFAULT 0` },
     { table: 'sharepoint_migrations', column: 'migrate_versions', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`migrate_versions\` boolean NOT NULL DEFAULT true` },
+    { table: 'sharepoint_migrations', column: 'selected_roots', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`selected_roots\` text` },
   ]
   for (const p of columnPatches) {
     try {
@@ -318,6 +319,7 @@ async function ensureSchemaPatches() {
         \`drive_name\` varchar(500) NOT NULL,
         \`root_item_id\` varchar(500),
         \`root_path\` varchar(1000),
+        \`selected_roots\` text,
         \`gd_shared_drive_id\` varchar(255),
         \`gd_shared_drive_name\` varchar(500) NOT NULL,
         \`status\` enum('pending','running','paused','success','error') NOT NULL DEFAULT 'pending',

@@ -22,6 +22,20 @@ import type {
 export const sharepointMigrationRouter = new Hono<{ Variables: RbacVariables }>()
 sharepointMigrationRouter.use('*', authMiddleware, loadUserRole)
 
+/** Parse le JSON selected_roots (tolérant). */
+function parseRoots(raw: string | null): Array<{ id: string; name: string }> {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter((r) => r && typeof r.id === 'string' && typeof r.name === 'string')
+      .map((r) => ({ id: r.id, name: r.name }))
+  } catch {
+    return []
+  }
+}
+
 function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrationRecord {
   return {
     id: m.id,
@@ -32,6 +46,7 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     driveName: m.driveName,
     rootItemId: m.rootItemId,
     rootPath: m.rootPath,
+    selectedRoots: parseRoots(m.selectedRoots),
     gdSharedDriveId: m.gdSharedDriveId,
     gdSharedDriveName: m.gdSharedDriveName,
     status: m.status,
@@ -128,6 +143,9 @@ sharepointMigrationRouter.post('/', requirePermission('migration:write'), async 
   }
   const initiatedBy = c.get('dbUser').email
   const id = randomUUID()
+  // Dossiers sélectionnés (chacun recréé à la racine). Vide = bibliothèque entière.
+  const roots = (body.selectedRoots ?? []).filter((r) => r?.id && r?.name)
+  const displayPath = roots.length > 0 ? roots.map((r) => r.name).join(', ') : null
   await db.insert(sharepointMigrations).values({
     id,
     siteUrl: body.siteUrl,
@@ -135,8 +153,9 @@ sharepointMigrationRouter.post('/', requirePermission('migration:write'), async 
     siteName: body.siteName,
     driveId: body.driveId,
     driveName: body.driveName,
-    rootItemId: body.rootItemId,
-    rootPath: body.rootPath,
+    rootItemId: null,
+    rootPath: displayPath,
+    selectedRoots: roots.length > 0 ? JSON.stringify(roots) : null,
     gdSharedDriveId: body.gdSharedDriveId,
     gdSharedDriveName: body.gdSharedDriveName.trim(),
     migrateVersions: body.migrateVersions ?? true,

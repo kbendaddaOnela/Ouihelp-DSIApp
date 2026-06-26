@@ -193,6 +193,23 @@ interface QueueEntry {
   path: string
 }
 
+/**
+ * Dossiers source à migrer. Chacun est recréé à la racine du Shared Drive.
+ * Liste vide (selectedRoots null) = toute la bibliothèque (racine, sans wrapper).
+ */
+function parseSelectedRoots(job: SharepointMigration): Array<{ id: string; name: string }> {
+  if (!job.selectedRoots) return []
+  try {
+    const arr = JSON.parse(job.selectedRoots)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter((r) => r && typeof r.id === 'string' && typeof r.name === 'string')
+      .map((r) => ({ id: r.id as string, name: r.name as string }))
+  } catch {
+    return []
+  }
+}
+
 async function processMigration(job: SharepointMigration) {
   console.log(`[sharepoint] start ${job.id} (${job.siteName} / ${job.driveName} → ${job.gdSharedDriveName})`)
   const stopHeartbeat = startHeartbeat(job.id)
@@ -379,8 +396,12 @@ async function processMigration(job: SharepointMigration) {
     let attributable = 0
     let fallbackCount = 0
     const unmapped = new Map<string, number>()
+    // Points de départ : les dossiers sélectionnés, ou la racine de la bibliothèque
+    const selectedRoots = parseSelectedRoots(job)
+    const startIds: (string | null)[] =
+      selectedRoots.length > 0 ? selectedRoots.map((r) => r.id) : [null]
     {
-      const countQueue: (string | null)[] = [job.rootItemId]
+      const countQueue: (string | null)[] = [...startIds]
       let sinceFlush = 0
       while (countQueue.length > 0) {
         if (STOP_SIGNALS.has(job.id)) break // la pause interrompt aussi le comptage
@@ -448,10 +469,35 @@ async function processMigration(job: SharepointMigration) {
       .set({ totalItems: totalFiles, totalBytes, migratedItems: migrated, failedItems: 0 })
       .where(eq(sharepointMigrations.id, job.id))
 
-    // 3) Parcours BFS
-    const queue: QueueEntry[] = [
-      { spFolderId: job.rootItemId, gdParentId: sharedDriveId, path: job.rootPath ?? '' },
-    ]
+    // 3) Parcours BFS — un point de départ par dossier sélectionné (chacun RECRÉÉ
+    // à la racine du Shared Drive), ou la racine de la bibliothèque si aucun.
+    const queue: QueueEntry[] = []
+    if (selectedRoots.length === 0) {
+      queue.push({ spFolderId: null, gdParentId: sharedDriveId, path: '' })
+    } else {
+      for (const root of selectedRoots) {
+        let gdId = folderGdMap.get(root.id)
+        if (!gdId) {
+          gdId = await createFolder(root.name, sharedDriveId)
+          folderGdMap.set(root.id, gdId)
+          await db
+            .insert(sharepointMigratedItems)
+            .values({
+              migrationId: job.id,
+              spItemId: root.id,
+              parentSpItemId: null,
+              name: root.name,
+              spPath: root.name.slice(0, 1500),
+              isFolder: true,
+              sizeBytes: null,
+              gdFileId: gdId,
+              status: 'success',
+            })
+            .onDuplicateKeyUpdate({ set: { status: 'success', gdFileId: gdId, errorDetails: null } })
+        }
+        queue.push({ spFolderId: root.id, gdParentId: gdId, path: root.name })
+      }
+    }
     let stoppedByUser = false
 
     // totalItems est figé par le pré-comptage : on ne l'écrase pas ici.

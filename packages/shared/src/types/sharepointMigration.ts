@@ -62,6 +62,12 @@ export interface SearchSharedDrivesResponse {
   drives: GoogleSharedDrive[]
 }
 
+/** Un dossier source sélectionné (recréé à la racine du Shared Drive) */
+export interface SharepointSelectedRoot {
+  id: string
+  name: string
+}
+
 /** Demande de création d'une migration SharePoint → Shared Drive */
 export interface CreateSharepointMigrationRequest {
   /** URL d'origine du site (mémorisée pour traçabilité / réaffichage) */
@@ -71,9 +77,11 @@ export interface CreateSharepointMigrationRequest {
   /** Drive (bibliothèque) source sélectionné */
   driveId: string
   driveName: string
-  /** Sous-dossier source à migrer ; null = racine du drive (toute la bibliothèque) */
-  rootItemId: string | null
-  rootPath: string | null
+  /**
+   * Dossiers source à migrer — chacun est RECRÉÉ à la racine du Shared Drive.
+   * Liste vide = toute la bibliothèque (contenu à la racine, sans wrapper).
+   */
+  selectedRoots: SharepointSelectedRoot[]
   /** Shared Drive Google cible — créé MANUELLEMENT par l'admin, sélectionné via recherche */
   gdSharedDriveId: string
   /** Nom du Shared Drive sélectionné (affichage) */
@@ -91,6 +99,7 @@ export interface SharepointMigrationRecord {
   driveName: string
   rootItemId: string | null
   rootPath: string | null
+  selectedRoots: SharepointSelectedRoot[]
   gdSharedDriveId: string | null
   gdSharedDriveName: string
   status: SharepointMigrationStatus
