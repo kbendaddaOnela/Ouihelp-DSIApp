@@ -47,8 +47,12 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
   const isActive = m.status === 'running' || m.status === 'pending'
   const status = STATUS_STYLES[m.status]
   const StatusIcon = status.icon
-  const total = Math.max(m.totalItems, m.migratedItems + m.failedItems)
-  const pct = total > 0 ? Math.round((m.migratedItems / total) * 100) : 0
+  // Les fichiers ignorés (trop volumineux) sont « traités » : ils comptent dans
+  // la progression mais ne sont pas des erreurs (barre ambre seulement si vrai échec).
+  const total = Math.max(m.totalItems, m.migratedItems + m.failedItems + m.skippedItems)
+  const accounted = m.migratedItems + m.skippedItems
+  const pct = total > 0 ? Math.round((accounted / total) * 100) : 0
+  const hasDetails = m.failedItems > 0 || m.skippedItems > 0
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
@@ -77,6 +81,9 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
           <span>
             {m.migratedItems} / {total} fichiers
             {m.failedItems > 0 && <span className="ml-1 text-red-600">· {m.failedItems} échec(s)</span>}
+            {m.skippedItems > 0 && (
+              <span className="ml-1 text-amber-600">· {m.skippedItems} ignoré(s) (trop gros)</span>
+            )}
           </span>
           <span>
             {fmtBytes(m.migratedBytes)}
@@ -128,13 +135,13 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             Débloquer
           </button>
         )}
-        {m.failedItems > 0 && (
+        {hasDetails && (
           <button
             onClick={() => setShowErrors((v) => !v)}
             className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
           >
             <FolderOpen className="h-3.5 w-3.5" />
-            {showErrors ? 'Masquer' : 'Voir'} les erreurs
+            {showErrors ? 'Masquer' : 'Voir'} les détails
           </button>
         )}
         <button
@@ -157,39 +164,64 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
 }
 
 function ErrorList({ migrationId }: { migrationId: string }) {
-  const [errors, setErrors] = useState<
-    Awaited<ReturnType<typeof sharepointMigrationApi.errors>>['errors'] | null
-  >(null)
+  const [data, setData] = useState<Awaited<
+    ReturnType<typeof sharepointMigrationApi.errors>
+  > | null>(null)
   const [loading, setLoading] = useState(false)
 
   const load = async () => {
     setLoading(true)
     try {
-      const data = await sharepointMigrationApi.errors(migrationId)
-      setErrors(data.errors)
+      setData(await sharepointMigrationApi.errors(migrationId))
     } finally {
       setLoading(false)
     }
   }
 
-  if (errors === null && !loading) {
+  if (data === null && !loading) {
     void load()
     return null
   }
 
+  const errors = data?.errors ?? []
+  const skipped = data?.skipped ?? []
+
   return (
-    <div className="mt-3 max-h-60 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 text-xs">
+    <div className="mt-3 max-h-60 space-y-2 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 text-xs">
       {loading && <p className="text-gray-500">Chargement…</p>}
-      {errors?.length === 0 && <p className="text-gray-500">Aucune erreur.</p>}
-      <ul className="space-y-1.5">
-        {errors?.map((e) => (
-          <li key={e.id} className="border-b border-gray-100 pb-1.5 last:border-0">
-            <div className="font-medium text-gray-800">{e.name ?? e.spItemId}</div>
-            {e.spPath && <div className="text-gray-400">{e.spPath}</div>}
-            <div className="text-red-600">{e.errorDetails}</div>
-          </li>
-        ))}
-      </ul>
+      {!loading && errors.length === 0 && skipped.length === 0 && (
+        <p className="text-gray-500">Aucun détail.</p>
+      )}
+      {errors.length > 0 && (
+        <div>
+          <p className="mb-1 font-semibold text-red-700">Erreurs ({errors.length})</p>
+          <ul className="space-y-1.5">
+            {errors.map((e) => (
+              <li key={e.id} className="border-b border-gray-100 pb-1.5 last:border-0">
+                <div className="font-medium text-gray-800">{e.name ?? e.spItemId}</div>
+                {e.spPath && <div className="text-gray-400">{e.spPath}</div>}
+                <div className="text-red-600">{e.errorDetails}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {skipped.length > 0 && (
+        <div>
+          <p className="mb-1 font-semibold text-amber-700">
+            Ignorés — à transférer manuellement ({skipped.length})
+          </p>
+          <ul className="space-y-1.5">
+            {skipped.map((e) => (
+              <li key={e.id} className="border-b border-gray-100 pb-1.5 last:border-0">
+                <div className="font-medium text-gray-800">{e.name ?? e.spItemId}</div>
+                {e.spPath && <div className="text-gray-400">{e.spPath}</div>}
+                <div className="text-amber-600">{e.errorDetails}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

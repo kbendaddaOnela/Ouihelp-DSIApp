@@ -78,6 +78,8 @@ export interface CreateSharepointMigrationRequest {
   gdSharedDriveId: string
   /** Nom du Shared Drive sélectionné (affichage) */
   gdSharedDriveName: string
+  /** Migrer l'historique des versions (toutes les révisions, pas juste la dernière) */
+  migrateVersions: boolean
 }
 
 export interface SharepointMigrationRecord {
@@ -95,8 +97,10 @@ export interface SharepointMigrationRecord {
   totalItems: number
   migratedItems: number
   failedItems: number
+  skippedItems: number
   totalBytes: number
   migratedBytes: number
+  migrateVersions: boolean
   errorDetails: string | null
   startedAt: string | null
   finishedAt: string | null
@@ -109,17 +113,22 @@ export interface SharepointMigrationHistoryResponse {
   migrations: SharepointMigrationRecord[]
 }
 
+interface SharepointProblemItem {
+  id: number
+  spItemId: string
+  name: string | null
+  spPath: string | null
+  isFolder: boolean
+  sizeBytes: number | null
+  errorDetails: string | null
+  createdAt: string
+}
+
 export interface SharepointMigrationErrorsResponse {
-  errors: Array<{
-    id: number
-    spItemId: string
-    name: string | null
-    spPath: string | null
-    isFolder: boolean
-    sizeBytes: number | null
-    errorDetails: string | null
-    createdAt: string
-  }>
+  /** Vrais échecs (status='error') */
+  errors: SharepointProblemItem[]
+  /** Fichiers volontairement ignorés (trop volumineux, status='skipped') */
+  skipped: SharepointProblemItem[]
 }
 
 /** Réutilise le vocabulaire d'étape commun au reste de l'app */

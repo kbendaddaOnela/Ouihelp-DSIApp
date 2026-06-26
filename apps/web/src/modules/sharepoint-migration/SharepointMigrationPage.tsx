@@ -44,6 +44,7 @@ export default function SharepointMigrationPage() {
   const [items, setItems] = useState<SharepointItem[]>([])
   const [gdQuery, setGdQuery] = useState('')
   const [selectedGd, setSelectedGd] = useState<GoogleSharedDrive | null>(null)
+  const [migrateVersions, setMigrateVersions] = useState(true)
   const [historyExpanded, setHistoryExpanded] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -129,6 +130,7 @@ export default function SharepointMigrationPage() {
     setUrl(DEFAULT_SITE_URL)
     setGdQuery('')
     setSelectedGd(null)
+    setMigrateVersions(true)
     setError(null)
   }
 
@@ -149,6 +151,7 @@ export default function SharepointMigrationPage() {
         rootPath: currentPath || null,
         gdSharedDriveId: selectedGd.id,
         gdSharedDriveName: selectedGd.name,
+        migrateVersions,
       },
       {
         onSuccess: () => reset(),
@@ -366,6 +369,19 @@ export default function SharepointMigrationPage() {
               </div>
             )}
 
+            <label className="flex cursor-pointer items-start gap-2 rounded border border-gray-200 px-3 py-2 text-xs text-gray-700">
+              <input
+                type="checkbox"
+                checked={migrateVersions}
+                onChange={(e) => setMigrateVersions(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <strong>Migrer l'historique des versions</strong> (toutes les révisions, pas juste
+                la dernière). Plus fidèle, mais plus long — décoche pour un transfert rapide de la
+                seule version courante.
+              </span>
+            </label>
             {error && <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
             <div className="flex justify-end gap-2">
               <button
