@@ -30,6 +30,7 @@ export type {
   ResolveSiteResponse,
   SharepointItem,
   BrowseResponse,
+  SharepointSelectedRoot,
   GoogleSharedDrive,
   SearchSharedDrivesResponse,
   CreateSharepointMigrationRequest,

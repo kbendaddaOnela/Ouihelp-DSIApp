@@ -30,9 +30,13 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   siteName: varchar('site_name', { length: 500 }).notNull(),
   driveId: varchar('drive_id', { length: 500 }).notNull(),
   driveName: varchar('drive_name', { length: 500 }).notNull(),
-  // Sous-dossier source ; null = racine du drive (toute la bibliothèque)
+  // Sous-dossier source (legacy mono-dossier) ; null = racine du drive
   rootItemId: varchar('root_item_id', { length: 500 }),
+  // Libellé d'affichage des dossiers source (noms joints, ou null = bibliothèque entière)
   rootPath: varchar('root_path', { length: 1000 }),
+  // Dossiers source sélectionnés (JSON : [{id,name}]). Chacun est RECRÉÉ à la
+  // racine du Shared Drive. Vide/null = toute la bibliothèque (sans wrapper).
+  selectedRoots: text('selected_roots'),
   // Cible Google Shared Drive
   gdSharedDriveId: varchar('gd_shared_drive_id', { length: 255 }),
   gdSharedDriveName: varchar('gd_shared_drive_name', { length: 500 }).notNull(),
