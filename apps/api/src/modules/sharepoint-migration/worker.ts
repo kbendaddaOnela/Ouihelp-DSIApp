@@ -315,12 +315,25 @@ async function processMigration(job: SharepointMigration) {
           console.warn(`[sharepoint] version ${v.id} de ${file.name} trop volumineuse, ignorée`)
           continue
         }
-        // ⚠️ Graph refuse /versions/{id}/content sur la version COURANTE (la plus
-        // récente = dernière du tri ascendant) → pour elle, on prend /content.
-        const isCurrent = idx === versions.length - 1
-        const { buffer } = isCurrent
-          ? await downloadItemContent(job.driveId, file.id)
-          : await downloadItemVersionContent(job.driveId, file.id, v.id)
+        // ⚠️ Graph refuse /versions/{id}/content sur la version COURANTE. Celle-ci
+        // n'est PAS toujours la dernière du tri par date (fichier restauré à une
+        // version antérieure → date courante ancienne). On prend donc /content pour
+        // la dernière ET en repli sur toute version qui répond « current version »
+        // (/content renvoie toujours le contenu courant).
+        let buffer: Buffer
+        if (idx === versions.length - 1) {
+          buffer = (await downloadItemContent(job.driveId, file.id)).buffer
+        } else {
+          try {
+            buffer = (await downloadItemVersionContent(job.driveId, file.id, v.id)).buffer
+          } catch (e) {
+            if (e instanceof Error && /current version/i.test(e.message)) {
+              buffer = (await downloadItemContent(job.driveId, file.id)).buffer
+            } else {
+              throw e
+            }
+          }
+        }
         const vImpersonate = await impersonationFor(
           resolveGoh(v.lastModifiedByEmail, v.lastModifiedByName, authorMaps),
         )
