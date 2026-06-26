@@ -252,3 +252,70 @@ export async function downloadItemContent(
   const buffer = Buffer.from(await res.arrayBuffer())
   return { buffer, size: buffer.byteLength }
 }
+
+export interface SpVersion {
+  id: string
+  lastModifiedDateTime: string | null
+  size: number | null
+  lastModifiedByName: string | null
+  lastModifiedByEmail: string | null
+}
+
+/**
+ * Liste les versions d'un fichier, triées de la PLUS ANCIENNE à la plus récente
+ * (l'API Graph les renvoie en général de la plus récente à la plus ancienne).
+ * La dernière entrée correspond à la version courante.
+ */
+export async function listItemVersions(driveId: string, itemId: string): Promise<SpVersion[]> {
+  const token = await getOnelaToken()
+  const res = await graphFetchWithRetry(
+    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/versions?$select=id,lastModifiedDateTime,size,lastModifiedBy`,
+    token,
+    `listItemVersions ${itemId}`,
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Graph listItemVersions ${res.status}: ${err.slice(0, 300)}`)
+  }
+  const data = (await res.json()) as {
+    value: Array<{
+      id: string
+      lastModifiedDateTime?: string
+      size?: number
+      lastModifiedBy?: GraphIdentitySet
+    }>
+  }
+  const versions = data.value.map((v) => ({
+    id: v.id,
+    lastModifiedDateTime: v.lastModifiedDateTime ?? null,
+    size: typeof v.size === 'number' ? v.size : null,
+    lastModifiedByName: identityName(v.lastModifiedBy),
+    lastModifiedByEmail: identityEmail(v.lastModifiedBy),
+  }))
+  // Tri ascendant par date (les plus anciennes d'abord)
+  versions.sort((a, b) => {
+    const ta = a.lastModifiedDateTime ? Date.parse(a.lastModifiedDateTime) : 0
+    const tb = b.lastModifiedDateTime ? Date.parse(b.lastModifiedDateTime) : 0
+    return ta - tb
+  })
+  return versions
+}
+
+/** Télécharge le contenu d'une version précise d'un fichier (Buffer). */
+export async function downloadItemVersionContent(
+  driveId: string,
+  itemId: string,
+  versionId: string,
+): Promise<{ buffer: Buffer; size: number }> {
+  const token = await getOnelaToken()
+  const res = await fetchWithTimeout(
+    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/versions/${encodeURIComponent(versionId)}/content`,
+    { headers: { Authorization: `Bearer ${token}` }, timeoutMs: 600_000 },
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Téléchargement version SharePoint échoué (${res.status}): ${err.slice(0, 200)}`)
+  }
+  const buffer = Buffer.from(await res.arrayBuffer())
+  return { buffer, size: buffer.byteLength }
+}

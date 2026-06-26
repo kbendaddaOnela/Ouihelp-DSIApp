@@ -42,8 +42,12 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   totalItems: int('total_items').default(0).notNull(),
   migratedItems: int('migrated_items').default(0).notNull(),
   failedItems: int('failed_items').default(0).notNull(),
+  // Fichiers volontairement ignorés (trop volumineux) — distinct des erreurs
+  skippedItems: int('skipped_items').default(0).notNull(),
   totalBytes: bigint('total_bytes', { mode: 'number' }).default(0).notNull(),
   migratedBytes: bigint('migrated_bytes', { mode: 'number' }).default(0).notNull(),
+  // Migrer l'historique des versions (toutes les révisions, pas juste la dernière)
+  migrateVersions: boolean('migrate_versions').default(true).notNull(),
   errorDetails: text('error_details'),
   startedAt: timestamp('started_at'),
   finishedAt: timestamp('finished_at'),

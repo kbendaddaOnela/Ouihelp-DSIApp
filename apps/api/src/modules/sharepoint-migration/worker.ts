@@ -20,11 +20,20 @@ import {
   sharepointMigratedItems,
   type SharepointMigration,
 } from './schema'
-import { listChildren, downloadItemContent, type SpItem } from './sharepointService'
+import {
+  listChildren,
+  downloadItemContent,
+  listItemVersions,
+  downloadItemVersionContent,
+  type SpItem,
+  type SpVersion,
+} from './sharepointService'
 import {
   getSharedDrive,
   createFolder,
   uploadFile,
+  addRevision,
+  setFileModifiedTime,
   addSharedDriveMember,
   removeSharedDrivePermission,
   type ItemMeta,
@@ -68,21 +77,26 @@ async function loadAuthorMaps(): Promise<AuthorMaps> {
   return { byEmail, byName }
 }
 
+/** Résout un compte Google depuis un couple (email, nom) : email d'abord, puis nom. */
+function resolveGoh(
+  email: string | null,
+  name: string | null,
+  maps: AuthorMaps,
+): string | undefined {
+  const e = email?.toLowerCase()
+  const n = name?.trim().toLowerCase()
+  return (e ? maps.byEmail.get(e) : undefined) ?? (n ? maps.byName.get(n) : undefined)
+}
+
 /**
- * Résout le compte Google à usurper pour un item : email d'abord (plus fiable),
- * puis nom d'affichage (filet quand Graph omet l'email). Renvoie le gohUpn ou
- * undefined (→ repli admin).
+ * Résout le compte Google à usurper pour un item : dernier modificateur d'abord,
+ * puis créateur. Email prioritaire sur le nom (filet quand Graph omet l'email).
+ * Renvoie le gohUpn ou undefined (→ repli admin).
  */
 function resolveAuthorGoh(item: SpItem, maps: AuthorMaps): string | undefined {
-  const e1 = item.lastModifiedByEmail?.toLowerCase()
-  const e2 = item.createdByEmail?.toLowerCase()
-  const n1 = item.lastModifiedByName?.trim().toLowerCase()
-  const n2 = item.createdByName?.trim().toLowerCase()
   return (
-    (e1 ? maps.byEmail.get(e1) : undefined) ??
-    (e2 ? maps.byEmail.get(e2) : undefined) ??
-    (n1 ? maps.byName.get(n1) : undefined) ??
-    (n2 ? maps.byName.get(n2) : undefined)
+    resolveGoh(item.lastModifiedByEmail, item.lastModifiedByName, maps) ??
+    resolveGoh(item.createdByEmail, item.createdByName, maps)
   )
 }
 
@@ -222,6 +236,7 @@ async function processMigration(job: SharepointMigration) {
 
     let migrated = doneFiles.size
     let failed = 0
+    let skipped = 0 // fichiers ignorés (trop volumineux) — distinct des erreurs
     let discovered = 0
     let migratedBytes = 0
 
@@ -237,6 +252,113 @@ async function processMigration(job: SharepointMigration) {
         memberPromises.set(gohUpn, p)
       }
       return p
+    }
+    /** Renvoie l'email à usurper (membre garanti) ou undefined (→ repli admin). */
+    const impersonationFor = async (gohUpn: string | undefined): Promise<string | undefined> => {
+      if (gohUpn && gohUpn.toLowerCase() !== adminLower) {
+        const permId = await ensureMember(gohUpn)
+        if (permId) return gohUpn
+      }
+      return undefined
+    }
+
+    /**
+     * Transfère un fichier AVEC son historique de versions : crée le fichier à
+     * partir de la version la plus ancienne, puis empile chaque version suivante
+     * comme révision Drive. Chaque version est usurpée par SON auteur (créé par =
+     * plus ancien auteur, modifié par = dernier). modifiedTime final = dernière
+     * version. Repli sur le téléchargement simple si l'API versions échoue ou ≤ 1
+     * version. Renvoie l'id du fichier Google.
+     */
+    const transferWithVersions = async (
+      file: SpItem,
+      gdParentId: string,
+      fileImpersonate: string | undefined,
+    ): Promise<string> => {
+      let versions: SpVersion[] = []
+      try {
+        versions = await listItemVersions(job.driveId, file.id)
+      } catch (e) {
+        console.warn(
+          `[sharepoint] versions ${file.name} illisibles, repli version courante:`,
+          e instanceof Error ? e.message : e,
+        )
+        versions = []
+      }
+      // ≤ 1 version → upload simple de la version courante
+      if (versions.length <= 1) {
+        const { buffer } = await downloadItemContent(job.driveId, file.id)
+        return uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+      }
+
+      let gdFileId: string | null = null
+      for (const v of versions) {
+        if (v.size != null && v.size > MAX_FILE_BYTES) {
+          console.warn(`[sharepoint] version ${v.id} de ${file.name} trop volumineuse, ignorée`)
+          continue
+        }
+        const { buffer } = await downloadItemVersionContent(job.driveId, file.id, v.id)
+        const vImpersonate = await impersonationFor(
+          resolveGoh(v.lastModifiedByEmail, v.lastModifiedByName, authorMaps),
+        )
+        if (gdFileId === null) {
+          // Première version exploitable → crée le fichier (createdTime = sa date)
+          const meta: ItemMeta = {
+            ...spMeta(file),
+            createdTime: v.lastModifiedDateTime,
+            modifiedTime: v.lastModifiedDateTime,
+          }
+          gdFileId = await uploadOne(file, gdParentId, buffer, meta, vImpersonate)
+        } else {
+          await addRevisionWithFallback(gdFileId, buffer, vImpersonate)
+        }
+      }
+      if (gdFileId === null) {
+        // Toutes les versions étaient trop volumineuses → tente la courante
+        const { buffer } = await downloadItemContent(job.driveId, file.id)
+        return uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+      }
+      // modifiedTime final = date de la dernière version
+      const last = versions[versions.length - 1]
+      if (last?.lastModifiedDateTime) {
+        await setFileModifiedTime(gdFileId, last.lastModifiedDateTime, fileImpersonate)
+      }
+      return gdFileId
+    }
+
+    /** uploadFile avec repli admin si l'upload usurpé échoue. */
+    const uploadOne = async (
+      file: SpItem,
+      gdParentId: string,
+      buffer: Buffer,
+      meta: ItemMeta,
+      impersonate: string | undefined,
+    ): Promise<string> => {
+      try {
+        return await uploadFile({ name: file.name, parentId: gdParentId, body: buffer, meta, impersonate })
+      } catch (e) {
+        if (!impersonate) throw e
+        console.warn(
+          `[sharepoint] upload usurpé (${impersonate}) échoué pour ${file.name}, repli admin:`,
+          e instanceof Error ? e.message : e,
+        )
+        return uploadFile({ name: file.name, parentId: gdParentId, body: buffer, meta })
+      }
+    }
+
+    /** addRevision avec repli admin si la révision usurpée échoue. */
+    const addRevisionWithFallback = async (
+      fileId: string,
+      buffer: Buffer,
+      impersonate: string | undefined,
+    ): Promise<void> => {
+      try {
+        await addRevision({ fileId, body: buffer, impersonate })
+      } catch (e) {
+        if (!impersonate) throw e
+        console.warn(`[sharepoint] révision usurpée (${impersonate}) échouée, repli admin:`, e instanceof Error ? e.message : e)
+        await addRevision({ fileId, body: buffer })
+      }
     }
 
     // 2c) Pré-comptage : parcours métadonnées (BFS, pas de téléchargement) pour
@@ -330,7 +452,7 @@ async function processMigration(job: SharepointMigration) {
     const persistCounters = () =>
       db
         .update(sharepointMigrations)
-        .set({ migratedItems: migrated, failedItems: failed, migratedBytes })
+        .set({ migratedItems: migrated, failedItems: failed, skippedItems: skipped, migratedBytes })
         .where(eq(sharepointMigrations.id, job.id))
 
     while (queue.length > 0) {
@@ -377,48 +499,26 @@ async function processMigration(job: SharepointMigration) {
         const results = await Promise.allSettled(
           batch.map(async (file) => {
             discovered++
-            if (doneFiles.has(file.id)) return { file, skipped: true as const }
+            if (doneFiles.has(file.id)) return { kind: 'doneskip' as const }
+            // Trop volumineux → ignoré (PAS une erreur) : à transférer à la main
             if (file.size != null && file.size > MAX_FILE_BYTES) {
-              throw new Error(
-                `Fichier trop volumineux (${Math.round(file.size / 1024 / 1024)} Mo, limite ${MAX_FILE_BYTES / 1024 / 1024} Mo) — à transférer manuellement`,
-              )
+              return {
+                kind: 'oversized' as const,
+                reason: `Fichier trop volumineux (${Math.round(file.size / 1024 / 1024)} Mo, limite ${MAX_FILE_BYTES / 1024 / 1024} Mo) — à transférer manuellement`,
+              }
             }
 
-            // Auteur SharePoint → compte Google à usurper (pour le « modifié par »).
-            // Repli sur le compte admin si auteur non mappé, sans compte, ou échec.
-            const gohUpn = resolveAuthorGoh(file, authorMaps)
-            let impersonate: string | undefined
-            if (gohUpn && gohUpn.toLowerCase() !== adminLower) {
-              const permId = await ensureMember(gohUpn)
-              if (permId) impersonate = gohUpn
-            }
+            // Auteur du fichier → compte Google à usurper (repli admin sinon).
+            const fileImpersonate = await impersonationFor(resolveAuthorGoh(file, authorMaps))
 
-            const { buffer, size } = await downloadItemContent(job.driveId, file.id)
             let gdFileId: string
-            try {
-              gdFileId = await uploadFile({
-                name: file.name,
-                parentId: gdParentId,
-                body: buffer,
-                meta: spMeta(file),
-                impersonate,
-              })
-            } catch (e) {
-              if (!impersonate) throw e
-              // L'upload usurpé a échoué → on dépose en tant qu'admin (le fichier
-              // passe, mais « modifié par » = compte de migration pour celui-ci).
-              console.warn(
-                `[sharepoint] upload usurpé (${impersonate}) échoué pour ${file.name}, repli admin:`,
-                e instanceof Error ? e.message : e,
-              )
-              gdFileId = await uploadFile({
-                name: file.name,
-                parentId: gdParentId,
-                body: buffer,
-                meta: spMeta(file),
-              })
+            if (job.migrateVersions) {
+              gdFileId = await transferWithVersions(file, gdParentId, fileImpersonate)
+            } else {
+              const { buffer } = await downloadItemContent(job.driveId, file.id)
+              gdFileId = await uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
             }
-            return { file, skipped: false as const, gdFileId, bytes: file.size ?? size }
+            return { kind: 'ok' as const, gdFileId, bytes: file.size ?? 0 }
           }),
         )
 
@@ -427,7 +527,27 @@ async function processMigration(job: SharepointMigration) {
           const res = results[k]!
           const filePath = path ? `${path}/${file.name}` : file.name
           if (res.status === 'fulfilled') {
-            if (res.value.skipped) continue // déjà migré, rien à écrire
+            const v = res.value
+            if (v.kind === 'doneskip') continue // déjà migré, rien à écrire
+            if (v.kind === 'oversized') {
+              await db
+                .insert(sharepointMigratedItems)
+                .values({
+                  migrationId: job.id,
+                  spItemId: file.id,
+                  parentSpItemId: spFolderId,
+                  name: file.name,
+                  spPath: filePath.slice(0, 1500),
+                  isFolder: false,
+                  sizeBytes: file.size ?? null,
+                  status: 'skipped',
+                  errorDetails: v.reason,
+                })
+                .onDuplicateKeyUpdate({ set: { status: 'skipped', errorDetails: v.reason } })
+              skipped++
+              continue
+            }
+            // kind === 'ok'
             await db
               .insert(sharepointMigratedItems)
               .values({
@@ -438,14 +558,14 @@ async function processMigration(job: SharepointMigration) {
                 spPath: filePath.slice(0, 1500),
                 isFolder: false,
                 sizeBytes: file.size ?? null,
-                gdFileId: res.value.gdFileId,
+                gdFileId: v.gdFileId,
                 status: 'success',
               })
               .onDuplicateKeyUpdate({
-                set: { status: 'success', gdFileId: res.value.gdFileId, errorDetails: null },
+                set: { status: 'success', gdFileId: v.gdFileId, errorDetails: null },
               })
             migrated++
-            migratedBytes += res.value.bytes
+            migratedBytes += v.bytes
           } else {
             const errorDetails = (
               res.reason instanceof Error ? res.reason.message : String(res.reason)
@@ -484,6 +604,7 @@ async function processMigration(job: SharepointMigration) {
           finishedAt: new Date(),
           migratedItems: migrated,
           failedItems: failed,
+          skippedItems: skipped,
           migratedBytes,
           errorDetails: `En pause (${migrated} fichiers migrés)`,
         })
@@ -492,6 +613,8 @@ async function processMigration(job: SharepointMigration) {
       return
     }
 
+    // Les fichiers « trop volumineux » (skipped) ne comptent PAS comme des erreurs :
+    // la migration est un succès s'il n'y a aucun vrai échec.
     const ok = failed === 0
     await db
       .update(sharepointMigrations)
@@ -500,11 +623,14 @@ async function processMigration(job: SharepointMigration) {
         finishedAt: new Date(),
         migratedItems: migrated,
         failedItems: failed,
+        skippedItems: skipped,
         migratedBytes,
         errorDetails: failed > 0 ? `${failed} fichier(s) en erreur` : null,
       })
       .where(eq(sharepointMigrations.id, job.id))
-    console.log(`[sharepoint] done ${job.id}: ${migrated} migrés, ${failed} échecs, ${discovered} découverts`)
+    console.log(
+      `[sharepoint] done ${job.id}: ${migrated} migrés, ${failed} échecs, ${skipped} ignorés (trop gros), ${discovered} découverts`,
+    )
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     await db

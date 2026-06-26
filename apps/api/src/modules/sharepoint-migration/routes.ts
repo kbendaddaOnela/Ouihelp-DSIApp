@@ -38,8 +38,10 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     totalItems: m.totalItems,
     migratedItems: m.migratedItems,
     failedItems: m.failedItems,
+    skippedItems: m.skippedItems,
     totalBytes: m.totalBytes,
     migratedBytes: m.migratedBytes,
+    migrateVersions: m.migrateVersions,
     errorDetails: m.errorDetails,
     startedAt: m.startedAt ? m.startedAt.toISOString() : null,
     finishedAt: m.finishedAt ? m.finishedAt.toISOString() : null,
@@ -137,6 +139,7 @@ sharepointMigrationRouter.post('/', requirePermission('migration:write'), async 
     rootPath: body.rootPath,
     gdSharedDriveId: body.gdSharedDriveId,
     gdSharedDriveName: body.gdSharedDriveName.trim(),
+    migrateVersions: body.migrateVersions ?? true,
     initiatedBy,
   })
   const [created] = await db.select().from(sharepointMigrations).where(eq(sharepointMigrations.id, id))
@@ -190,17 +193,17 @@ sharepointMigrationRouter.get('/:id/errors', requirePermission('migration:read')
     .select()
     .from(sharepointMigratedItems)
     .where(eq(sharepointMigratedItems.migrationId, id))
-  const errors = rows
-    .filter((r) => r.status === 'error')
-    .map((r) => ({
-      id: r.id,
-      spItemId: r.spItemId,
-      name: r.name,
-      spPath: r.spPath,
-      isFolder: r.isFolder,
-      sizeBytes: r.sizeBytes,
-      errorDetails: r.errorDetails,
-      createdAt: r.createdAt.toISOString(),
-    }))
-  return c.json<SharepointMigrationErrorsResponse>({ errors })
+  const toItem = (r: (typeof rows)[number]) => ({
+    id: r.id,
+    spItemId: r.spItemId,
+    name: r.name,
+    spPath: r.spPath,
+    isFolder: r.isFolder,
+    sizeBytes: r.sizeBytes,
+    errorDetails: r.errorDetails,
+    createdAt: r.createdAt.toISOString(),
+  })
+  const errors = rows.filter((r) => r.status === 'error').map(toItem)
+  const skipped = rows.filter((r) => r.status === 'skipped').map(toItem)
+  return c.json<SharepointMigrationErrorsResponse>({ errors, skipped })
 })

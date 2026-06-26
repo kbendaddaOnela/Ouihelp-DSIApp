@@ -256,3 +256,74 @@ export async function uploadFile(params: {
 
   return data.id
 }
+
+/**
+ * Ajoute une RÉVISION (nouvelle version du contenu) à un fichier Drive existant.
+ * Sert à rejouer l'historique des versions SharePoint : on crée le fichier avec la
+ * version la plus ancienne (uploadFile), puis on empile chaque version suivante ici.
+ * `keepRevisionForever=true` empêche Drive de purger ces révisions.
+ *
+ * Limite Drive : la DATE d'une révision reflète l'instant de l'upload (non
+ * inscriptible) ; seul le modifiedTime global du fichier est réglable (fait par
+ * l'appelant après la dernière version).
+ */
+export async function addRevision(params: {
+  fileId: string
+  body: Buffer
+  mimeType?: string
+  impersonate?: string
+}): Promise<void> {
+  const token = params.impersonate ? await impersonatedToken(params.impersonate) : await driveToken()
+
+  // 1) Session résumable de MISE À JOUR (PATCH) du contenu
+  const initRes = await fetchWithTimeout(
+    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(params.fileId)}?uploadType=resumable&supportsAllDrives=true&keepRevisionForever=true&fields=id`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify({}),
+    },
+  )
+  if (!initRes.ok) {
+    const err = await initRes.text()
+    throw new Error(`Init révision ${params.fileId} échoué (${initRes.status}): ${err.slice(0, 300)}`)
+  }
+  const sessionUri = initRes.headers.get('Location')
+  if (!sessionUri) throw new Error(`Pas de session URI résumable (révision) pour ${params.fileId}`)
+
+  // 2) PUT du contenu de la révision
+  const putRes = await fetchWithTimeout(sessionUri, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': params.mimeType ?? 'application/octet-stream',
+      'Content-Length': String(params.body.byteLength),
+    },
+    body: params.body,
+    timeoutMs: 600_000,
+  })
+  if (!putRes.ok) {
+    const err = await putRes.text()
+    throw new Error(`Révision ${params.fileId} échouée (${putRes.status}): ${err.slice(0, 300)}`)
+  }
+}
+
+/** Règle le modifiedTime d'un fichier (best-effort). Utilisé après la dernière révision. */
+export async function setFileModifiedTime(
+  fileId: string,
+  modifiedTime: string,
+  impersonate?: string,
+): Promise<void> {
+  const token = impersonate ? await impersonatedToken(impersonate) : await driveToken()
+  const res = await fetchWithTimeout(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=id`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modifiedTime }),
+    },
+  )
+  if (!res.ok) {
+    console.warn(`[sharepoint] setFileModifiedTime ${fileId} ignoré (${res.status})`)
+  }
+}

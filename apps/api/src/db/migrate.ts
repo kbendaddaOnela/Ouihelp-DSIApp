@@ -72,6 +72,9 @@ async function ensureSchemaPatches() {
     // Migration users : suivi de l'activation du nouveau format prenom.nom@onela.com
     { table: 'migrations', column: 'step_new_format', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_new_format\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
     { table: 'migrations', column: 'new_format_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`new_format_error\` text` },
+    // SharePoint : fichiers ignorés (trop volumineux) + migration des versions
+    { table: 'sharepoint_migrations', column: 'skipped_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`skipped_items\` int NOT NULL DEFAULT 0` },
+    { table: 'sharepoint_migrations', column: 'migrate_versions', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`migrate_versions\` boolean NOT NULL DEFAULT true` },
   ]
   for (const p of columnPatches) {
     try {
@@ -321,8 +324,10 @@ async function ensureSchemaPatches() {
         \`total_items\` int NOT NULL DEFAULT 0,
         \`migrated_items\` int NOT NULL DEFAULT 0,
         \`failed_items\` int NOT NULL DEFAULT 0,
+        \`skipped_items\` int NOT NULL DEFAULT 0,
         \`total_bytes\` bigint NOT NULL DEFAULT 0,
         \`migrated_bytes\` bigint NOT NULL DEFAULT 0,
+        \`migrate_versions\` boolean NOT NULL DEFAULT true,
         \`error_details\` text,
         \`started_at\` timestamp NULL,
         \`finished_at\` timestamp NULL,
