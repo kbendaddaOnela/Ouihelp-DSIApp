@@ -348,7 +348,12 @@ export async function* iterateOnelaMessages(
   since?: Date | null,
   until?: Date | null
 ): AsyncGenerator<GraphMessageMeta> {
-  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime`
+  // $orderby=receivedDateTime desc : migrer du PLUS RÉCENT au plus ancien.
+  // CRITIQUE : sans cet orderby explicite, dès qu'un $filter sur receivedDateTime est
+  // présent (ce qui est TOUJOURS le cas depuis le plafond `until`), Graph bascule son
+  // tri par défaut en ASCENDANT → les mails partaient du plus ancien, ce qui casse la
+  // stratégie « pause à 10k récents ». Filtre + tri sur la même propriété = supporté.
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime&$orderby=${encodeURIComponent('receivedDateTime desc')}`
   const filter = buildReceivedDateFilter(since, until)
   let url: string | null = base + filter
   while (url) {

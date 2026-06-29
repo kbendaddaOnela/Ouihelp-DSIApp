@@ -534,6 +534,16 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
             <p className="rounded bg-red-50 p-2 text-xs text-red-700">{m.errorDetails}</p>
           )}
 
+          {m.gohUpn && (
+            <div className="flex items-center justify-between rounded bg-blue-50 px-3 py-2">
+              <div>
+                <p className="text-xs font-medium text-blue-800">Adresse Google (@mig.onela.com)</p>
+                <code className="font-mono text-sm text-blue-900">{m.gohUpn}</code>
+              </div>
+              <CopyButton text={m.gohUpn} />
+            </div>
+          )}
+
           {m.tempPassword && (
             <div className="flex items-center justify-between rounded bg-amber-50 px-3 py-2">
               <div>

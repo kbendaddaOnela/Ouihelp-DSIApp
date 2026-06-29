@@ -747,10 +747,18 @@ migrationRouter.post('/:id/retry-errors/mail', requirePermission('migration:writ
     }
 
     const durationS = Math.round((Date.now() - startedAt) / 1000)
-    const finalMsg = stillFailed === 0
+    const allRecovered = stillFailed === 0
+    const finalMsg = allRecovered
       ? `Reprise terminée en ${durationS}s : ${recovered}/${total} récupérés`
       : `Reprise terminée en ${durationS}s : ${recovered} OK, ${stillFailed} encore en erreur (sur ${total})`
-    await db.update(migrations).set({ mailError: finalMsg }).where(eq(migrations.id, id))
+    // Si plus aucune erreur restante, la phase mail n'est plus "en erreur" :
+    // on repasse le step en success (badge vert) et on met mailFailed à jour.
+    // Sinon on laisse le step en error avec le nombre d'échecs restants.
+    await db.update(migrations).set({
+      mailError: finalMsg,
+      mailFailed: stillFailed,
+      ...(allRecovered ? { stepMailMigration: 'success' as const, mailFinishedAt: new Date() } : {}),
+    }).where(eq(migrations.id, id))
     console.log(`[retry-errors] ${id}: ${finalMsg}`)
   })().catch(async (err) => {
     const msg = `Reprise des erreurs échouée : ${err instanceof Error ? err.message : String(err)}`
