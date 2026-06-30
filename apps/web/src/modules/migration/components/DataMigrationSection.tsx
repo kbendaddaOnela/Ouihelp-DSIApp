@@ -168,17 +168,17 @@ export function DataMigrationSection({
             <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
             {showOrderChoice ? `${buttonLabel} (récents d'abord)` : buttonLabel}
           </button>
-          {/* Sens inverse plafonné : backfill du backlog ancien (≤ J-30), sans toucher la
+          {/* Sens inverse plafonné : backfill du backlog ancien (≤ J-60), sans toucher la
               fenêtre récente — laissée à la passe « récents » de vendredi (après cutover). */}
           {showOrderChoice && (
             <button
-              onClick={() => onStart('asc', 30)}
+              onClick={() => onStart('asc', 60)}
               disabled={isStarting || isResetting}
-              title="Migre les mails de plus de 30 jours, du plus ancien au plus récent. La fenêtre des 30 derniers jours est laissée pour la passe « récents » de vendredi (évite la divergence avec Outlook)."
+              title="Migre les mails de plus de 60 jours, du plus ancien au plus récent. La fenêtre des 60 derniers jours est laissée pour la passe « récents » de vendredi (évite la divergence avec Outlook)."
               className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-60"
             >
               <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
-              Anciens d’abord (≤ J-30)
+              Anciens d’abord (≤ J-60)
             </button>
           )}
           {(lastSyncAt || total > 0) && (
