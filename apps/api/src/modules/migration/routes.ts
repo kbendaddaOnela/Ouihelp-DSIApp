@@ -520,7 +520,12 @@ migrationRouter.post('/:id/migrate-mail', requirePermission('migration:write'), 
     return c.json({ error: 'Migration mail déjà en cours' }, 409)
   }
 
-  await enqueueMailMigration(id)
+  // Sens du parcours : 'desc' = récents d'abord (défaut), 'asc' = anciens d'abord.
+  // Body optionnel { order } ; toute autre valeur retombe sur 'desc'.
+  const body = await c.req.json<{ order?: string }>().catch(() => ({} as { order?: string }))
+  const order: 'asc' | 'desc' = body.order === 'asc' ? 'asc' : 'desc'
+
+  await enqueueMailMigration(id, order)
   const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!updated) return c.json({ error: 'Not Found' }, 404)
   return c.json(serializeMigration(updated), 202)

@@ -200,9 +200,9 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
         status={m.stepMailMigration} total={m.mailTotal}
         migrated={m.mailMigrated} failed={m.mailFailed}
         errorMessage={m.mailError} itemUnit="message"
-        onStart={() => migrateMail(m.id)} isStarting={isStartingMail}
+        onStart={(order) => migrateMail({ id: m.id, order: order ?? 'desc' })} isStarting={isStartingMail}
         startedAt={m.mailStartedAt} finishedAt={m.mailFinishedAt}
-        lastSyncAt={m.mailLastSyncAt} color="purple"
+        lastSyncAt={m.mailLastSyncAt} color="purple" showOrderChoice
       />
       {/* Boutons d'entretien : visibles si des mails ont été migrés et la phase n'est pas en cours */}
       {m.mailMigrated > 0 && !['pending', 'running'].includes(m.stepMailMigration) && (

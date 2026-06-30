@@ -38,8 +38,8 @@ export const migrationApi = {
       }>(`/migration/${id}/activate-new-format`)
       .then((r) => r.data),
 
-  migrateMail: (id: string) =>
-    apiClient.post<MigrationRecord>(`/migration/${id}/migrate-mail`).then((r) => r.data),
+  migrateMail: (id: string, order: 'asc' | 'desc' = 'desc') =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/migrate-mail`, { order }).then((r) => r.data),
 
   migrateCalendar: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-calendar`).then((r) => r.data),

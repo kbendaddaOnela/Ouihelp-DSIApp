@@ -346,14 +346,18 @@ export async function countOnelaMessages(
 export async function* iterateOnelaMessages(
   userId: string,
   since?: Date | null,
-  until?: Date | null
+  until?: Date | null,
+  order: 'asc' | 'desc' = 'desc'
 ): AsyncGenerator<GraphMessageMeta> {
-  // $orderby=receivedDateTime desc : migrer du PLUS RÉCENT au plus ancien.
+  // $orderby=receivedDateTime <order> : 'desc' = migrer du PLUS RÉCENT au plus ancien
+  // (défaut, stratégie « récents d'abord »), 'asc' = du plus ancien au plus récent
+  // (backfill du backlog en semaine, sans urgence).
   // CRITIQUE : sans cet orderby explicite, dès qu'un $filter sur receivedDateTime est
   // présent (ce qui est TOUJOURS le cas depuis le plafond `until`), Graph bascule son
-  // tri par défaut en ASCENDANT → les mails partaient du plus ancien, ce qui casse la
-  // stratégie « pause à 10k récents ». Filtre + tri sur la même propriété = supporté.
-  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime&$orderby=${encodeURIComponent('receivedDateTime desc')}`
+  // tri par défaut en ASCENDANT. On le fixe donc toujours. Filtre + tri sur la même
+  // propriété = supporté par Graph. Le sens N'AFFECTE PAS l'idempotence (skipSet +
+  // dédup Message-ID + contrainte unique) → aucun doublon quel que soit l'ordre.
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime&$orderby=${encodeURIComponent(`receivedDateTime ${order}`)}`
   const filter = buildReceivedDateFilter(since, until)
   let url: string | null = base + filter
   while (url) {

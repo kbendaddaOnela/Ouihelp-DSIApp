@@ -20,12 +20,14 @@ interface Props {
   failed: number
   errorMessage: string | null
   itemUnit: string
-  onStart: () => void
+  onStart: (order?: 'asc' | 'desc') => void
   isStarting: boolean
   startedAt: string | null
   finishedAt: string | null
   lastSyncAt: string | null
   color: 'purple' | 'blue' | 'emerald'
+  // Si true (phase mail), propose le choix du sens : récents d'abord / anciens d'abord
+  showOrderChoice?: boolean
 }
 
 const COLOR_CLASSES = {
@@ -36,7 +38,7 @@ const COLOR_CLASSES = {
 
 export function DataMigrationSection({
   migrationId, phase, label, icon: Icon, status, total, migrated, failed, errorMessage,
-  itemUnit, onStart, isStarting, startedAt, finishedAt, lastSyncAt, color,
+  itemUnit, onStart, isStarting, startedAt, finishedAt, lastSyncAt, color, showOrderChoice,
 }: Props) {
   const { mutate: resetPhase, isPending: isResetting } = useResetPhase()
   const { mutate: stopPhase, isPending: isStopping } = useStopPhase()
@@ -155,16 +157,29 @@ export function DataMigrationSection({
       {showActionButton && (
         <div className="flex flex-wrap items-center gap-1.5">
           <button
-            onClick={onStart}
+            onClick={() => onStart('desc')}
             disabled={isStarting || isResetting}
+            title={showOrderChoice ? 'Migre les mails les plus récents en premier' : undefined}
             className={cn(
               'flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-60',
               c.btnBorder, c.btnBg, c.btnText, c.btnHover
             )}
           >
             <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
-            {buttonLabel}
+            {showOrderChoice ? `${buttonLabel} (récents d'abord)` : buttonLabel}
           </button>
+          {/* Sens inverse : backfill du backlog ancien (semaine, sans urgence) */}
+          {showOrderChoice && (
+            <button
+              onClick={() => onStart('asc')}
+              disabled={isStarting || isResetting}
+              title="Migre les mails les plus anciens en premier (backfill du backlog)"
+              className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-60"
+            >
+              <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
+              {lastSyncAt ? 'Synchroniser (anciens d’abord)' : 'Anciens d’abord'}
+            </button>
+          )}
           {(lastSyncAt || total > 0) && (
             <button
               onClick={handleReset}

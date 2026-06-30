@@ -76,6 +76,8 @@ async function ensureSchemaPatches() {
     { table: 'sharepoint_migrations', column: 'skipped_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`skipped_items\` int NOT NULL DEFAULT 0` },
     { table: 'sharepoint_migrations', column: 'migrate_versions', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`migrate_versions\` boolean NOT NULL DEFAULT true` },
     { table: 'sharepoint_migrations', column: 'selected_roots', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`selected_roots\` text` },
+    // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
+    { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
   ]
   for (const p of columnPatches) {
     try {
