@@ -200,7 +200,7 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
         status={m.stepMailMigration} total={m.mailTotal}
         migrated={m.mailMigrated} failed={m.mailFailed}
         errorMessage={m.mailError} itemUnit="message"
-        onStart={(order) => migrateMail({ id: m.id, order: order ?? 'desc' })} isStarting={isStartingMail}
+        onStart={(order, beforeDays) => migrateMail({ id: m.id, order: order ?? 'desc', beforeDays })} isStarting={isStartingMail}
         startedAt={m.mailStartedAt} finishedAt={m.mailFinishedAt}
         lastSyncAt={m.mailLastSyncAt} color="purple" showOrderChoice
       />

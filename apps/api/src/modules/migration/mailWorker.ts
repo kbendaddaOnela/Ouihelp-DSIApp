@@ -263,11 +263,28 @@ async function processUserMail(job: Migration) {
     // via la redirection, et la prochaine synchro delta les couvrira.
     const syncStartedAt = new Date()
 
+    // Plafond « anciens jusqu'à J-N » : si mailBeforeDays est posé, on ne migre que les
+    // mails reçus AVANT (syncStartedAt - N jours). La fenêtre récente est laissée pour la
+    // passe « récents » (vendredi, après cutover). `until` = borne haute effective du run.
+    const capDays = job.mailBeforeDays && job.mailBeforeDays > 0 ? job.mailBeforeDays : null
+    const cutoff = capDays ? new Date(syncStartedAt.getTime() - capDays * 86_400_000) : null
+    const until = cutoff ?? syncStartedAt
+
     let preCountSet = false
     try {
-      // En full-resync (pas de lastSyncAt), on utilise la somme des totalItemCount
-      // des dossiers visibles : exclut Recoverable Items / Notes / Tasks / Calendar
-      const newCount = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt, folders, syncStartedAt)
+      let newCount: number
+      if (cutoff) {
+        // Total capé = (mails visibles, toutes dates) − (mails reçus APRÈS J-N).
+        // Approx : les rares items récents en dossiers cachés (Recoverable Items) ne sont
+        // pas soustraits → la barre atteint ~100 % sur la tranche ancienne.
+        const visible = await countOnelaMessages(job.onelaUserId, null, folders)
+        const recent = await countOnelaMessages(job.onelaUserId, cutoff, undefined, syncStartedAt)
+        newCount = Math.max(0, visible - recent)
+      } else {
+        // En full-resync (pas de lastSyncAt), somme des totalItemCount des dossiers
+        // visibles : exclut Recoverable Items / Notes / Tasks / Calendar.
+        newCount = await countOnelaMessages(job.onelaUserId, job.mailLastSyncAt, folders, syncStartedAt)
+      }
       total = previousTotal + newCount
       preCountSet = true
       await db.update(migrations).set({ mailTotal: total, mailMigrated: migrated, mailFailed: failed }).where(eq(migrations.id, job.id))
@@ -282,8 +299,8 @@ async function processUserMail(job: Migration) {
     // migrés via skipSet. Approche insensible à l'ordre de Graph : robuste même si
     // les mails migrés ne forment pas un bloc contigu (cas réel observé sur Esther).
     const mailOrder = job.mailOrder === 'asc' ? 'asc' : 'desc'
-    console.log(`[mail] ${job.id}: sens = ${mailOrder === 'asc' ? 'anciens → récents' : 'récents → anciens'}`)
-    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt, syncStartedAt, mailOrder)
+    console.log(`[mail] ${job.id}: sens = ${mailOrder === 'asc' ? 'anciens → récents' : 'récents → anciens'}${cutoff ? ` — plafond J-${capDays} (≤ ${cutoff.toISOString().slice(0, 10)})` : ''}`)
+    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt, until, mailOrder)
 
     // Traitement par batch de MAIL_CONCURRENCY messages en parallèle
     let batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
@@ -449,15 +466,21 @@ async function processUserMail(job: Migration) {
     }
 
     const success = failed === 0
-    // L'itération a terminé normalement → lastSyncAt avance toujours, même si des messages
-    // individuels ont échoué (ils sont en DB avec status='error', skippés au prochain run).
+    // L'itération a terminé normalement → lastSyncAt avance jusqu'à `until`, même si des
+    // messages ont échoué (ils sont en DB status='error', skippés au prochain run).
+    // CAS PLAFONNÉ : until = J-N (pas syncStartedAt). lastSyncAt = J-N → la passe
+    // « récents » de vendredi devient un delta `since = J-N` qui couvre exactement la
+    // fenêtre récente avec l'état final de l'utilisateur. Pas de trou, pas de doublon.
+    const cappedMsg = cutoff
+      ? `Anciens (≤ J-${capDays}) migrés — relance « Récents d'abord » après le cutover`
+      : null
     await db.update(migrations)
       .set({
         stepMailMigration: success ? 'success' : 'error',
         mailTotal: total, mailMigrated: migrated, mailFailed: failed,
         mailFinishedAt: new Date(),
-        mailLastSyncAt: syncStartedAt,
-        mailError: failed > 0 ? `${failed} message(s) en erreur` : null,
+        mailLastSyncAt: until,
+        mailError: failed > 0 ? `${failed} message(s) en erreur` : cappedMsg,
       })
       .where(eq(migrations.id, job.id))
 
@@ -760,10 +783,17 @@ async function markStepError(id: string, phase: 'mail' | 'calendar' | 'contacts'
 
 export async function enqueueMailMigration(
   migrationId: string,
-  order: 'asc' | 'desc' = 'desc'
+  order: 'asc' | 'desc' = 'desc',
+  beforeDays: number | null = null
 ): Promise<void> {
   await db.update(migrations)
-    .set({ stepMailMigration: 'pending', mailError: null, mailStartedAt: null, mailFinishedAt: null, mailOrder: order })
+    .set({
+      stepMailMigration: 'pending', mailError: null, mailStartedAt: null, mailFinishedAt: null,
+      mailOrder: order,
+      // On (re)pose explicitement le plafond à chaque lancement : un lancement « récents »
+      // efface tout plafond résiduel d'une passe « anciens » précédente.
+      mailBeforeDays: beforeDays,
+    })
     .where(and(eq(migrations.id, migrationId)))
 }
 

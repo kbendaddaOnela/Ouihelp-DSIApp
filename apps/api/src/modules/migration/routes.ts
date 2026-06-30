@@ -521,11 +521,16 @@ migrationRouter.post('/:id/migrate-mail', requirePermission('migration:write'), 
   }
 
   // Sens du parcours : 'desc' = récents d'abord (défaut), 'asc' = anciens d'abord.
-  // Body optionnel { order } ; toute autre valeur retombe sur 'desc'.
-  const body = await c.req.json<{ order?: string }>().catch(() => ({} as { order?: string }))
+  // beforeDays (optionnel) : ne migrer que les mails reçus il y a plus de N jours
+  // (passe « anciens » bornée à J-N). Borné à [1, 3650] ; sinon pas de plafond.
+  const body = await c.req.json<{ order?: string; beforeDays?: number }>().catch(() => ({} as { order?: string; beforeDays?: number }))
   const order: 'asc' | 'desc' = body.order === 'asc' ? 'asc' : 'desc'
+  const beforeDays =
+    typeof body.beforeDays === 'number' && Number.isFinite(body.beforeDays) && body.beforeDays >= 1
+      ? Math.min(Math.floor(body.beforeDays), 3650)
+      : null
 
-  await enqueueMailMigration(id, order)
+  await enqueueMailMigration(id, order, beforeDays)
   const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!updated) return c.json({ error: 'Not Found' }, 404)
   return c.json(serializeMigration(updated), 202)

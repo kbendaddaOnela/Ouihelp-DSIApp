@@ -74,6 +74,8 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'new_format_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`new_format_error\` text` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
     { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
+    // Plafond du run en jours (passe « anciens » bornée à J-N ; null = pas de plafond)
+    { table: 'migrations', column: 'mail_before_days', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_before_days\` int` },
   ]
   for (const p of columnPatches) {
     try {
