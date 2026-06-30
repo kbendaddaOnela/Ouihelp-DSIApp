@@ -40,6 +40,7 @@ export interface MigrationRecord {
   mailStartedAt: string | null
   mailFinishedAt: string | null
   mailLastSyncAt: string | null
+  mailOrder: string
   stepCalendarMigration: StepStatus
   calTotal: number
   calMigrated: number

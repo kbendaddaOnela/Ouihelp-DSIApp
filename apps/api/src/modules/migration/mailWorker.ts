@@ -281,7 +281,9 @@ async function processUserMail(job: Migration) {
     // On re-parcourt TOUTE la boîte (jusqu'à syncStartedAt) et on skippe les déjà
     // migrés via skipSet. Approche insensible à l'ordre de Graph : robuste même si
     // les mails migrés ne forment pas un bloc contigu (cas réel observé sur Esther).
-    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt, syncStartedAt)
+    const mailOrder = job.mailOrder === 'asc' ? 'asc' : 'desc'
+    console.log(`[mail] ${job.id}: sens = ${mailOrder === 'asc' ? 'anciens → récents' : 'récents → anciens'}`)
+    const msgIterator = iterateOnelaMessages(job.onelaUserId, job.mailLastSyncAt, syncStartedAt, mailOrder)
 
     // Traitement par batch de MAIL_CONCURRENCY messages en parallèle
     let batch = await collectBatch(msgIterator, MAIL_CONCURRENCY)
@@ -756,9 +758,12 @@ async function markStepError(id: string, phase: 'mail' | 'calendar' | 'contacts'
   }
 }
 
-export async function enqueueMailMigration(migrationId: string): Promise<void> {
+export async function enqueueMailMigration(
+  migrationId: string,
+  order: 'asc' | 'desc' = 'desc'
+): Promise<void> {
   await db.update(migrations)
-    .set({ stepMailMigration: 'pending', mailError: null, mailStartedAt: null, mailFinishedAt: null })
+    .set({ stepMailMigration: 'pending', mailError: null, mailStartedAt: null, mailFinishedAt: null, mailOrder: order })
     .where(and(eq(migrations.id, migrationId)))
 }
 

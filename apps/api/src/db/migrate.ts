@@ -72,6 +72,8 @@ async function ensureSchemaPatches() {
     // Migration users : suivi de l'activation du nouveau format prenom.nom@onela.com
     { table: 'migrations', column: 'step_new_format', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_new_format\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
     { table: 'migrations', column: 'new_format_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`new_format_error\` text` },
+    // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
+    { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
   ]
   for (const p of columnPatches) {
     try {

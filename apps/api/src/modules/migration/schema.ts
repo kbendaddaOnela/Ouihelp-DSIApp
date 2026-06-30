@@ -36,6 +36,9 @@ export const migrations = mysqlTable('migrations', {
   mailStartedAt: timestamp('mail_started_at'),
   mailFinishedAt: timestamp('mail_finished_at'),
   mailLastSyncAt: timestamp('mail_last_sync_at'),
+  // Sens du parcours mail pour le prochain run : 'desc' = récents d'abord (défaut),
+  // 'asc' = anciens d'abord. Choisi au lancement/relance. N'affecte pas l'idempotence.
+  mailOrder: varchar('mail_order', { length: 4 }).default('desc').notNull(),
   // Calendar migration progress
   stepCalendarMigration: mysqlEnum('step_calendar_migration', stepStatus).default('pending').notNull(),
   calTotal: int('cal_total').default(0).notNull(),
