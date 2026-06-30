@@ -78,6 +78,8 @@ async function ensureSchemaPatches() {
     { table: 'sharepoint_migrations', column: 'selected_roots', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`selected_roots\` text` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
     { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
+    // Plafond du run en jours (passe « anciens » bornée à J-N ; null = pas de plafond)
+    { table: 'migrations', column: 'mail_before_days', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_before_days\` int` },
   ]
   for (const p of columnPatches) {
     try {

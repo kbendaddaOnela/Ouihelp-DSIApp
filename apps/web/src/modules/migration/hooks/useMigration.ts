@@ -85,10 +85,10 @@ export function useActivateNewFormat() {
 export function useMigrateMail() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (vars: string | { id: string; order?: 'asc' | 'desc' }) =>
+    mutationFn: (vars: string | { id: string; order?: 'asc' | 'desc'; beforeDays?: number | null }) =>
       typeof vars === 'string'
         ? migrationApi.migrateMail(vars)
-        : migrationApi.migrateMail(vars.id, vars.order ?? 'desc'),
+        : migrationApi.migrateMail(vars.id, vars.order ?? 'desc', vars.beforeDays),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
     },

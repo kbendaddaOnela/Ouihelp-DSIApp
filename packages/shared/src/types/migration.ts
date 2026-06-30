@@ -41,6 +41,7 @@ export interface MigrationRecord {
   mailFinishedAt: string | null
   mailLastSyncAt: string | null
   mailOrder: string
+  mailBeforeDays: number | null
   stepCalendarMigration: StepStatus
   calTotal: number
   calMigrated: number

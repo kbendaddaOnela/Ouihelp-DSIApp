@@ -20,7 +20,7 @@ interface Props {
   failed: number
   errorMessage: string | null
   itemUnit: string
-  onStart: (order?: 'asc' | 'desc') => void
+  onStart: (order?: 'asc' | 'desc', beforeDays?: number | null) => void
   isStarting: boolean
   startedAt: string | null
   finishedAt: string | null
@@ -168,16 +168,17 @@ export function DataMigrationSection({
             <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
             {showOrderChoice ? `${buttonLabel} (récents d'abord)` : buttonLabel}
           </button>
-          {/* Sens inverse : backfill du backlog ancien (semaine, sans urgence) */}
+          {/* Sens inverse plafonné : backfill du backlog ancien (≤ J-30), sans toucher la
+              fenêtre récente — laissée à la passe « récents » de vendredi (après cutover). */}
           {showOrderChoice && (
             <button
-              onClick={() => onStart('asc')}
+              onClick={() => onStart('asc', 30)}
               disabled={isStarting || isResetting}
-              title="Migre les mails les plus anciens en premier (backfill du backlog)"
+              title="Migre les mails de plus de 30 jours, du plus ancien au plus récent. La fenêtre des 30 derniers jours est laissée pour la passe « récents » de vendredi (évite la divergence avec Outlook)."
               className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-60"
             >
               <ButtonIcon className={cn('h-3 w-3', isStarting && 'animate-spin')} />
-              {lastSyncAt ? 'Synchroniser (anciens d’abord)' : 'Anciens d’abord'}
+              Anciens d’abord (≤ J-30)
             </button>
           )}
           {(lastSyncAt || total > 0) && (
@@ -238,10 +239,10 @@ export function DataMigrationSection({
           {/* Progression d'une tâche async (reprise erreurs, dédup, relabel...) :
               messages préfixés "Reprise"/"Déduplication"/"Re-labellisation" → bleu info,
               même si failed > 0. Sinon errorMessage standard en rouge si pas d'erreurs comptées. */}
-          {errorMessage && /^(Reprise|Déduplication|Re-labellisation)/.test(errorMessage) && (
+          {errorMessage && /^(Reprise|Déduplication|Re-labellisation|Anciens)/.test(errorMessage) && (
             <p className="mt-1 text-xs text-blue-600">{errorMessage}</p>
           )}
-          {!failed && errorMessage && !/^(Reprise|Déduplication|Re-labellisation)/.test(errorMessage) && (
+          {!failed && errorMessage && !/^(Reprise|Déduplication|Re-labellisation|Anciens)/.test(errorMessage) && (
             <p className="mt-1 text-xs text-red-600">{errorMessage}</p>
           )}
 

@@ -39,6 +39,11 @@ export const migrations = mysqlTable('migrations', {
   // Sens du parcours mail pour le prochain run : 'desc' = récents d'abord (défaut),
   // 'asc' = anciens d'abord. Choisi au lancement/relance. N'affecte pas l'idempotence.
   mailOrder: varchar('mail_order', { length: 4 }).default('desc').notNull(),
+  // Plafond du run en jours : ne migrer que les mails reçus il y a PLUS de N jours
+  // (passe « anciens » bornée à J-N). null = pas de plafond. À la complétion d'un run
+  // plafonné, mailLastSyncAt = la borne J-N → la passe « récents » de vendredi devient
+  // un delta qui couvre exactement la fenêtre récente avec l'état final de l'user.
+  mailBeforeDays: int('mail_before_days'),
   // Calendar migration progress
   stepCalendarMigration: mysqlEnum('step_calendar_migration', stepStatus).default('pending').notNull(),
   calTotal: int('cal_total').default(0).notNull(),
