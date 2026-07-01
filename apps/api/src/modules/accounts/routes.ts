@@ -215,6 +215,9 @@ async function provisionBackground(id: string, p: ProvisionParams) {
         postalCode: p.postalCode,
         city: p.city,
         state: p.state,
+        usageLocation: 'FR',
+        country: 'France',
+        preferredLanguage: 'fr-FR',
         forceChangePassword: p.forceChangePassword,
       })
       gohUserId = gohUser.id

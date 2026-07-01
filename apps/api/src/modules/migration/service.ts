@@ -175,6 +175,11 @@ export async function createGohUser(params: {
   postalCode?: string | null
   city?: string | null
   state?: string | null
+  // Locale/pays : NON posés par défaut pour ne pas altérer le comportement de la
+  // migration (qui n'appelle pas ces champs). Seul le module accounts les fournit.
+  usageLocation?: string | null
+  country?: string | null
+  preferredLanguage?: string | null
   forceChangePassword?: boolean
 }): Promise<GraphUser> {
   const token = await gohToken()
@@ -193,9 +198,9 @@ export async function createGohUser(params: {
     city: params.city ?? undefined,
     state: params.state ?? undefined,
     companyName: 'ONELA',
-    country: 'France',
-    usageLocation: 'FR',
-    preferredLanguage: 'fr-FR',
+    country: params.country ?? undefined,
+    usageLocation: params.usageLocation ?? undefined,
+    preferredLanguage: params.preferredLanguage ?? undefined,
     passwordProfile: {
       forceChangePasswordNextSignIn: params.forceChangePassword ?? true,
       password: params.tempPassword,
