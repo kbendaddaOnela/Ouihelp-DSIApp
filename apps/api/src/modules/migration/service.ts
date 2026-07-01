@@ -169,6 +169,18 @@ export async function createGohUser(params: {
   department: string | null
   jobTitle: string | null
   tempPassword: string
+  // Champs optionnels (onboarding nouvel arrivant — module accounts)
+  officeLocation?: string | null
+  streetAddress?: string | null
+  postalCode?: string | null
+  city?: string | null
+  state?: string | null
+  // Locale/pays : NON posés par défaut pour ne pas altérer le comportement de la
+  // migration (qui n'appelle pas ces champs). Seul le module accounts les fournit.
+  usageLocation?: string | null
+  country?: string | null
+  preferredLanguage?: string | null
+  forceChangePassword?: boolean
 }): Promise<GraphUser> {
   const token = await gohToken()
   return graphRequest<GraphUser>(token, 'POST', '/users', {
@@ -180,9 +192,39 @@ export async function createGohUser(params: {
     mailNickname: params.upn.split('@')[0],
     department: params.department ?? undefined,
     jobTitle: params.jobTitle ?? undefined,
+    officeLocation: params.officeLocation ?? undefined,
+    streetAddress: params.streetAddress ?? undefined,
+    postalCode: params.postalCode ?? undefined,
+    city: params.city ?? undefined,
+    state: params.state ?? undefined,
     companyName: 'ONELA',
-    passwordProfile: { forceChangePasswordNextSignIn: true, password: params.tempPassword },
+    country: params.country ?? undefined,
+    usageLocation: params.usageLocation ?? undefined,
+    preferredLanguage: params.preferredLanguage ?? undefined,
+    passwordProfile: {
+      forceChangePasswordNextSignIn: params.forceChangePassword ?? true,
+      password: params.tempPassword,
+    },
   })
+}
+
+/** Définit le manager d'un compte GOH (Graph manager/$ref). Le manager doit exister dans le tenant GOH. */
+export async function setGohUserManager(userId: string, managerUpn: string): Promise<void> {
+  const token = await gohToken()
+  await graphRequest<void>(token, 'PUT', `/users/${userId}/manager/$ref`, {
+    '@odata.id': `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(managerUpn)}`,
+  })
+}
+
+/** Recherche des utilisateurs dans le tenant GOH (autocomplétion manager). */
+export async function searchGohUsers(query: string): Promise<GraphUser[]> {
+  const token = await gohToken()
+  const filter = `startsWith(displayName,'${query}') or startsWith(userPrincipalName,'${query}') or startsWith(mail,'${query}')`
+  const res = await graphRequest<{ value: GraphUser[] }>(
+    token, 'GET',
+    `/users?$filter=${encodeURIComponent(filter)}&$select=${USER_SELECT}&$top=20`
+  )
+  return res.value
 }
 
 export async function setGohUserAttributes(userId: string, ext10: string, ext11: string): Promise<void> {

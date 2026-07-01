@@ -25,6 +25,24 @@ export type {
 } from './types/sharedMailbox'
 
 export type {
+  AccountStepStatus,
+  AssignmentType,
+  AgencyInfo,
+  ManagerCandidate,
+  SearchManagersResponse,
+  CreateAccountRequest,
+  AccountCreationRecord,
+  CreateAccountResponse,
+  AccountHistoryResponse,
+} from './types/accounts'
+export {
+  ONELA_SERVICES,
+  AGENCY_JOB_TITLES,
+  HEAD_OFFICE,
+  ONELA_AGENCIES,
+} from './types/accounts'
+
+export type {
   SharepointMigrationStatus,
   SharepointDrive,
   ResolveSiteResponse,

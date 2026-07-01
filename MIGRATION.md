@@ -1,7 +1,7 @@
 # DSI App ONELA — Module Migration M365 → Google Workspace
 
 > Documentation de référence du module de migration.
-> Dernière mise à jour : **22/06/2026**.
+> Dernière mise à jour : **26/06/2026**.
 
 ---
 
@@ -27,6 +27,8 @@ Application interne ONELA pilotant la migration **Microsoft 365 (tenant ONELA)**
 | **inventory** | Cache Entra (users + devices), sync incrémentale. |
 | **budget** | Suivi des coûts (entité de facturation, quantité, coût unitaire). |
 | **onela-contacts** | Annuaire ONELA partagé poussé dans les Google Contacts de chaque user (People API). |
+| **sharepoint-migration** | Bibliothèques de sites SharePoint ONELA → Google Shared Drives (Drives partagés). Worker indépendant, transfert arborescent avec dates + « modifié par » préservés. Voir §12. |
+| **accounts** | Création de comptes (onboarding nouvel arrivant) : GOH → MailContact routage ONELA léger → finalize Google auto (OU `/onela.com` + alias). Voir §13. |
 
 ---
 
@@ -242,3 +244,144 @@ await fetch('/api/migration/<MIGRATION_ID>/unstick/mail', {
 
 - **Dashboard triable** : en-têtes de colonnes cliquables (Total / Terminés / En cours), tri par défaut sur Terminés.
 - **Override cosmétique** (`MigrationDashboard.tsx`) : `DONE_OVERRIDES = { dsi: 5, formation: 3 }` affiche DSI 5/5 et Formation 3/3 comme terminés côté UI — **purement frontend, pas en DB** (tracking historique incomplet).
+
+---
+
+## 12. Module `sharepoint-migration` (SharePoint → Google Shared Drives)
+
+Ajouté le **23/06/2026**. Transfère une **bibliothèque** (ou un sous-dossier) d'un site SharePoint ONELA vers un **Google Shared Drive** (Drive partagé) du Workspace OUIHELP/GOH. Module **indépendant** de la migration utilisateur, calqué sur `shared-mailbox` (worker in-process, polling 5 s, heartbeat 60 s, détection d'orphelins 15 min, pause/unstick).
+
+> ⚠️ Le tenant Google cible côté Workspace est **OUIHELP** (admin `…@ouihelp.fr`) ; les comptes des users migrés y sont en `prenom.nom@mig.onela.com`.
+
+### 12.1 Flux opérateur (UI `/sharepoint-migration`)
+
+1. **URL du site** (pré-remplie : `https://onelaservices.sharepoint.com/sites/ALL-ONELA/`) → **Résoudre** (Graph renvoie le site + ses bibliothèques).
+2. **Choisir la bibliothèque** (Documents, DSI, FINANCE, RH…).
+3. **Cocher un ou plusieurs dossiers** à migrer (cases à cocher ; clic sur le nom = naviguer dedans). Chaque dossier coché est **recréé à la racine du Shared Drive** (avec son nom, contenu à l'intérieur). **Ne rien cocher = toute la bibliothèque** (contenu à la racine, sans wrapper). Stocké en JSON dans `selected_roots`.
+3bis. **Rechercher le Shared Drive cible** par nom — il doit être **créé manuellement** au préalable dans Google Drive ; l'app ne fait que le retrouver et le sélectionner.
+4. Case **« Migrer l'historique des versions »** (défaut activé ; décocher = seule la version courante, plus rapide). **Créer** → **Lancer** sur la carte déclenche le worker.
+
+### 12.2 Prérequis d'exploitation (sinon erreurs à l'exécution)
+
+- **App ONELA (Graph, app-only)** : permissions `Sites.Read.All` + `Files.Read.All`.
+- **Service Account Google (DwD)** : scope `https://www.googleapis.com/auth/drive` autorisé dans l'Admin Console.
+- **API Google Drive activée** dans le projet GCP du Service Account (projet `865836154153`) — sinon `403 « Drive API has not been used / is disabled »`.
+
+### 12.3 Schéma DB (idempotent, créé via `ensureSchemaPatches`)
+
+- `sharepoint_migrations` : 1 ligne par migration (site, drive, sous-dossier, Shared Drive cible, statut `pending|running|paused|success|error`, compteurs fichiers/octets).
+- `sharepoint_migrated_items` : 1 ligne par item (fichier **et** dossier), `sp_item_id` unique par migration = **clé d'idempotence/reprise**. Pour un dossier success, `gd_file_id` = l'id du dossier Google (réutilisé comme parent au resume, pas de doublon).
+
+> Les 2 tables ont été ajoutées au pattern idempotent `ensureSchemaPatches` (gardé par `tableExists`), **pas** via une migration drizzle versionnée (le dossier `drizzle/` est désynchronisé du schéma — l'app évolue par patches). Aucune table existante n'est touchée.
+
+### 12.4 Worker — parcours et reprise
+
+- **Pré-comptage** d'abord : BFS métadonnées (sans téléchargement) → fixe `total_items` + `total_bytes` **avant** d'écrire `migrated_items` (sinon la barre saute à ~100 %, surtout au resume). Émet aussi un **diagnostic d'attribution** dans les logs (voir §12.6).
+- **Transfert** ensuite : BFS **dossiers d'abord** (créés/réutilisés) puis fichiers (3 en parallèle). Le BFS garantit que le dossier parent Google existe avant ses enfants.
+- **Idempotence** : `skipSet` sur `sp_item_id` des fichiers en success ; dossiers success réutilisés via leur `gd_file_id`. Les fichiers en error sont **re-tentés** au resume.
+- **Single-instance** (une migration à la fois) ; pause = `signalStopSharepoint` (vérifié entre dossiers/batches).
+
+### 12.5 ⚠️ Pièges techniques résolus (NE PAS réintroduire)
+
+- **Téléchargement** : `@microsoft.graph.downloadUrl` est une *annotation d'instance* que Graph **retire dès qu'un `$select` est présent**. → passer par l'endpoint **`/content`** (302 vers une URL pré-authentifiée, suivie par `fetch` ; undici ne propage pas `Authorization` cross-origin, voulu).
+- **Lecture du corps** : lire via **`res.arrayBuffer()`** sur la réponse Graph. **Jamais** `new Response(res.body).arrayBuffer()` → `« Response body object should not be disturbed or locked »` sur quasi tous les fichiers. L'upload Google se fait avec un **Buffer** (rejouable par undici), pas un flux.
+- **Gros fichiers** : garde-fou `MAX_FILE_BYTES = 300 Mo` → fichier **ignoré** (`skipped_items`, statut d'item `skipped`, **pas** une erreur) avec mention « à transférer manuellement » (évite l'OOM — on bufferise ×3 en parallèle — et les timeouts de 10 min type backup `.pst`). La migration finit en `success` s'il n'y a **aucun vrai échec** ; la carte sépare erreurs (rouge) et ignorés (ambre).
+
+### 12.6 Métadonnées préservées (comme BitTitan)
+
+- **Dates** : `createdTime` + `modifiedTime` posés à la création + **PATCH `modifiedTime` de sécurité** après upload (au cas où la finalisation du contenu le repousse à « maintenant »). → la colonne « Date de modification » de Drive reflète la vraie date SharePoint.
+- **« Modifié par » fidèle** = upload **en usurpant l'auteur** (impersonation DwD du compte `prenom.nom@mig.onela.com`), **pas** une métadonnée (on ne peut pas falsifier l'acteur dans un Shared Drive). Mécanique par fichier :
+  1. résoudre l'auteur → compte Google via la table `migrations` : **email** (`onelaEmail`/`onelaUpn`) **puis nom** (`onelaDisplayName`). Le fallback par nom est **indispensable** : Graph omet souvent l'email dans `lastModifiedBy`/`createdBy` et ne laisse que le displayName ;
+  2. ajouter l'auteur comme **membre temporaire** (writer) du Shared Drive (obligatoire pour y écrire en tant que lui) ;
+  3. uploader en l'usurpant ;
+  4. en **fin de run**, retirer les membres ajoutés (l'attribution « modifié par » **persiste** après le retrait).
+- **Repli admin** (le fichier passe, « modifié par » = compte de migration) si : auteur non mappé, « Compte système » (pas d'email ni de personne), ajout de membre échoué, ou upload usurpé échoué.
+- **Diagnostic** au pré-comptage (logs) : `attribution prévue: X/Total à leur auteur, Y en repli admin` + la liste des auteurs en repli — permet de distinguer « pas encore migrés » (normal) d'un éventuel souci de matching.
+
+### 12.7 Historique des versions (option `migrate_versions`, défaut activé)
+
+- Rejoue l'historique : le fichier est créé depuis la **version la plus ancienne**, puis chaque version suivante est empilée comme **révision Drive** (`keepRevisionForever=true`).
+- **Attribution par version** : créé par = plus ancien auteur, modifié par = dernier ; chaque révision usurpée par son auteur (`listItemVersions` fournit `lastModifiedBy` par version). `modifiedTime` final = dernière version.
+- Repli sur la version courante si l'API `/versions` échoue ou ≤ 1 version. Garde-fou taille appliqué **par version**.
+- ⚠️ **Limite Drive** : la date d'une **révision** reflète l'instant de l'upload (non inscriptible) ; seul le `modifiedTime` global du fichier est réglé. Contenu + ordre des versions préservés et restaurables.
+- ⚠️ Migrer les versions **multiplie** le volume téléchargé/uploadé (≈ × nombre de versions) → décocher pour un transfert rapide. Le compteur d'octets/la barre restent calés sur la taille de la version courante.
+
+### 12.8 Limites v1 assumées (→ phases suivantes)
+
+- **Dossiers** créés par le compte admin (pas d'attribution d'auteur).
+- **Permissions SharePoint** non migrées — décision : **remise à plat des droits avec les responsables de service** (pas un copier-coller des ACL SharePoint).
+
+### 12.9 Endpoints
+
+| Endpoint | Usage |
+|---|---|
+| `GET /sharepoint-migration/resolve-site?url=` | URL de site → site + bibliothèques |
+| `GET /sharepoint-migration/browse?driveId=&itemId=` | Naviguer dans une bibliothèque |
+| `GET /sharepoint-migration/search-drives?q=` | Rechercher un Shared Drive Google par nom |
+| `POST /sharepoint-migration` · `GET /history` · `GET /:id` | Créer / lister / détail |
+| `POST /:id/run` · `/:id/pause` · `/:id/unstick` | Lancer-reprendre / pause / débloquer un worker hung |
+| `GET /:id/errors` · `DELETE /:id` | Erreurs détaillées / supprimer le suivi |
+
+### 12.10 Services externes ajoutés
+
+- **Microsoft Graph (Sites/Drives)** : `/sites`, `/drives`, `/items/{id}/children`, `/items/{id}/content`, `/items/{id}/versions` (+ `/versions/{vid}/content`).
+- **Google Drive API v3** (DwD) : `drives` (recherche Shared Drives), `files` (création dossiers, upload résumable, révisions via PATCH `keepRevisionForever`, `modifiedTime`), `permissions` (membre temporaire pour l'impersonation). `supportsAllDrives=true` partout.
+
+---
+
+## 13. Module `accounts` (Création de comptes — onboarding nouvel arrivant)
+
+Ajouté le **01/07/2026**. Provisionne un **nouvel arrivant** ONELA de bout en bout. Réutilise les primitives du module migration (création GOH, attributs, OU, alias, send-as) et ajoute la création d'un **objet de routage léger** côté Exchange ONELA. Module indépendant, provisioning en background (fire-and-forget après réponse `202`).
+
+> Ajouté à la table des modules (§2). Route `/accounts`, permissions `accounts:read` / `accounts:write` (rôles `it_team` + `admin`).
+
+### 13.1 Décision d'architecture (le « pourquoi ONELA »)
+
+Pendant la migration, `onela.com` reste un domaine **autoritatif sur Exchange Online (tenant ONELA)** : tout mail entrant vers `prenom.nom@onela.com` frappe Exchange en premier et **bounce** s'il n'existe aucun objet destinataire (Exchange ne relaie pas vers Google tout seul). Il faut donc créer *quelque chose* côté ONELA — mais **pas** une mailbox complète.
+
+Pour un nouvel arrivant **Google-native dès J1** (boîte vide, rien à migrer), on crée un **MailContact** léger :
+- `ExternalEmailAddress` (targetAddress) = `prenom.nom@mig.onela.com` → route vers Google ;
+- `EmailAddresses` primaire = `SMTP:prenom.nom@onela.com` → adresse acceptée par l'org.
+
+Résultat : entrant `@onela.com` → résolu sur le contact → redirigé vers `mig.onela.com` → Google. **Zéro licence M365, zéro mailbox, zéro compte AAD, rien à décommissionner.**
+
+> **MailUser écarté** : en Exchange Online, `New-MailUser` impose `-MicrosoftOnlineServicesID` + `-Password` → crée un compte AAD login-capable dans le tenant ONELA. Trop lourd pour du routage pur. Pour basculer sur MailUser si les conventions du tenant l'exigent : remplacer `New-MailContact`/`Set-MailContact` dans `onelaRoutingService.ts`.
+
+### 13.2 Flux (étapes tracées)
+
+| # | Étape | Détail |
+|---|---|---|
+| 1 | `stepCreateGoh` | Création compte GOH/Ouihelp `prenom.nom@mig.onela.com` (attributs complets : service/trigramme, poste, adresse siège/agence, `usageLocation=FR`, `preferredLanguage=fr-FR`). |
+| 2 | `stepSetAttributes` | `extensionAttribute10` (`@onela.fr`) + `11` (`@onela.com` = `mail`) ; **manager** via Graph `manager/$ref` (non bloquant si le manager n'existe pas encore dans GOH). |
+| 3 | `stepOnelaRouting` | **MailContact** Exchange ONELA (cf. §13.1) via `InvokeCommand` (`New-MailContact` / `Set-MailContact`). Idempotent (`Get-MailContact` d'abord). |
+| 4 | `stepGoogleProvision` | Attente du **SCIM** : polling `googleUserExists` (60 s × 45 ≈ 45 min). |
+| 5 | `stepOuMove` | Bascule **automatique** sur l'OU `/onela.com` (`GOOGLE_ONELA_OU_PATH`). |
+| 6 | `stepNewFormat` | Alias `prenom.nom@onela.com` (`addGoogleAlias`, 409 ignoré) + `send-as` par défaut (`ensureSendAs` / `setSendAsAsDefault`). |
+
+- **Étapes 1-3** = `provisionBackground` (fire-and-forget après `202`). **4-6** = `finalizeGoogleBackground`, enchaîné automatiquement.
+- **Robustesse** : le poller SCIM est un background in-process → un **redéploiement le tue** (comme les workers de migration). Fallback : bouton **« Finaliser sur Google »** (`POST /:id/finalize-google`) qui reprend 4-6. Bouton **« Relancer le provisioning »** (`POST /:id/retry`) rejoue 1-3.
+
+### 13.3 Schéma DB
+
+- Table `account_creations` (1 ligne par onboarding), ajoutée via le pattern idempotent `ensureSchemaPatches` (gardé par `tableExists`), **pas** de migration drizzle versionnée. Clé unique sur `goh_upn` (idempotence : refuse un 2ᵉ onboarding pour le même compte).
+
+### 13.4 Données de référence
+
+Portées de l'ancienne app interne (`create_user`) dans `packages/shared/src/types/accounts.ts`, exportées comme **valeurs** (pas seulement des types) : `ONELA_SERVICES` (16 services siège), `ONELA_AGENCIES` (66 agences : trigramme = `department`, région = `state`, adresse/CP/ville), `AGENCY_JOB_TITLES`, `HEAD_OFFICE` (Boulogne-Billancourt).
+
+### 13.5 ⚠️ Prérequis d'exploitation (à valider en prod)
+
+- **App reg ONELA** : droit d'écriture Exchange (`Exchange.ManageAsApp` + rôle *Recipient Management* sur le SPN) pour `New-MailContact`. Confirmé en place côté ONELA.
+- **1ʳᵉ création à tester** : que `prenom.nom@onela.com` (domaine autoritatif) soit accepté comme adresse d'un MailContact et route bien vers `mig.onela.com` ; que le passage d'`EmailAddresses` en tableau JSON via `InvokeCommand` fonctionne. Non testable hors tenant live.
+- **Licence Google Workspace** : pour que le nouvel arrivant ait Gmail, l'OU `/onela.com` (ou un groupe) doit **auto-attribuer** une licence côté Google — config Workspace, hors app.
+- `forceChangePassword` s'applique au compte **Entra GOH** (l'auth Google peut être SSO/séparée).
+
+### 13.6 Endpoints
+
+| Endpoint | Usage |
+|---|---|
+| `GET /accounts/search-managers?q=` | Autocomplétion manager (recherche tenant GOH) |
+| `POST /accounts` · `GET /history` · `GET /:id` | Créer (202) / lister / détail |
+| `POST /:id/finalize-google` | Reprendre la finalisation Google (SCIM → OU → alias) |
+| `POST /:id/retry` | Rejouer le provisioning (étapes 1-3 en erreur) |
+| `DELETE /:id` (`?purgeRouting=1`) | Supprimer le suivi (+ le MailContact ONELA si `purgeRouting`) |

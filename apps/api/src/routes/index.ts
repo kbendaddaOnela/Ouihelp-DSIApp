@@ -7,6 +7,7 @@ import { budgetRouter } from '../modules/budget/routes'
 import { sharedMailboxRouter } from '../modules/shared-mailbox/routes'
 import { sharepointMigrationRouter } from '../modules/sharepoint-migration/routes'
 import { onelaContactsRouter } from '../modules/onela-contacts/routes'
+import { accountsRouter } from '../modules/accounts/routes'
 
 export const apiRouter = new Hono()
 
@@ -18,6 +19,7 @@ apiRouter.route('/budget', budgetRouter)
 apiRouter.route('/shared-mailbox', sharedMailboxRouter)
 apiRouter.route('/sharepoint-migration', sharepointMigrationRouter)
 apiRouter.route('/onela-contacts', onelaContactsRouter)
+apiRouter.route('/accounts', accountsRouter)
 
 // Route de santé — accessible sans authentification
 apiRouter.get('/health', (c) => {
