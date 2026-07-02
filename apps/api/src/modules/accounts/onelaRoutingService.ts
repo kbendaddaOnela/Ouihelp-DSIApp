@@ -92,10 +92,17 @@ interface RecipientLite {
   RecipientType?: string
 }
 
-/** Renvoie l'objet de routage s'il existe déjà (idempotence), sinon null. */
+// Identité stable du contact = son **alias** (`prenom.nom`). On NE l'identifie PAS
+// par l'adresse onela.com : celle-ci peut ne pas encore être stampée (si une création
+// partielle a été interrompue), et Get/Set-MailContact échouerait alors.
+function contactAlias(onelaAddress: string): string {
+  return onelaAddress.split('@')[0] ?? onelaAddress
+}
+
+/** Renvoie le MailContact par son alias s'il existe (idempotence), sinon null. */
 export async function getOnelaRouting(onelaAddress: string): Promise<RecipientLite | null> {
   try {
-    const rows = await invokeCommand<RecipientLite>('Get-MailContact', { Identity: onelaAddress })
+    const rows = await invokeCommand<RecipientLite>('Get-MailContact', { Identity: contactAlias(onelaAddress) })
     return rows[0] ?? null
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -107,8 +114,15 @@ export async function getOnelaRouting(onelaAddress: string): Promise<RecipientLi
 }
 
 /**
- * Crée (idempotent) l'objet de routage Exchange ONELA pour un nouvel arrivant.
- * Retourne l'adresse de routage utilisée (mig.onela.com).
+ * Crée (idempotent + auto-réparant) l'objet de routage Exchange ONELA.
+ *
+ * Peut être rejouée sans risque : si un run précédent a été interrompu (recyclage
+ * du conteneur Azure) après `New-MailContact` mais avant le stamping des adresses,
+ * ce second passage retrouve le contact par son alias et **impose l'état cible
+ * final** (adresse primaire = onela.com, cible externe = mig.onela.com).
+ *
+ * On utilise `-PrimarySmtpAddress` (chaîne unique) plutôt que `-EmailAddresses`
+ * (tableau) : plus fiable à passer via le pont JSON `InvokeCommand`.
  */
 export async function ensureOnelaRouting(params: {
   displayName: string
@@ -118,47 +132,47 @@ export async function ensureOnelaRouting(params: {
   onelaAddress: string
 }): Promise<{ routingAddress: string; created: boolean }> {
   const routingAddress = buildRoutingAddress(params.onelaAddress)
-  const alias = params.onelaAddress.split('@')[0] ?? params.onelaAddress
+  const alias = contactAlias(params.onelaAddress)
 
   const existing = await getOnelaRouting(params.onelaAddress)
-  if (existing) {
-    // Déjà présent → on s'assure juste que la cible externe est la bonne.
-    await invokeCommand('Set-MailContact', {
-      Identity: params.onelaAddress,
-      ExternalEmailAddress: routingAddress,
-      EmailAddressPolicyEnabled: false,
-    })
-    return { routingAddress, created: false }
+  let created = false
+  if (!existing) {
+    try {
+      await invokeCommand('New-MailContact', {
+        Name: params.displayName,
+        DisplayName: params.displayName,
+        FirstName: params.firstName,
+        LastName: params.lastName,
+        Alias: alias,
+        ExternalEmailAddress: routingAddress,
+      })
+      created = true
+    } catch (err) {
+      // Création partielle antérieure (le contact existe déjà) → on continue vers Set.
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/already exists|is already in use|proxy address|ADObjectAlreadyExists/i.test(msg)) throw err
+    }
   }
 
-  // Création : la cible (targetAddress) est mig.onela.com → Google.
-  await invokeCommand('New-MailContact', {
-    Name: params.displayName,
-    DisplayName: params.displayName,
-    FirstName: params.firstName,
-    LastName: params.lastName,
-    Alias: alias,
-    ExternalEmailAddress: routingAddress,
-  })
-
-  // On stampe l'adresse onela.com comme adresse primaire connue de l'org (SMTP:
-  // majuscule = primaire ; smtp: minuscule = proxy secondaire). Politique d'adresses
-  // désactivée pour que ces valeurs ne soient pas écrasées.
+  // État cible final, imposé à chaque passage (idempotent, répare une création partielle) :
+  //  - onela.com  = adresse primaire connue de l'org (accepte l'entrant)
+  //  - mig.onela.com = ExternalEmailAddress (redirige vers Google)
   await invokeCommand('Set-MailContact', {
-    Identity: params.onelaAddress,
+    Identity: alias,
     EmailAddressPolicyEnabled: false,
-    EmailAddresses: [`SMTP:${params.onelaAddress}`, `smtp:${routingAddress}`],
     ExternalEmailAddress: routingAddress,
+    PrimarySmtpAddress: params.onelaAddress,
     HiddenFromAddressListsEnabled: false,
   })
 
-  return { routingAddress, created: true }
+  return { routingAddress, created }
 }
 
 /** Supprime l'objet de routage (rollback / suppression du suivi). Idempotent. */
 export async function removeOnelaRouting(onelaAddress: string): Promise<boolean> {
+  const alias = contactAlias(onelaAddress)
   const existing = await getOnelaRouting(onelaAddress)
   if (!existing) return false
-  await invokeCommand('Remove-MailContact', { Identity: onelaAddress, Confirm: false })
+  await invokeCommand('Remove-MailContact', { Identity: alias, Confirm: false })
   return true
 }

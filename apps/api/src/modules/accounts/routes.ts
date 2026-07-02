@@ -361,11 +361,12 @@ accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'),
   if (row.stepCreateGoh !== 'success') {
     return c.json({ error: 'Le compte GOH n\'est pas encore créé' }, 400)
   }
-  // Reset des étapes en error pour permettre la reprise
+  // Reset des étapes en error OU figées en running (tâche tuée par un recyclage) → pending
+  const unstick = (s: string) => s === 'running' || s === 'error'
   await db.update(accountCreations).set({
-    ...(row.stepGoogleProvision === 'error' ? { stepGoogleProvision: 'pending' as const } : {}),
-    ...(row.stepOuMove === 'error' ? { stepOuMove: 'pending' as const } : {}),
-    ...(row.stepNewFormat === 'error' ? { stepNewFormat: 'pending' as const } : {}),
+    ...(unstick(row.stepGoogleProvision) ? { stepGoogleProvision: 'pending' as const } : {}),
+    ...(unstick(row.stepOuMove) ? { stepOuMove: 'pending' as const } : {}),
+    ...(unstick(row.stepNewFormat) ? { stepNewFormat: 'pending' as const } : {}),
     errorDetails: null,
   }).where(eq(accountCreations.id, id))
   void finalizeGoogleBackground(id)
@@ -379,7 +380,17 @@ accountsRouter.post('/:id/retry', requirePermission('accounts:write'), async (c)
   const [row] = await db.select().from(accountCreations).where(eq(accountCreations.id, id))
   if (!row) return c.json({ error: 'Not Found' }, 404)
 
-  await db.update(accountCreations).set({ errorDetails: null }).where(eq(accountCreations.id, id))
+  // Débloque une étape figée en 'running' (tâche background tuée par un recyclage
+  // du conteneur) ou en 'error' → 'pending' pour un re-run propre. provisionBackground
+  // rejoue toute étape != 'success' (idempotent) puis enchaîne la finalisation Google.
+  const unstick = (s: string) => (s === 'running' || s === 'error' ? ('pending' as const) : undefined)
+  await db.update(accountCreations).set({
+    errorDetails: null,
+    ...(unstick(row.stepCreateGoh) ? { stepCreateGoh: 'pending' as const } : {}),
+    ...(unstick(row.stepSetAttributes) ? { stepSetAttributes: 'pending' as const } : {}),
+    ...(unstick(row.stepOnelaRouting) ? { stepOnelaRouting: 'pending' as const } : {}),
+  }).where(eq(accountCreations.id, id))
+
   void provisionBackground(id, {
     firstName: row.firstName,
     lastName: row.lastName,
