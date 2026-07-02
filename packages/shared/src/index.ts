@@ -28,6 +28,9 @@ export type {
   AccountStepStatus,
   AssignmentType,
   AgencyInfo,
+  Agency,
+  AgencyInput,
+  AgenciesResponse,
   ManagerCandidate,
   SearchManagersResponse,
   CreateAccountRequest,
@@ -37,6 +40,7 @@ export type {
 } from './types/accounts'
 export {
   ONELA_SERVICES,
+  ONELA_REGIONS,
   AGENCY_JOB_TITLES,
   HEAD_OFFICE,
   ONELA_AGENCIES,

@@ -1,6 +1,8 @@
 import 'dotenv/config'
 import { migrate } from 'drizzle-orm/mysql2/migrator'
 import { sql } from 'drizzle-orm'
+import { randomUUID } from 'crypto'
+import { ONELA_AGENCIES } from '@dsi-app/shared'
 import { db, pool } from './index'
 import path from 'path'
 
@@ -384,6 +386,22 @@ async function ensureSchemaPatches() {
       )`,
     },
     {
+      table: 'agencies',
+      ddl: `CREATE TABLE \`agencies\` (
+        \`id\` varchar(36) NOT NULL,
+        \`name\` varchar(255) NOT NULL,
+        \`trigramme\` varchar(20) NOT NULL,
+        \`region\` varchar(100) NOT NULL,
+        \`address\` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+        \`postal_code\` varchar(20) NOT NULL,
+        \`city\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`agencies_name_unique\` (\`name\`)
+      )`,
+    },
+    {
       table: 'sharepoint_migrated_items',
       ddl: `CREATE TABLE \`sharepoint_migrated_items\` (
         \`id\` int NOT NULL AUTO_INCREMENT,
@@ -418,6 +436,29 @@ async function ensureSchemaPatches() {
   }
 }
 
+// Seed du référentiel agences depuis ONELA_AGENCIES, uniquement si la table est vide
+// (idempotent). Après seed, la source de vérité est la table (éditable via l'UI).
+async function seedAgenciesIfEmpty() {
+  try {
+    const [rows] = (await pool.query('SELECT COUNT(*) AS n FROM `agencies`')) as [Array<{ n: number }>, unknown]
+    const count = Number(rows[0]?.n ?? 0)
+    if (count > 0) {
+      console.log(`[migrate] Seed agences ignoré (déjà ${count} lignes)`)
+      return
+    }
+    const entries = Object.entries(ONELA_AGENCIES)
+    for (const [name, info] of entries) {
+      await pool.query(
+        'INSERT INTO `agencies` (`id`,`name`,`trigramme`,`region`,`address`,`postal_code`,`city`) VALUES (?,?,?,?,?,?,?)',
+        [randomUUID(), name, info.service, info.region, info.adresse, info.cp, info.ville],
+      )
+    }
+    console.log(`[migrate] Seed agences OK: ${entries.length} agences insérées`)
+  } catch (err) {
+    console.error('[migrate] Seed agences échoué:', err instanceof Error ? err.message : String(err))
+  }
+}
+
 export async function runMigrations() {
   const migrationsFolder = path.resolve(process.cwd(), 'drizzle')
   console.log('[migrate] Running migrations from', migrationsFolder)
@@ -429,6 +470,7 @@ export async function runMigrations() {
     throw err
   }
   await ensureSchemaPatches()
+  await seedAgenciesIfEmpty()
 }
 
 // Permet d'exécuter ce fichier directement : node dist/migrate.js

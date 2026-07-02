@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
-import { eq, desc, and } from 'drizzle-orm'
+import { eq, desc, and, asc } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
 import type { RbacVariables } from '../../middleware/rbac'
 import { getDb } from '../../db/index'
-import { accountCreations } from './schema'
+import { accountCreations, agencies } from './schema'
 import {
   createGohUser,
   setGohUserAttributes,
@@ -21,6 +21,8 @@ import type {
   CreateAccountResponse,
   AccountHistoryResponse,
   SearchManagersResponse,
+  AgenciesResponse,
+  AgencyInput,
 } from '@dsi-app/shared'
 
 export const accountsRouter = new Hono<{ Variables: RbacVariables }>()
@@ -43,6 +45,83 @@ function serialize(a: typeof accountCreations.$inferSelect) {
     updatedAt: a.updatedAt.toISOString(),
   }
 }
+
+// ── Référentiel agences (CRUD) ────────────────────────────────────────────────
+function serializeAgency(a: typeof agencies.$inferSelect) {
+  return {
+    id: a.id,
+    name: a.name,
+    trigramme: a.trigramme,
+    region: a.region,
+    address: a.address,
+    postalCode: a.postalCode,
+    city: a.city,
+  }
+}
+
+accountsRouter.get('/agencies', requirePermission('accounts:read'), async (c) => {
+  const db = getDb()
+  const rows = await db.select().from(agencies).orderBy(asc(agencies.name))
+  return c.json<AgenciesResponse>({ agencies: rows.map(serializeAgency) })
+})
+
+function validateAgency(b: Partial<AgencyInput>): string | null {
+  for (const f of ['name', 'trigramme', 'region', 'address', 'postalCode', 'city'] as const) {
+    if (!b[f] || String(b[f]).trim() === '') return `Champ manquant : ${f}`
+  }
+  return null
+}
+
+accountsRouter.post('/agencies', requirePermission('accounts:write'), async (c) => {
+  const db = getDb()
+  const b = await c.req.json<AgencyInput>()
+  const err = validateAgency(b)
+  if (err) return c.json({ error: 'validation', message: err }, 400)
+
+  const existing = await db.select({ id: agencies.id }).from(agencies).where(eq(agencies.name, b.name.trim())).limit(1)
+  if (existing.length > 0) return c.json({ error: 'conflict', message: `Agence « ${b.name} » déjà existante` }, 409)
+
+  const id = randomUUID()
+  await db.insert(agencies).values({
+    id,
+    name: b.name.trim(),
+    trigramme: b.trigramme.trim(),
+    region: b.region.trim(),
+    address: b.address.trim(),
+    postalCode: b.postalCode.trim(),
+    city: b.city.trim(),
+  })
+  const [row] = await db.select().from(agencies).where(eq(agencies.id, id))
+  return c.json(serializeAgency(row!), 201)
+})
+
+accountsRouter.put('/agencies/:id', requirePermission('accounts:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(agencies).where(eq(agencies.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  const b = await c.req.json<AgencyInput>()
+  const err = validateAgency(b)
+  if (err) return c.json({ error: 'validation', message: err }, 400)
+
+  await db.update(agencies).set({
+    name: b.name.trim(),
+    trigramme: b.trigramme.trim(),
+    region: b.region.trim(),
+    address: b.address.trim(),
+    postalCode: b.postalCode.trim(),
+    city: b.city.trim(),
+  }).where(eq(agencies.id, id))
+  const [updated] = await db.select().from(agencies).where(eq(agencies.id, id))
+  return c.json(serializeAgency(updated!))
+})
+
+accountsRouter.delete('/agencies/:id', requirePermission('accounts:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  await db.delete(agencies).where(eq(agencies.id, id))
+  return c.json({ deleted: id })
+})
 
 // ── Recherche manager (tenant GOH) ───────────────────────────────────────────
 accountsRouter.get('/search-managers', requirePermission('accounts:read'), async (c) => {

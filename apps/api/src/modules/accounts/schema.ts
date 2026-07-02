@@ -52,3 +52,23 @@ export const accountCreations = mysqlTable('account_creations', {
 
 export type AccountCreation = typeof accountCreations.$inferSelect
 export type NewAccountCreation = typeof accountCreations.$inferInsert
+
+/**
+ * Agences ONELA (référentiel éditable). Source de vérité pour le formulaire de
+ * création (trigramme, région ONELA, adresse). Seedée depuis ONELA_AGENCIES au
+ * premier démarrage si la table est vide.
+ */
+export const agencies = mysqlTable('agencies', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  trigramme: varchar('trigramme', { length: 20 }).notNull(),
+  region: varchar('region', { length: 100 }).notNull(),
+  address: varchar('address', { length: 500 }).notNull(),
+  postalCode: varchar('postal_code', { length: 20 }).notNull(),
+  city: varchar('city', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
+})
+
+export type Agency = typeof agencies.$inferSelect
+export type NewAgency = typeof agencies.$inferInsert
