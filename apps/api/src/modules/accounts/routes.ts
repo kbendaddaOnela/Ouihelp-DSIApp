@@ -137,6 +137,7 @@ accountsRouter.post('/', requirePermission('accounts:write'), async (c) => {
     stepGoogleProvision: 'pending',
     stepOuMove: 'pending',
     stepNewFormat: 'pending',
+    stepSendAs: 'pending',
     initiatedBy,
   })
 
@@ -341,47 +342,57 @@ async function finalizeGoogleBackground(id: string) {
     }
   }
 
-  // 3. Nouveau format : alias prenom.nom@onela.com + send-as par défaut
+  // 3. Alias prenom.nom@onela.com (le compte reçoit dès que c'est fait)
   if (row.stepNewFormat !== 'success') {
     await db.update(accountCreations).set({ stepNewFormat: 'running' }).where(eq(accountCreations.id, id))
     try {
       await addGoogleAlias(gohUpn, onelaUpn) // 409 (déjà présent) ignoré côté service
+      await db.update(accountCreations).set({ stepNewFormat: 'success', errorDetails: null }).where(eq(accountCreations.id, id))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[accounts] ${id} alias error:`, msg)
+      await db.update(accountCreations).set({ stepNewFormat: 'error', errorDetails: msg }).where(eq(accountCreations.id, id))
+      return
+    }
+  }
 
-      // L'alias vient d'être ajouté côté Directory ; Gmail peut ne pas encore le
-      // « voir » → la création du send-as échoue avec « sendAsEmail is not a valid
-      // user or group » (invalidArgument). On réessaie le temps que l'alias se
-      // propage (jusqu'à ~2 min ici ; au-delà, l'utilisateur reclique « Finaliser »).
-      let sendAsDone = false
-      let lastSendAsErr: unknown = null
-      for (let attempt = 0; attempt < 7 && !sendAsDone; attempt++) {
+  // 4. Send-as par défaut (étape séparée : Gmail doit être initialisé, ce qui peut
+  //    lagguer après la création/bascule d'OU → on retry, et ça ne bloque pas l'alias).
+  if (row.stepSendAs !== 'success') {
+    await db.update(accountCreations).set({ stepSendAs: 'running' }).where(eq(accountCreations.id, id))
+    try {
+      // Erreurs transitoires Gmail : mailbox pas encore prête (failedPrecondition) ou
+      // alias pas encore propagé (invalidArgument). On réessaie ~3 min.
+      let done = false
+      let lastErr: unknown = null
+      for (let attempt = 0; attempt < 9 && !done; attempt++) {
         try {
           await ensureSendAs(gohUpn, onelaUpn, row.displayName)
-          sendAsDone = true
+          done = true
         } catch (sErr) {
-          lastSendAsErr = sErr
+          lastErr = sErr
           const m = sErr instanceof Error ? sErr.message : String(sErr)
-          const transient = /not a valid user or group|invalidArgument|INVALID_ARGUMENT/i.test(m)
+          const transient = /not a valid user or group|invalidArgument|INVALID_ARGUMENT|Precondition check failed|failedPrecondition|FAILED_PRECONDITION/i.test(m)
           if (!transient) throw sErr
-          console.warn(`[accounts] ${id} send-as pas encore propagé (tentative ${attempt + 1}/7), retry dans 20s`)
+          console.warn(`[accounts] ${id} send-as pas encore prêt (tentative ${attempt + 1}/9), retry dans 20s`)
           await new Promise((r) => setTimeout(r, 20_000))
         }
       }
-      if (!sendAsDone) {
-        const m = lastSendAsErr instanceof Error ? lastSendAsErr.message : String(lastSendAsErr)
-        throw new Error(`Alias ${onelaUpn} pas encore propagé côté Gmail (peut prendre quelques minutes) — reclique « Finaliser sur Google » un peu plus tard. Détail : ${m}`)
+      if (!done) {
+        const m = lastErr instanceof Error ? lastErr.message : String(lastErr)
+        throw new Error(`Boîte Gmail pas encore prête pour le send-as (peut prendre quelques minutes) — reclique « Finaliser sur Google » un peu plus tard. Détail : ${m}`)
       }
-
       try {
         await setSendAsAsDefault(gohUpn, onelaUpn)
       } catch (dErr) {
         console.warn(`[accounts] ${id} setDefault non bloquant:`, dErr instanceof Error ? dErr.message : String(dErr))
       }
-      await db.update(accountCreations).set({ stepNewFormat: 'success', errorDetails: null }).where(eq(accountCreations.id, id))
-      console.log(`[accounts] ${id} finalisation Google terminée (${gohUpn} → OU ${ouPath} + ${onelaUpn})`)
+      await db.update(accountCreations).set({ stepSendAs: 'success', errorDetails: null }).where(eq(accountCreations.id, id))
+      console.log(`[accounts] ${id} finalisation Google terminée (${gohUpn} → OU ${ouPath} + ${onelaUpn} + send-as)`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      console.error(`[accounts] ${id} newFormat error:`, msg)
-      await db.update(accountCreations).set({ stepNewFormat: 'error', errorDetails: msg }).where(eq(accountCreations.id, id))
+      console.error(`[accounts] ${id} sendAs error:`, msg)
+      await db.update(accountCreations).set({ stepSendAs: 'error', errorDetails: msg }).where(eq(accountCreations.id, id))
     }
   }
 }
@@ -401,6 +412,7 @@ accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'),
     ...(unstick(row.stepGoogleProvision) ? { stepGoogleProvision: 'pending' as const } : {}),
     ...(unstick(row.stepOuMove) ? { stepOuMove: 'pending' as const } : {}),
     ...(unstick(row.stepNewFormat) ? { stepNewFormat: 'pending' as const } : {}),
+    ...(unstick(row.stepSendAs) ? { stepSendAs: 'pending' as const } : {}),
     errorDetails: null,
   }).where(eq(accountCreations.id, id))
   void finalizeGoogleBackground(id)
