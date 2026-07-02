@@ -42,6 +42,7 @@ export const accountCreations = mysqlTable('account_creations', {
   stepGoogleProvision: mysqlEnum('step_google_provision', stepStatus).default('pending').notNull(),
   stepOuMove: mysqlEnum('step_ou_move', stepStatus).default('pending').notNull(),
   stepNewFormat: mysqlEnum('step_new_format', stepStatus).default('pending').notNull(),
+  stepSendAs: mysqlEnum('step_send_as', stepStatus).default('pending').notNull(),
   errorDetails: text('error_details'),
   // Métadonnées
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),

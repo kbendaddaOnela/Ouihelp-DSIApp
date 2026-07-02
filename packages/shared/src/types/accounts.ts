@@ -203,6 +203,7 @@ export interface AccountCreationRecord {
   stepGoogleProvision: AccountStepStatus
   stepOuMove: AccountStepStatus
   stepNewFormat: AccountStepStatus
+  stepSendAs: AccountStepStatus
   errorDetails: string | null
   initiatedBy: string
   createdAt: string

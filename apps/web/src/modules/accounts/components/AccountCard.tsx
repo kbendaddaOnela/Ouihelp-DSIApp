@@ -12,7 +12,8 @@ const STEPS: Array<{ key: keyof AccountCreationRecord; label: string }> = [
   { key: 'stepOnelaRouting', label: '3. Routage ONELA' },
   { key: 'stepGoogleProvision', label: '4. SCIM → Google' },
   { key: 'stepOuMove', label: '5. OU /onela.com' },
-  { key: 'stepNewFormat', label: '6. Alias + send-as' },
+  { key: 'stepNewFormat', label: '6. Alias' },
+  { key: 'stepSendAs', label: '7. Send-as' },
 ]
 
 function overallStatus(a: AccountCreationRecord): { label: string; cls: string } {
@@ -61,7 +62,9 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const provisionIncomplete = provisionSteps.some((s) => s !== 'success' && s !== 'skipped')
   const provisionRunning = provisionSteps.includes('running')
   const canRetry = provisionIncomplete
-  const canFinalize = account.stepCreateGoh === 'success' && account.stepNewFormat !== 'success'
+  const canFinalize =
+    account.stepCreateGoh === 'success' &&
+    (account.stepNewFormat !== 'success' || account.stepSendAs !== 'success')
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
