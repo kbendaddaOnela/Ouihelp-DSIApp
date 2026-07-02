@@ -49,6 +49,8 @@ interface InvokeCommandResponse<T> {
 }
 
 async function invokeCommand<T = unknown>(cmdletName: string, parameters: Record<string, unknown>): Promise<T[]> {
+  const t0 = Date.now()
+  console.log(`[routing] InvokeCommand ${cmdletName} → start`)
   const token = await exchangeAdminToken()
   const res = await fetchWithTimeout(invokeCommandUrl(), {
     method: 'POST',
@@ -60,9 +62,12 @@ async function invokeCommand<T = unknown>(cmdletName: string, parameters: Record
     body: JSON.stringify({
       CmdletInput: { CmdletName: cmdletName, Parameters: parameters },
     }),
+    timeoutMs: 45_000,
   })
   const text = await res.text()
+  console.log(`[routing] InvokeCommand ${cmdletName} → ${res.status} en ${Date.now() - t0}ms`)
   if (!res.ok) {
+    console.error(`[routing] ${cmdletName} corps erreur: ${text.slice(0, 800)}`)
     throw new Error(`Exchange InvokeCommand ${res.status} on ${cmdletName}: ${text.slice(0, 600)}`)
   }
   const parsed = JSON.parse(text) as InvokeCommandResponse<T>
