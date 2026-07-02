@@ -128,7 +128,7 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
               className="text-red-600 hover:bg-red-50 hover:text-red-700"
               onClick={() => {
                 const purge = window.confirm(
-                  'Supprimer le suivi de cet onboarding.\n\nOK = supprimer AUSSI l\'objet de routage MailContact sur Exchange ONELA.\nAnnuler = garder le routage (supprimer seulement le suivi).',
+                  'Supprimer le suivi de cet onboarding.\n\nOK = supprimer AUSSI le MailUser de routage sur Exchange ONELA.\nAnnuler = garder le routage (supprimer seulement le suivi).',
                 )
                 del.mutate({ id: account.id, purgeRouting: purge })
               }}

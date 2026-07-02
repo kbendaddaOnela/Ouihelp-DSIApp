@@ -38,7 +38,7 @@ export default function AccountsPage() {
         <p>
           Le compte est créé sur Ouihelp (<code>prenom.nom@mig.onela.com</code>) puis remonte dans Google via SCIM
           (5–40 min) où il bascule automatiquement sur l'OU <code>/onela.com</code> avec l'alias
-          <code> prenom.nom@onela.com</code>. Un objet de routage léger (MailContact) est créé sur Exchange ONELA pour
+          <code> prenom.nom@onela.com</code>. Un objet de routage léger (MailUser) est créé sur Exchange ONELA pour
           que le courrier entrant <code>@onela.com</code> soit redirigé vers Google — sans licence M365 ni mailbox.
         </p>
       </div>
