@@ -5,30 +5,35 @@
 // frappe Exchange en premier ; sans objet destinataire, il BOUNCE (Exchange ne
 // relaie pas vers Google tout seul).
 //
-// Pour un nouvel arrivant qui est Google-native dès J1, on ne veut PAS de mailbox
-// Exchange (ni licence M365, ni décommissionnement futur). On crée donc un objet
-// de ROUTAGE léger :
+// On crée donc un **MailUser (MEU)** :
+//   - PrimarySmtpAddress / UPN = prenom.nom@onela.com   (accepté par l'org — l'entrant résout)
+//   - ExternalEmailAddress (targetAddress) = prenom.nom@mig.onela.com  (redirige vers Google)
 //
-//   → un **MailContact** dont :
-//       - ExternalEmailAddress (targetAddress) = prenom.nom@mig.onela.com  (route vers Google)
-//       - EmailAddresses (primaire) = SMTP:prenom.nom@onela.com            (accepté par Exchange)
+//   Résultat : mail vers prenom.nom@onela.com → résolu sur le MailUser → redirigé
+//   vers mig.onela.com → Google. **Sans licence M365, sans mailbox.**
 //
-//   Résultat : mail vers prenom.nom@onela.com → résolu sur le contact → redirigé
-//   vers prenom.nom@mig.onela.com → Google. Zéro licence, zéro mailbox, zéro
-//   compte AAD, rien à migrer/décommissionner ensuite.
+// Pourquoi PAS un MailContact : Exchange REFUSE d'attribuer une adresse d'un domaine
+// AUTORITATIF (onela.com) à un MailContact — `Set-MailContact -PrimarySmtpAddress`
+// se bloque et ne rend jamais la main (constaté en prod le 02/07/2026). Seul un objet
+// interne mail-enabled (MailUser, mailbox, groupe) peut porter une adresse autoritative.
 //
-// Alternative (non retenue) : un **MailUser**. En Exchange Online, New-MailUser
-// impose -MicrosoftOnlineServicesID + -Password → crée un compte AAD login-capable
-// dans le tenant ONELA. Plus lourd que le besoin (routage pur). Si les conventions
-// du tenant l'exigent, remplacer New-MailContact/Set-MailContact ci-dessous par
-// New-MailUser/Set-MailUser.
+// Le MailUser crée une identité dans l'AAD ONELA. On lui pose un mot de passe
+// aléatoire jamais communiqué (connexion de fait impossible). Il ne consomme PAS de
+// licence et n'a PAS de mailbox.
 //
 // Permission requise sur l'app reg ONELA (déjà en place, cf. Khalid) :
 //   Office 365 Exchange Online → Exchange.ManageAsApp + rôle "Recipient Management"
 //   (ou "Exchange Administrator") sur le SPN.
 
+import { randomBytes } from 'crypto'
 import { fetchWithTimeout } from '../migration/httpClient'
 import { getAccessToken } from '../migration/service'
+
+/** Mot de passe fort et aléatoire pour le MailUser (jamais communiqué). */
+function strongRandomPassword(): string {
+  const raw = randomBytes(18).toString('base64').replace(/[^a-zA-Z0-9]/g, '')
+  return `Rt${raw.slice(0, 20)}#Az9`
+}
 
 async function exchangeAdminToken(): Promise<string> {
   const tid = process.env['ONELA_TENANT_ID']
@@ -99,21 +104,14 @@ interface RecipientLite {
   RecipientType?: string
 }
 
-// Identité stable du contact = son **alias** (`prenom.nom`). On NE l'identifie PAS
-// par l'adresse onela.com : celle-ci peut ne pas encore être stampée (si une création
-// partielle a été interrompue), et Get/Set-MailContact échouerait alors.
-function contactAlias(onelaAddress: string): string {
-  return onelaAddress.split('@')[0] ?? onelaAddress
-}
-
-/** Renvoie le MailContact par son alias s'il existe (idempotence), sinon null. */
+/** Renvoie le MailUser (par UPN/adresse onela.com) s'il existe, sinon null. */
 export async function getOnelaRouting(onelaAddress: string): Promise<RecipientLite | null> {
   try {
-    const rows = await invokeCommand<RecipientLite>('Get-MailContact', { Identity: contactAlias(onelaAddress) })
+    const rows = await invokeCommand<RecipientLite>('Get-MailUser', { Identity: onelaAddress })
     return rows[0] ?? null
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes("couldn't be found") || msg.includes('ObjectNotFoundException') || msg.includes('ManagementObjectNotFound')) {
+    if (msg.includes("couldn't be found") || msg.includes('ObjectNotFound') || msg.includes('ManagementObjectNotFound') || msg.includes('NotFound')) {
       return null
     }
     throw err
@@ -121,86 +119,80 @@ export async function getOnelaRouting(onelaAddress: string): Promise<RecipientLi
 }
 
 /**
- * Crée (idempotent + auto-réparant) l'objet de routage Exchange ONELA.
+ * Crée (idempotent + auto-réparant) le MailUser de routage Exchange ONELA.
  *
- * Peut être rejouée sans risque : si un run précédent a été interrompu (recyclage
- * du conteneur Azure) après `New-MailContact` mais avant le stamping des adresses,
- * ce second passage retrouve le contact par son alias et **impose l'état cible
- * final** (adresse primaire = onela.com, cible externe = mig.onela.com).
+ * MailUser (MEU) : UPN/primaire = onela.com (accepte l'entrant), ExternalEmailAddress
+ * = mig.onela.com (redirige vers Google). Pas de licence, pas de mailbox. Mot de passe
+ * aléatoire jamais communiqué.
  *
- * On utilise `-PrimarySmtpAddress` (chaîne unique) plutôt que `-EmailAddresses`
- * (tableau) : plus fiable à passer via le pont JSON `InvokeCommand`.
+ * Rejouable sans risque : si un run précédent a été interrompu après `New-MailUser`,
+ * ce passage retrouve le MailUser et ré-impose la cible externe (Set-MailUser).
  */
 export async function ensureOnelaRouting(params: {
   displayName: string
   firstName: string
   lastName: string
-  /** Adresse cible interne, ex. prenom.nom@onela.com */
+  /** Adresse cible interne, ex. prenom.nom@onela.com (= UPN du MailUser) */
   onelaAddress: string
 }): Promise<{ routingAddress: string; created: boolean }> {
   const routingAddress = buildRoutingAddress(params.onelaAddress)
-  const alias = contactAlias(params.onelaAddress)
+  const alias = params.onelaAddress.split('@')[0] ?? params.onelaAddress
 
   const existing = await getOnelaRouting(params.onelaAddress)
   let created = false
   if (!existing) {
     try {
-      await invokeCommand('New-MailContact', {
+      await invokeCommand('New-MailUser', {
         Name: params.displayName,
         DisplayName: params.displayName,
         FirstName: params.firstName,
         LastName: params.lastName,
         Alias: alias,
-        ExternalEmailAddress: routingAddress,
+        MicrosoftOnlineServicesID: params.onelaAddress, // UPN + primaire = onela.com
+        Password: strongRandomPassword(),
+        ExternalEmailAddress: routingAddress, // targetAddress → Google
       })
       created = true
     } catch (err) {
-      // Création partielle antérieure (le contact existe déjà) → on continue vers Set.
+      // Création partielle antérieure (le MailUser existe déjà) → on continue vers Set.
       const msg = err instanceof Error ? err.message : String(err)
-      if (!/already exists|is already in use|proxy address|ADObjectAlreadyExists/i.test(msg)) throw err
+      if (!/already exists|is already in use|ADObjectAlreadyExists|already a recipient/i.test(msg)) throw err
     }
   }
 
-  // État cible final, imposé à chaque passage (idempotent, répare une création partielle) :
-  //  - onela.com  = adresse primaire connue de l'org (accepte l'entrant)
-  //  - mig.onela.com = ExternalEmailAddress (redirige vers Google)
-  await invokeCommand('Set-MailContact', {
-    Identity: alias,
-    EmailAddressPolicyEnabled: false,
+  // Ré-impose la cible externe (idempotent, répare une création partielle).
+  await invokeCommand('Set-MailUser', {
+    Identity: params.onelaAddress,
     ExternalEmailAddress: routingAddress,
-    PrimarySmtpAddress: params.onelaAddress,
-    HiddenFromAddressListsEnabled: false,
   })
 
-  // Vérification : on relit le contact pour confirmer que l'adresse onela.com a bien
-  // été acceptée comme primaire (Exchange peut refuser une adresse de domaine
-  // autoritatif sur un MailContact → dans ce cas le routage entrant ne marchera pas).
+  // Vérification : on relit le MailUser et on confirme que l'adresse onela.com est
+  // bien portée par l'objet (elle l'est par construction via MicrosoftOnlineServicesID).
   const check = (await getOnelaRouting(params.onelaAddress)) as RecipientLite | null
   const addresses = Array.isArray(check?.EmailAddresses)
     ? check?.EmailAddresses
     : check?.EmailAddresses
       ? [check.EmailAddresses]
       : []
-  const hasOnela = addresses.some((a) => a.toLowerCase().includes(params.onelaAddress.toLowerCase()))
+  const hasOnela =
+    (check?.PrimarySmtpAddress ?? '').toLowerCase() === params.onelaAddress.toLowerCase() ||
+    addresses.some((a) => a.toLowerCase().includes(params.onelaAddress.toLowerCase()))
   console.log(
     `[accounts] routing ${params.onelaAddress}: primary=${check?.PrimarySmtpAddress ?? '?'} external=${check?.ExternalEmailAddress ?? '?'} onelaStamped=${hasOnela} addresses=${JSON.stringify(addresses)}`,
   )
   if (!hasOnela) {
     throw new Error(
-      `L'adresse ${params.onelaAddress} n'a PAS été acceptée sur le MailContact (primaire actuel : ${check?.PrimarySmtpAddress ?? '?'}). ` +
-        `Exchange refuse probablement une adresse du domaine autoritatif onela.com sur un contact → le routage entrant ne fonctionnera pas. ` +
-        `Bascule nécessaire vers un MailUser (MEU).`,
+      `Le MailUser ${params.onelaAddress} n'a pas l'adresse onela.com attendue (primaire : ${check?.PrimarySmtpAddress ?? '?'}).`,
     )
   }
 
   return { routingAddress, created }
 }
 
-/** Supprime l'objet de routage (rollback / suppression du suivi). Idempotent. */
+/** Supprime le MailUser de routage (rollback / suppression du suivi). Idempotent. */
 export async function removeOnelaRouting(onelaAddress: string): Promise<boolean> {
-  const alias = contactAlias(onelaAddress)
   const existing = await getOnelaRouting(onelaAddress)
   if (!existing) return false
-  await invokeCommand('Remove-MailContact', { Identity: alias, Confirm: false })
+  await invokeCommand('Remove-MailUser', { Identity: onelaAddress, Confirm: false })
   return true
 }
