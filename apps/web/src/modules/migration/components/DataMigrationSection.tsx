@@ -129,6 +129,12 @@ export function DataMigrationSection({
   const showActionButton = !running
   const showBar = running || total > 0
   const pct = total > 0 ? Math.round(((migrated + failed) / total) * 100) : 0
+  // Quand la phase est terminée avec succès, `total` (pré-comptage estimé) peut être
+  // supérieur au nombre réellement traité (dossiers cachés, mails déjà présents via
+  // dual-delivery, plafond J-N...). On affiche alors 100 % et le compte réel, sans
+  // fraction trompeuse — le run est fini, ce qui compte c'est ce qui a été migré.
+  const isDone = status === 'success'
+  const displayPct = isDone ? 100 : pct
   const c = COLOR_CLASSES[color]
 
   const buttonLabel = isStarting
@@ -202,13 +208,15 @@ export function DataMigrationSection({
               {running ? `Migration ${label.toLowerCase()} en cours...` : `Migration ${label.toLowerCase()}`}
             </span>
             <span className="font-mono text-gray-600">
-              {migrated + failed} / {total} ({pct}%)
+              {isDone
+                ? `${migrated} migré${migrated > 1 ? 's' : ''}${failed > 0 ? ` · ${failed} en erreur` : ''}`
+                : `${migrated + failed} / ${total} (${pct}%)`}
             </span>
           </div>
           <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
             <div
               className={cn('h-full transition-all duration-500', status === 'error' ? 'bg-red-500' : c.bar)}
-              style={{ width: `${pct}%` }}
+              style={{ width: `${displayPct}%` }}
             />
           </div>
 
