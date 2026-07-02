@@ -336,7 +336,31 @@ async function finalizeGoogleBackground(id: string) {
     await db.update(accountCreations).set({ stepNewFormat: 'running' }).where(eq(accountCreations.id, id))
     try {
       await addGoogleAlias(gohUpn, onelaUpn) // 409 (déjà présent) ignoré côté service
-      await ensureSendAs(gohUpn, onelaUpn, row.displayName)
+
+      // L'alias vient d'être ajouté côté Directory ; Gmail peut ne pas encore le
+      // « voir » → la création du send-as échoue avec « sendAsEmail is not a valid
+      // user or group » (invalidArgument). On réessaie le temps que l'alias se
+      // propage (jusqu'à ~2 min ici ; au-delà, l'utilisateur reclique « Finaliser »).
+      let sendAsDone = false
+      let lastSendAsErr: unknown = null
+      for (let attempt = 0; attempt < 7 && !sendAsDone; attempt++) {
+        try {
+          await ensureSendAs(gohUpn, onelaUpn, row.displayName)
+          sendAsDone = true
+        } catch (sErr) {
+          lastSendAsErr = sErr
+          const m = sErr instanceof Error ? sErr.message : String(sErr)
+          const transient = /not a valid user or group|invalidArgument|INVALID_ARGUMENT/i.test(m)
+          if (!transient) throw sErr
+          console.warn(`[accounts] ${id} send-as pas encore propagé (tentative ${attempt + 1}/7), retry dans 20s`)
+          await new Promise((r) => setTimeout(r, 20_000))
+        }
+      }
+      if (!sendAsDone) {
+        const m = lastSendAsErr instanceof Error ? lastSendAsErr.message : String(lastSendAsErr)
+        throw new Error(`Alias ${onelaUpn} pas encore propagé côté Gmail (peut prendre quelques minutes) — reclique « Finaliser sur Google » un peu plus tard. Détail : ${m}`)
+      }
+
       try {
         await setSendAsAsDefault(gohUpn, onelaUpn)
       } catch (dErr) {

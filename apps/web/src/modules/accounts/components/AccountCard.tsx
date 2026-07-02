@@ -54,13 +54,13 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
     account.stepSetAttributes,
     account.stepOnelaRouting,
   ]
-  // Étape figée : 'running' alors que l'enregistrement n'a pas bougé depuis > 3 min
-  // (la tâche background a été tuée par un recyclage du conteneur Azure).
-  const staleMs = Date.now() - new Date(account.updatedAt).getTime()
-  const isStale = staleMs > 3 * 60_000
-  const hasProvisionError = provisionSteps.includes('error')
-  const isProvisionStuck = isStale && provisionSteps.includes('running')
-  const canRetry = hasProvisionError || isProvisionStuck
+  // Provisioning incomplet = une étape 1-3 n'est ni success ni skipped (donc pending,
+  // running ou error). On propose toujours « Relancer » dans ce cas : l'opération est
+  // idempotente, ça débloque une étape figée par un recyclage du conteneur sans
+  // dépendre d'un timer (la finalisation 4-6 bouge updatedAt et masquait le blocage).
+  const provisionIncomplete = provisionSteps.some((s) => s !== 'success' && s !== 'skipped')
+  const provisionRunning = provisionSteps.includes('running')
+  const canRetry = provisionIncomplete
   const canFinalize = account.stepCreateGoh === 'success' && account.stepNewFormat !== 'success'
 
   return (
@@ -102,9 +102,9 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
           {account.errorDetails && (
             <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">{account.errorDetails}</p>
           )}
-          {isProvisionStuck && !account.errorDetails && (
+          {provisionRunning && !account.errorDetails && (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              Étape figée (tâche interrompue par un redémarrage). Clique « Relancer le provisioning » pour reprendre — sans risque, l'opération est idempotente.
+              Si cette étape reste « en cours » plusieurs minutes, la tâche a été interrompue par un redémarrage du conteneur. Clique « Relancer le provisioning » pour reprendre — sans risque, l'opération est idempotente.
             </p>
           )}
 
