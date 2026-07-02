@@ -49,10 +49,18 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const del = useDeleteAccount()
 
   const status = overallStatus(account)
-  const hasProvisionError =
-    account.stepCreateGoh === 'error' ||
-    account.stepSetAttributes === 'error' ||
-    account.stepOnelaRouting === 'error'
+  const provisionSteps: AccountStepStatus[] = [
+    account.stepCreateGoh,
+    account.stepSetAttributes,
+    account.stepOnelaRouting,
+  ]
+  // Étape figée : 'running' alors que l'enregistrement n'a pas bougé depuis > 3 min
+  // (la tâche background a été tuée par un recyclage du conteneur Azure).
+  const staleMs = Date.now() - new Date(account.updatedAt).getTime()
+  const isStale = staleMs > 3 * 60_000
+  const hasProvisionError = provisionSteps.includes('error')
+  const isProvisionStuck = isStale && provisionSteps.includes('running')
+  const canRetry = hasProvisionError || isProvisionStuck
   const canFinalize = account.stepCreateGoh === 'success' && account.stepNewFormat !== 'success'
 
   return (
@@ -94,10 +102,15 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
           {account.errorDetails && (
             <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">{account.errorDetails}</p>
           )}
+          {isProvisionStuck && !account.errorDetails && (
+            <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              Étape figée (tâche interrompue par un redémarrage). Clique « Relancer le provisioning » pour reprendre — sans risque, l'opération est idempotente.
+            </p>
+          )}
 
           {/* Actions */}
           <div className="flex flex-wrap gap-2">
-            {hasProvisionError && (
+            {canRetry && (
               <Button size="sm" variant="outline" onClick={() => retry.mutate(account.id)} disabled={retry.isPending}>
                 <RefreshCw className={cn('h-4 w-4', retry.isPending && 'animate-spin')} />
                 Relancer le provisioning
