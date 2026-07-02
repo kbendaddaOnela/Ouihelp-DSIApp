@@ -261,13 +261,23 @@ async function provisionBackground(id: string, p: ProvisionParams) {
   // ── Étape 3 : objet de routage Exchange ONELA (onela.com → Google) ──
   if (current.stepOnelaRouting !== 'success') {
     await db.update(accountCreations).set({ stepOnelaRouting: 'running' }).where(eq(accountCreations.id, id))
+    console.log(`[accounts] ${id} step3 routage ONELA: start (${p.onelaUpn})`)
     try {
-      await ensureOnelaRouting({
-        displayName: p.displayName,
-        firstName: p.firstName,
-        lastName: p.lastName,
-        onelaAddress: p.onelaUpn,
-      })
+      // Garde-fou : l'étape ne peut pas rester bloquée. Si ensureOnelaRouting ne
+      // rend pas la main sous 100 s, on force l'échec (au lieu de figer 'running').
+      const watchdog = new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error('Timeout routage ONELA (>100s) — voir logs [routing] pour le cmdlet en cause')), 100_000),
+      )
+      const r = await Promise.race([
+        ensureOnelaRouting({
+          displayName: p.displayName,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          onelaAddress: p.onelaUpn,
+        }),
+        watchdog,
+      ])
+      console.log(`[accounts] ${id} step3 routage ONELA: OK (${r.routingAddress}, created=${r.created})`)
       await db.update(accountCreations).set({ stepOnelaRouting: 'success', errorDetails: null }).where(eq(accountCreations.id, id))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
