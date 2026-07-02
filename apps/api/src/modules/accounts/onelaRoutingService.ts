@@ -79,6 +79,30 @@ async function invokeCommand<T = unknown>(cmdletName: string, parameters: Record
   return parsed.value ?? []
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Rejoue `fn` tant qu'elle échoue sur « objet introuvable » (latence de réplication
+ * d'annuaire Exchange après une création). Toute autre erreur est propagée aussitôt.
+ */
+async function retryOnNotFound<T>(fn: () => Promise<T>, attempts = 6, delayMs = 4000): Promise<T> {
+  let last: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      last = e
+      const m = e instanceof Error ? e.message : String(e)
+      if (!/couldn't be found|NotFound|ObjectNotFound|ManagementObjectNotFound/i.test(m)) throw e
+      if (i < attempts - 1) {
+        console.log(`[routing] objet pas encore répliqué, retry ${i + 1}/${attempts} dans ${delayMs}ms`)
+        await sleep(delayMs)
+      }
+    }
+  }
+  throw last
+}
+
 /**
  * Construit l'adresse de routage de transition (vers Google).
  * `prenom.nom@onela.com` → `prenom.nom@mig.onela.com`.
@@ -150,7 +174,7 @@ export async function ensureOnelaRouting(params: {
         Alias: alias,
         MicrosoftOnlineServicesID: params.onelaAddress, // UPN + primaire = onela.com
         Password: strongRandomPassword(),
-        ExternalEmailAddress: routingAddress, // targetAddress → Google
+        ExternalEmailAddress: routingAddress, // targetAddress → Google (posé dès la création)
       })
       created = true
     } catch (err) {
@@ -160,29 +184,50 @@ export async function ensureOnelaRouting(params: {
     }
   }
 
-  // Ré-impose la cible externe (idempotent, répare une création partielle).
-  await invokeCommand('Set-MailUser', {
-    Identity: params.onelaAddress,
-    ExternalEmailAddress: routingAddress,
-  })
+  // Objet PRÉEXISTANT uniquement : ré-impose la cible externe. On NE fait PAS de Set
+  // juste après un New : d'une part c'est redondant (New a déjà posé ExternalEmailAddress),
+  // d'autre part le MailUser fraîchement créé n'est pas encore répliqué → Set 404.
+  if (!created) {
+    await retryOnNotFound(() =>
+      invokeCommand('Set-MailUser', {
+        Identity: params.onelaAddress,
+        ExternalEmailAddress: routingAddress,
+      }),
+    )
+  }
 
-  // Vérification : on relit le MailUser et on confirme que l'adresse onela.com est
-  // bien portée par l'objet (elle l'est par construction via MicrosoftOnlineServicesID).
-  const check = (await getOnelaRouting(params.onelaAddress)) as RecipientLite | null
-  const addresses = Array.isArray(check?.EmailAddresses)
-    ? check?.EmailAddresses
-    : check?.EmailAddresses
+  // Vérification (retry sur 404 = réplication d'annuaire après New). Si l'objet vient
+  // d'être créé mais n'est pas encore lisible après les retries, on ne fait pas échouer
+  // l'étape : la création a réussi, l'objet finira par se répliquer.
+  let check: RecipientLite | null = null
+  try {
+    check = await retryOnNotFound(async () => {
+      const r = await getOnelaRouting(params.onelaAddress)
+      if (!r) throw new Error("couldn't be found (pas encore répliqué)")
+      return r
+    })
+  } catch {
+    if (created) {
+      console.warn(`[accounts] routing ${params.onelaAddress}: MailUser créé mais pas encore lisible (réplication) — OK optimiste.`)
+      return { routingAddress, created }
+    }
+    throw new Error(`MailUser ${params.onelaAddress} introuvable après création.`)
+  }
+
+  const addresses = Array.isArray(check.EmailAddresses)
+    ? check.EmailAddresses
+    : check.EmailAddresses
       ? [check.EmailAddresses]
       : []
   const hasOnela =
-    (check?.PrimarySmtpAddress ?? '').toLowerCase() === params.onelaAddress.toLowerCase() ||
+    (check.PrimarySmtpAddress ?? '').toLowerCase() === params.onelaAddress.toLowerCase() ||
     addresses.some((a) => a.toLowerCase().includes(params.onelaAddress.toLowerCase()))
   console.log(
-    `[accounts] routing ${params.onelaAddress}: primary=${check?.PrimarySmtpAddress ?? '?'} external=${check?.ExternalEmailAddress ?? '?'} onelaStamped=${hasOnela} addresses=${JSON.stringify(addresses)}`,
+    `[accounts] routing ${params.onelaAddress}: primary=${check.PrimarySmtpAddress ?? '?'} external=${check.ExternalEmailAddress ?? '?'} onelaStamped=${hasOnela} addresses=${JSON.stringify(addresses)}`,
   )
   if (!hasOnela) {
     throw new Error(
-      `Le MailUser ${params.onelaAddress} n'a pas l'adresse onela.com attendue (primaire : ${check?.PrimarySmtpAddress ?? '?'}).`,
+      `Le MailUser ${params.onelaAddress} n'a pas l'adresse onela.com attendue (primaire : ${check.PrimarySmtpAddress ?? '?'}).`,
     )
   }
 
