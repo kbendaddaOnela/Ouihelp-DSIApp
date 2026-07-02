@@ -89,6 +89,8 @@ interface RecipientLite {
   Name?: string
   Alias?: string
   ExternalEmailAddress?: string
+  PrimarySmtpAddress?: string
+  EmailAddresses?: string[] | string
   RecipientType?: string
 }
 
@@ -164,6 +166,27 @@ export async function ensureOnelaRouting(params: {
     PrimarySmtpAddress: params.onelaAddress,
     HiddenFromAddressListsEnabled: false,
   })
+
+  // Vérification : on relit le contact pour confirmer que l'adresse onela.com a bien
+  // été acceptée comme primaire (Exchange peut refuser une adresse de domaine
+  // autoritatif sur un MailContact → dans ce cas le routage entrant ne marchera pas).
+  const check = (await getOnelaRouting(params.onelaAddress)) as RecipientLite | null
+  const addresses = Array.isArray(check?.EmailAddresses)
+    ? check?.EmailAddresses
+    : check?.EmailAddresses
+      ? [check.EmailAddresses]
+      : []
+  const hasOnela = addresses.some((a) => a.toLowerCase().includes(params.onelaAddress.toLowerCase()))
+  console.log(
+    `[accounts] routing ${params.onelaAddress}: primary=${check?.PrimarySmtpAddress ?? '?'} external=${check?.ExternalEmailAddress ?? '?'} onelaStamped=${hasOnela} addresses=${JSON.stringify(addresses)}`,
+  )
+  if (!hasOnela) {
+    throw new Error(
+      `L'adresse ${params.onelaAddress} n'a PAS été acceptée sur le MailContact (primaire actuel : ${check?.PrimarySmtpAddress ?? '?'}). ` +
+        `Exchange refuse probablement une adresse du domaine autoritatif onela.com sur un contact → le routage entrant ne fonctionnera pas. ` +
+        `Bascule nécessaire vers un MailUser (MEU).`,
+    )
+  }
 
   return { routingAddress, created }
 }
