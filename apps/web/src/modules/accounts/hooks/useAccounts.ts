@@ -1,6 +1,40 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { CreateAccountRequest } from '@dsi-app/shared'
+import type { CreateAccountRequest, AgencyInput } from '@dsi-app/shared'
 import { accountsApi } from '../api'
+
+const AGENCIES_KEY = ['accounts-agencies']
+
+export function useAgencies() {
+  return useQuery({
+    queryKey: AGENCIES_KEY,
+    queryFn: () => accountsApi.agencies(),
+    staleTime: 5 * 60_000,
+  })
+}
+
+export function useCreateAgency() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: AgencyInput) => accountsApi.createAgency(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: AGENCIES_KEY }),
+  })
+}
+
+export function useUpdateAgency() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: AgencyInput }) => accountsApi.updateAgency(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: AGENCIES_KEY }),
+  })
+}
+
+export function useDeleteAgency() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => accountsApi.deleteAgency(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: AGENCIES_KEY }),
+  })
+}
 
 const HISTORY_KEY = ['accounts-history']
 

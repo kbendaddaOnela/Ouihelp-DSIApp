@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { UserPlus, Loader2, X } from 'lucide-react'
 import {
   ONELA_SERVICES,
-  ONELA_AGENCIES,
   AGENCY_JOB_TITLES,
   HEAD_OFFICE,
   type AssignmentType,
@@ -10,7 +9,7 @@ import {
 } from '@dsi-app/shared'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useCreateAccount, useSearchManagers } from '../hooks/useAccounts'
+import { useCreateAccount, useSearchManagers, useAgencies } from '../hooks/useAccounts'
 
 function normalizePart(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '')
@@ -99,6 +98,8 @@ function ManagerPicker({
 
 export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const create = useCreateAccount()
+  const { data: agenciesData } = useAgencies()
+  const agencyList = agenciesData?.agencies ?? []
 
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
@@ -126,7 +127,7 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
     if (!prefixTouched) setEmailPrefix(suggestedPrefix)
   }, [suggestedPrefix, prefixTouched])
 
-  const agencyInfo = agency ? ONELA_AGENCIES[agency] : undefined
+  const agencyInfo = agency ? agencyList.find((a) => a.name === agency) : undefined
   const email = emailPrefix ? `${emailPrefix}@onela.com` : ''
 
   const reset = () => {
@@ -153,14 +154,14 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
       emailPrefix,
       emailDomain: '@onela.com',
       assignmentType,
-      department: isAgence ? (agencyInfo?.service ?? '') : service,
+      department: isAgence ? (agencyInfo?.trigramme ?? '') : service,
       jobTitle,
       managerUpn: manager?.upn ?? null,
       officeLocation: isAgence ? agency : HEAD_OFFICE.officeLocation,
       state: isAgence ? (agencyInfo?.region ?? null) : null,
-      streetAddress: isAgence ? (agencyInfo?.adresse ?? null) : HEAD_OFFICE.streetAddress,
-      postalCode: isAgence ? (agencyInfo?.cp ?? null) : HEAD_OFFICE.postalCode,
-      city: isAgence ? (agencyInfo?.ville ?? null) : HEAD_OFFICE.city,
+      streetAddress: isAgence ? (agencyInfo?.address ?? null) : HEAD_OFFICE.streetAddress,
+      postalCode: isAgence ? (agencyInfo?.postalCode ?? null) : HEAD_OFFICE.postalCode,
+      city: isAgence ? (agencyInfo?.city ?? null) : HEAD_OFFICE.city,
       password,
       forceChangePassword: forceChange,
     }
@@ -170,7 +171,7 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
     })
   }
 
-  const agencyNames = useMemo(() => Object.keys(ONELA_AGENCIES).sort(), [])
+  const agencyNames = useMemo(() => agencyList.map((a) => a.name), [agencyList])
 
   return (
     <div className="space-y-6 rounded-lg border border-gray-200 bg-white p-6">
@@ -259,11 +260,11 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
               </div>
               {agencyInfo && (
                 <div className="sm:col-span-2 grid grid-cols-2 gap-4 rounded-md bg-gray-50 p-3 text-xs text-gray-600 sm:grid-cols-4">
-                  <div><span className="text-gray-400">Trigramme</span><br /><span className="font-medium text-gray-800">{agencyInfo.service}</span></div>
+                  <div><span className="text-gray-400">Trigramme</span><br /><span className="font-medium text-gray-800">{agencyInfo.trigramme}</span></div>
                   <div><span className="text-gray-400">Région</span><br /><span className="font-medium text-gray-800">{agencyInfo.region}</span></div>
-                  <div className="col-span-2"><span className="text-gray-400">Adresse</span><br /><span className="font-medium text-gray-800">{agencyInfo.adresse}</span></div>
-                  <div><span className="text-gray-400">CP</span><br /><span className="font-medium text-gray-800">{agencyInfo.cp}</span></div>
-                  <div><span className="text-gray-400">Ville</span><br /><span className="font-medium text-gray-800">{agencyInfo.ville}</span></div>
+                  <div className="col-span-2"><span className="text-gray-400">Adresse</span><br /><span className="font-medium text-gray-800">{agencyInfo.address}</span></div>
+                  <div><span className="text-gray-400">CP</span><br /><span className="font-medium text-gray-800">{agencyInfo.postalCode}</span></div>
+                  <div><span className="text-gray-400">Ville</span><br /><span className="font-medium text-gray-800">{agencyInfo.city}</span></div>
                 </div>
               )}
             </>

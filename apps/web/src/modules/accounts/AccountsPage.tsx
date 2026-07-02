@@ -1,15 +1,17 @@
 import { useState } from 'react'
-import { UserPlus, Plus, Info } from 'lucide-react'
+import { UserPlus, Plus, Info, Building2 } from 'lucide-react'
 import { usePermission } from '@/hooks/usePermission'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { useAccountsHistory } from './hooks/useAccounts'
 import { AccountForm } from './components/AccountForm'
 import { AccountCard } from './components/AccountCard'
+import { AgenciesManager } from './components/AgenciesManager'
 
 export default function AccountsPage() {
   const canWrite = usePermission('accounts:write')
   const [showForm, setShowForm] = useState(false)
+  const [showAgencies, setShowAgencies] = useState(false)
   const { data, isLoading } = useAccountsHistory()
 
   return (
@@ -25,10 +27,16 @@ export default function AccountsPage() {
           </div>
         </div>
         {canWrite && (
-          <Button onClick={() => setShowForm((s) => !s)} variant={showForm ? 'outline' : 'default'}>
-            <Plus className="h-4 w-4" />
-            {showForm ? 'Fermer' : 'Nouveau compte'}
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={() => { setShowAgencies((s) => !s); setShowForm(false) }} variant="outline">
+              <Building2 className="h-4 w-4" />
+              {showAgencies ? 'Fermer les agences' : 'Gérer les agences'}
+            </Button>
+            <Button onClick={() => { setShowForm((s) => !s); setShowAgencies(false) }} variant={showForm ? 'outline' : 'default'}>
+              <Plus className="h-4 w-4" />
+              {showForm ? 'Fermer' : 'Nouveau compte'}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -42,6 +50,8 @@ export default function AccountsPage() {
           que le courrier entrant <code>@onela.com</code> soit redirigé vers Google — sans licence M365 ni mailbox.
         </p>
       </div>
+
+      {showAgencies && canWrite && <AgenciesManager />}
 
       {showForm && canWrite && <AccountForm onCreated={() => setShowForm(false)} />}
 
