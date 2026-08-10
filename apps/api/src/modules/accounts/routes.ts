@@ -16,6 +16,8 @@ import {
 import { googleUserExists, moveUserToOu, addGoogleAlias } from '../migration/googleService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { ensureOnelaRouting, buildRoutingAddress, removeOnelaRouting } from './onelaRoutingService'
+import { onelaContacts } from '../onela-contacts/schema'
+import { pushContactsToUser, type ParsedContact } from '../onela-contacts/service'
 import type {
   CreateAccountRequest,
   CreateAccountResponse,
@@ -217,6 +219,7 @@ accountsRouter.post('/', requirePermission('accounts:write'), async (c) => {
     stepOuMove: 'pending',
     stepNewFormat: 'pending',
     stepSendAs: 'pending',
+    stepContactsOnela: 'pending',
     initiatedBy,
   })
 
@@ -354,6 +357,13 @@ async function provisionBackground(id: string, p: ProvisionParams) {
           firstName: p.firstName,
           lastName: p.lastName,
           onelaAddress: p.onelaUpn,
+          department: p.department,
+          jobTitle: p.jobTitle,
+          officeLocation: p.officeLocation,
+          state: p.state,
+          streetAddress: p.streetAddress,
+          postalCode: p.postalCode,
+          city: p.city,
         }),
         watchdog,
       ])
@@ -467,13 +477,46 @@ async function finalizeGoogleBackground(id: string) {
         console.warn(`[accounts] ${id} setDefault non bloquant:`, dErr instanceof Error ? dErr.message : String(dErr))
       }
       await db.update(accountCreations).set({ stepSendAs: 'success', errorDetails: null }).where(eq(accountCreations.id, id))
-      console.log(`[accounts] ${id} finalisation Google terminée (${gohUpn} → OU ${ouPath} + ${onelaUpn} + send-as)`)
+      console.log(`[accounts] ${id} send-as OK (${gohUpn} → ${onelaUpn})`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error(`[accounts] ${id} sendAs error:`, msg)
       await db.update(accountCreations).set({ stepSendAs: 'error', errorDetails: msg }).where(eq(accountCreations.id, id))
+      // Non bloquant pour l'étape 8 : on continue.
     }
   }
+
+  // 5. Import de l'annuaire ONELA dans les contacts Google du nouvel utilisateur
+  //    (même mécanique que l'étape 8 de la migration : groupe « ONELA » + People API).
+  if (row.stepContactsOnela !== 'success') {
+    await db.update(accountCreations).set({ stepContactsOnela: 'running' }).where(eq(accountCreations.id, id))
+    try {
+      const rows = await db.select().from(onelaContacts)
+      if (rows.length === 0) {
+        // Rien à importer (annuaire pas encore importé via le module onela-contacts) → on n'échoue pas.
+        await db.update(accountCreations).set({ stepContactsOnela: 'skipped' }).where(eq(accountCreations.id, id))
+        console.log(`[accounts] ${id} contacts ONELA: aucun contact en base → skipped`)
+      } else {
+        const contacts: ParsedContact[] = rows.map((r) => ({
+          givenName: r.givenName,
+          familyName: r.familyName,
+          organization: r.organization,
+          title: r.title,
+          email: r.email,
+          phone: r.phone,
+        }))
+        const result = await pushContactsToUser(gohUpn, contacts)
+        await db.update(accountCreations).set({ stepContactsOnela: 'success', errorDetails: null }).where(eq(accountCreations.id, id))
+        console.log(`[accounts] ${id} contacts ONELA importés: ${result.created} créés, ${result.skipped} déjà présents, ${result.errors} erreurs`)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[accounts] ${id} contactsOnela error:`, msg)
+      await db.update(accountCreations).set({ stepContactsOnela: 'error', errorDetails: msg }).where(eq(accountCreations.id, id))
+    }
+  }
+
+  console.log(`[accounts] ${id} finalisation Google terminée (${gohUpn})`)
 }
 
 // ── Relancer la finalisation Google manuellement (si le SCIM a traîné) ────────
@@ -492,6 +535,7 @@ accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'),
     ...(unstick(row.stepOuMove) ? { stepOuMove: 'pending' as const } : {}),
     ...(unstick(row.stepNewFormat) ? { stepNewFormat: 'pending' as const } : {}),
     ...(unstick(row.stepSendAs) ? { stepSendAs: 'pending' as const } : {}),
+    ...(unstick(row.stepContactsOnela) ? { stepContactsOnela: 'pending' as const } : {}),
     errorDetails: null,
   }).where(eq(accountCreations.id, id))
   void finalizeGoogleBackground(id)

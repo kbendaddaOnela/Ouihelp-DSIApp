@@ -43,6 +43,7 @@ export const accountCreations = mysqlTable('account_creations', {
   stepOuMove: mysqlEnum('step_ou_move', stepStatus).default('pending').notNull(),
   stepNewFormat: mysqlEnum('step_new_format', stepStatus).default('pending').notNull(),
   stepSendAs: mysqlEnum('step_send_as', stepStatus).default('pending').notNull(),
+  stepContactsOnela: mysqlEnum('step_contacts_onela', stepStatus).default('pending').notNull(),
   errorDetails: text('error_details'),
   // Métadonnées
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),

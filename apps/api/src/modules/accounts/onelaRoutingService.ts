@@ -158,6 +158,14 @@ export async function ensureOnelaRouting(params: {
   lastName: string
   /** Adresse cible interne, ex. prenom.nom@onela.com (= UPN du MailUser) */
   onelaAddress: string
+  /** Attributs d'annuaire à poser sur le MailUser (Set-User), best-effort. */
+  department?: string | null
+  jobTitle?: string | null
+  officeLocation?: string | null
+  state?: string | null
+  streetAddress?: string | null
+  postalCode?: string | null
+  city?: string | null
 }): Promise<{ routingAddress: string; created: boolean }> {
   const routingAddress = buildRoutingAddress(params.onelaAddress)
   const alias = params.onelaAddress.split('@')[0] ?? params.onelaAddress
@@ -229,6 +237,29 @@ export async function ensureOnelaRouting(params: {
     throw new Error(
       `Le MailUser ${params.onelaAddress} n'a pas l'adresse onela.com attendue (primaire : ${check.PrimarySmtpAddress ?? '?'}).`,
     )
+  }
+
+  // Attributs d'annuaire sur le MailUser (service, poste, bureau, adresse, région,
+  // société). Set-User gère les propriétés AAD d'un objet mail-enabled. Best-effort :
+  // le routage reste valide même si le stamping d'un attribut échoue.
+  try {
+    await retryOnNotFound(() =>
+      invokeCommand('Set-User', {
+        Identity: params.onelaAddress,
+        Company: 'ONELA',
+        CountryOrRegion: 'France',
+        ...(params.department ? { Department: params.department } : {}),
+        ...(params.jobTitle ? { Title: params.jobTitle } : {}),
+        ...(params.officeLocation ? { Office: params.officeLocation } : {}),
+        ...(params.streetAddress ? { StreetAddress: params.streetAddress } : {}),
+        ...(params.city ? { City: params.city } : {}),
+        ...(params.state ? { StateOrProvince: params.state } : {}),
+        ...(params.postalCode ? { PostalCode: params.postalCode } : {}),
+      }),
+    )
+    console.log(`[accounts] routing ${params.onelaAddress}: attributs annuaire posés (Set-User)`)
+  } catch (e) {
+    console.warn(`[accounts] routing ${params.onelaAddress}: Set-User attributs échoué (non bloquant):`, e instanceof Error ? e.message : String(e))
   }
 
   return { routingAddress, created }

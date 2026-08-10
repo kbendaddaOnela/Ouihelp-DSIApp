@@ -14,12 +14,13 @@ const STEPS: Array<{ key: keyof AccountCreationRecord; label: string }> = [
   { key: 'stepOuMove', label: '5. OU /onela.com' },
   { key: 'stepNewFormat', label: '6. Alias' },
   { key: 'stepSendAs', label: '7. Send-as' },
+  { key: 'stepContactsOnela', label: '8. Contacts ONELA' },
 ]
 
 function overallStatus(a: AccountCreationRecord): { label: string; cls: string } {
   const steps = STEPS.map((s) => a[s.key] as AccountStepStatus)
   if (steps.some((s) => s === 'error')) return { label: 'Erreur', cls: 'bg-red-50 text-red-700' }
-  if (steps.every((s) => s === 'success')) return { label: 'Terminé', cls: 'bg-green-50 text-green-700' }
+  if (steps.every((s) => s === 'success' || s === 'skipped')) return { label: 'Terminé', cls: 'bg-green-50 text-green-700' }
   if (steps.some((s) => s === 'running' || s === 'pending')) return { label: 'En cours', cls: 'bg-blue-50 text-blue-700' }
   return { label: '—', cls: 'bg-gray-100 text-gray-600' }
 }
@@ -62,9 +63,10 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const provisionIncomplete = provisionSteps.some((s) => s !== 'success' && s !== 'skipped')
   const provisionRunning = provisionSteps.includes('running')
   const canRetry = provisionIncomplete
+  const done = (s: AccountStepStatus) => s === 'success' || s === 'skipped'
   const canFinalize =
     account.stepCreateGoh === 'success' &&
-    (account.stepNewFormat !== 'success' || account.stepSendAs !== 'success')
+    (!done(account.stepNewFormat) || !done(account.stepSendAs) || !done(account.stepContactsOnela))
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
