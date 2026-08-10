@@ -71,6 +71,7 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     totalBytes: m.totalBytes,
     migratedBytes: m.migratedBytes,
     migrateVersions: m.migrateVersions,
+    maxVersions: m.maxVersions,
     analyzeOnly: m.analyzeOnly,
     analysisResult: parseAnalysis(m.analysisResult),
     errorDetails: m.errorDetails,
@@ -180,6 +181,7 @@ sharepointMigrationRouter.post('/', requirePermission('migration:write'), async 
     gdSharedDriveId: body.gdSharedDriveId?.trim() || null,
     gdSharedDriveName: body.gdSharedDriveName?.trim() || `Analyse — ${body.driveName}`,
     migrateVersions: body.migrateVersions ?? true,
+    maxVersions: Number.isFinite(body.maxVersions) ? Number(body.maxVersions) : 5,
     analyzeOnly,
     initiatedBy,
   })

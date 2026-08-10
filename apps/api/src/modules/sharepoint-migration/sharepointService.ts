@@ -301,6 +301,49 @@ export async function listItemVersions(driveId: string, itemId: string): Promise
   return versions
 }
 
+/**
+ * Ouvre un FLUX de lecture sur le contenu courant d'un fichier (gros fichiers).
+ * Contrairement à downloadItemContent, rien n'est chargé entièrement en RAM :
+ * l'appelant pousse le flux vers Google par morceaux (mémoire constante).
+ */
+export async function openItemContentStream(
+  driveId: string,
+  itemId: string,
+): Promise<{ stream: ReadableStream<Uint8Array>; size: number | null }> {
+  const token = await getOnelaToken()
+  const res = await fetchWithTimeout(
+    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`,
+    { headers: { Authorization: `Bearer ${token}` }, timeoutMs: 1_800_000 },
+  )
+  if (!res.ok || !res.body) {
+    const err = res.ok ? 'corps vide' : await res.text()
+    throw new Error(`Téléchargement SharePoint échoué (${res.status}): ${String(err).slice(0, 200)}`)
+  }
+  const len = res.headers.get('Content-Length')
+  return { stream: res.body, size: len ? parseInt(len, 10) : null }
+}
+
+/** Idem pour une version historique précise. */
+export async function openItemVersionContentStream(
+  driveId: string,
+  itemId: string,
+  versionId: string,
+): Promise<{ stream: ReadableStream<Uint8Array>; size: number | null }> {
+  const token = await getOnelaToken()
+  const res = await fetchWithTimeout(
+    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/versions/${encodeURIComponent(versionId)}/content`,
+    { headers: { Authorization: `Bearer ${token}` }, timeoutMs: 1_800_000 },
+  )
+  if (!res.ok || !res.body) {
+    const err = res.ok ? 'corps vide' : await res.text()
+    throw new Error(
+      `Téléchargement version SharePoint échoué (${res.status}): ${String(err).slice(0, 200)}`,
+    )
+  }
+  const len = res.headers.get('Content-Length')
+  return { stream: res.body, size: len ? parseInt(len, 10) : null }
+}
+
 /** Télécharge le contenu d'une version précise d'un fichier (Buffer). */
 export async function downloadItemVersionContent(
   driveId: string,
