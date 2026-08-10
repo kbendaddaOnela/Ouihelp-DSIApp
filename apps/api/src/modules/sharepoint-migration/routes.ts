@@ -22,6 +22,20 @@ import type {
 export const sharepointMigrationRouter = new Hono<{ Variables: RbacVariables }>()
 sharepointMigrationRouter.use('*', authMiddleware, loadUserRole)
 
+/** Parse le JSON analysis_result (tolérant). */
+function parseAnalysis(raw: string | null): Array<{ name: string; files: number; bytes: number }> | null {
+  if (!raw) return null
+  try {
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return null
+    return arr
+      .filter((b) => b && typeof b.name === 'string')
+      .map((b) => ({ name: b.name, files: Number(b.files) || 0, bytes: Number(b.bytes) || 0 }))
+  } catch {
+    return null
+  }
+}
+
 /** Parse le JSON selected_roots (tolérant). */
 function parseRoots(raw: string | null): Array<{ id: string; name: string }> {
   if (!raw) return []
@@ -57,6 +71,8 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     totalBytes: m.totalBytes,
     migratedBytes: m.migratedBytes,
     migrateVersions: m.migrateVersions,
+    analyzeOnly: m.analyzeOnly,
+    analysisResult: parseAnalysis(m.analysisResult),
     errorDetails: m.errorDetails,
     startedAt: m.startedAt ? m.startedAt.toISOString() : null,
     finishedAt: m.finishedAt ? m.finishedAt.toISOString() : null,
@@ -138,8 +154,13 @@ sharepointMigrationRouter.get('/history', requirePermission('migration:read'), a
 // ── Création d'une migration ──────────────────────────────────────────────────
 sharepointMigrationRouter.post('/', requirePermission('migration:write'), async (c) => {
   const body = await c.req.json<CreateSharepointMigrationRequest>()
-  if (!body.siteId || !body.driveId || !body.gdSharedDriveId?.trim()) {
-    return c.json({ error: 'Champs requis manquants (siteId, driveId, gdSharedDriveId)' }, 400)
+  const analyzeOnly = body.analyzeOnly === true
+  if (!body.siteId || !body.driveId) {
+    return c.json({ error: 'Champs requis manquants (siteId, driveId)' }, 400)
+  }
+  // Le Shared Drive cible n'est requis que si on transfère réellement
+  if (!analyzeOnly && !body.gdSharedDriveId?.trim()) {
+    return c.json({ error: 'Champs requis manquants (gdSharedDriveId)' }, 400)
   }
   const initiatedBy = c.get('dbUser').email
   const id = randomUUID()
@@ -156,9 +177,10 @@ sharepointMigrationRouter.post('/', requirePermission('migration:write'), async 
     rootItemId: null,
     rootPath: displayPath,
     selectedRoots: roots.length > 0 ? JSON.stringify(roots) : null,
-    gdSharedDriveId: body.gdSharedDriveId,
-    gdSharedDriveName: body.gdSharedDriveName.trim(),
+    gdSharedDriveId: body.gdSharedDriveId?.trim() || null,
+    gdSharedDriveName: body.gdSharedDriveName?.trim() || `Analyse — ${body.driveName}`,
     migrateVersions: body.migrateVersions ?? true,
+    analyzeOnly,
     initiatedBy,
   })
   const [created] = await db.select().from(sharepointMigrations).where(eq(sharepointMigrations.id, id))

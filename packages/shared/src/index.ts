@@ -53,6 +53,7 @@ export type {
   SharepointItem,
   BrowseResponse,
   SharepointSelectedRoot,
+  SharepointAnalysisBucket,
   GoogleSharedDrive,
   SearchSharedDrivesResponse,
   CreateSharepointMigrationRequest,

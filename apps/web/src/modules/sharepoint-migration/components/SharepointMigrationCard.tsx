@@ -75,7 +75,13 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
         </span>
       </div>
 
-      {/* Progression */}
+      {/* Progression — en mode analyse, on affiche le total découvert, pas de barre */}
+      {m.analyzeOnly ? (
+        <div className="mt-3 flex items-center justify-between text-xs text-gray-600">
+          <span>{m.totalItems.toLocaleString('fr-FR')} fichiers</span>
+          <span className="font-medium text-gray-800">{fmtBytes(m.totalBytes)}</span>
+        </div>
+      ) : (
       <div className="mt-3">
         <div className="mb-1 flex items-center justify-between text-xs text-gray-600">
           <span>
@@ -97,9 +103,44 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
           />
         </div>
       </div>
+      )}
 
       {m.errorDetails && (
-        <div className="mt-3 rounded bg-red-50 px-3 py-2 text-xs text-red-700">{m.errorDetails}</div>
+        <div
+          className={`mt-3 rounded px-3 py-2 text-xs ${
+            m.analyzeOnly ? 'bg-indigo-50 text-indigo-800' : 'bg-red-50 text-red-700'
+          }`}
+        >
+          {m.errorDetails}
+        </div>
+      )}
+
+      {/* Répartition du contenu courant (mode analyse) */}
+      {m.analysisResult && m.analysisResult.length > 0 && (
+        <div className="mt-3 max-h-72 overflow-y-auto rounded border border-gray-100">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-gray-50 text-gray-600">
+              <tr>
+                <th className="px-3 py-1.5 text-left font-medium">Dossier</th>
+                <th className="px-3 py-1.5 text-right font-medium">Fichiers</th>
+                <th className="px-3 py-1.5 text-right font-medium">Taille</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {m.analysisResult.map((b) => (
+                <tr key={b.name}>
+                  <td className="truncate px-3 py-1.5 text-gray-800">{b.name}</td>
+                  <td className="px-3 py-1.5 text-right text-gray-500">
+                    {b.files.toLocaleString('fr-FR')}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-medium text-gray-700">
+                    {fmtBytes(b.bytes)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {/* Actions */}
@@ -111,7 +152,7 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             className="inline-flex items-center gap-1.5 rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
           >
             <Play className="h-3.5 w-3.5" />
-            {m.migratedItems > 0 ? 'Reprendre' : 'Lancer'}
+            {m.analyzeOnly ? 'Relancer l’analyse' : m.migratedItems > 0 ? 'Reprendre' : 'Lancer'}
           </button>
         )}
         {isActive && (

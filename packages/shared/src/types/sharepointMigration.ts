@@ -68,6 +68,13 @@ export interface SharepointSelectedRoot {
   name: string
 }
 
+/** Répartition du contenu courant par dossier (résultat du mode analyse) */
+export interface SharepointAnalysisBucket {
+  name: string
+  files: number
+  bytes: number
+}
+
 /** Demande de création d'une migration SharePoint → Shared Drive */
 export interface CreateSharepointMigrationRequest {
   /** URL d'origine du site (mémorisée pour traçabilité / réaffichage) */
@@ -82,12 +89,17 @@ export interface CreateSharepointMigrationRequest {
    * Liste vide = toute la bibliothèque (contenu à la racine, sans wrapper).
    */
   selectedRoots: SharepointSelectedRoot[]
-  /** Shared Drive Google cible — créé MANUELLEMENT par l'admin, sélectionné via recherche */
+  /**
+   * Shared Drive Google cible — créé MANUELLEMENT par l'admin, sélectionné via
+   * recherche. Peut être vide en mode analyse (rien n'est transféré).
+   */
   gdSharedDriveId: string
   /** Nom du Shared Drive sélectionné (affichage) */
   gdSharedDriveName: string
   /** Migrer l'historique des versions (toutes les révisions, pas juste la dernière) */
   migrateVersions: boolean
+  /** Mode analyse : compte le contenu courant sans rien transférer (dry run) */
+  analyzeOnly?: boolean
 }
 
 export interface SharepointMigrationRecord {
@@ -110,6 +122,9 @@ export interface SharepointMigrationRecord {
   totalBytes: number
   migratedBytes: number
   migrateVersions: boolean
+  analyzeOnly: boolean
+  /** Répartition par dossier (null tant que l'analyse n'a pas tourné) */
+  analysisResult: SharepointAnalysisBucket[] | null
   errorDetails: string | null
   startedAt: string | null
   finishedAt: string | null
