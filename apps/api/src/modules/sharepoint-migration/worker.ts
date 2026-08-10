@@ -121,7 +121,43 @@ const BATCH_SIZE = 3 // fichiers transférés en parallèle par dossier
 // Garde-fou : on bufferise chaque fichier en mémoire (×BATCH_SIZE en parallèle).
 // Au-delà de cette taille on saute le fichier (évite l'OOM du conteneur et les
 // téléchargements de 10 min type backup .pst). À transférer manuellement.
-const MAX_FILE_BYTES = 300 * 1024 * 1024 // 300 Mo
+const MAX_FILE_BYTES = Number(process.env['SHAREPOINT_MAX_FILE_MB'] ?? 300) * 1024 * 1024
+
+/**
+ * Budget mémoire global pour les contenus en vol.
+ *
+ * Les fichiers sont bufferisés en RAM (Buffer rejouable). Sans plafond, 3 gros
+ * fichiers en parallèle (3 × 300 Mo) suffisent à faire tuer le conteneur Azure
+ * par l'OOM killer — l'API redémarre et la migration est interrompue. On réserve
+ * donc la taille avant de télécharger : un gros fichier passe SEUL au lieu de
+ * s'additionner aux autres.
+ */
+const MEM_BUDGET_BYTES = Number(process.env['SHAREPOINT_MEM_BUDGET_MB'] ?? 250) * 1024 * 1024
+let memInFlight = 0
+
+/** Réserve `bytes` du budget (attend si nécessaire). Un fichier plus gros que le
+ *  budget passe quand même, mais seul — sinon on bloquerait indéfiniment. */
+async function acquireMem(bytes: number): Promise<void> {
+  while (memInFlight > 0 && memInFlight + bytes > MEM_BUDGET_BYTES) {
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  memInFlight += bytes
+}
+
+function releaseMem(bytes: number): void {
+  memInFlight = Math.max(0, memInFlight - bytes)
+}
+
+/** Exécute `fn` en réservant `bytes` du budget mémoire pour toute sa durée. */
+async function withMem<T>(bytes: number, fn: () => Promise<T>): Promise<T> {
+  const reserved = Math.max(0, bytes)
+  await acquireMem(reserved)
+  try {
+    return await fn()
+  } finally {
+    releaseMem(reserved)
+  }
+}
 const HEARTBEAT_MS = 60_000
 const ORPHAN_STALE_MS = 15 * 60 * 1000
 
@@ -307,8 +343,10 @@ async function processMigration(job: SharepointMigration) {
       }
       // ≤ 1 version → upload simple de la version courante
       if (versions.length <= 1) {
-        const { buffer } = await downloadItemContent(job.driveId, file.id)
-        return uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+        return withMem(file.size ?? 0, async () => {
+          const { buffer } = await downloadItemContent(job.driveId, file.id)
+          return uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+        })
       }
 
       let gdFileId: string | null = null
@@ -318,44 +356,50 @@ async function processMigration(job: SharepointMigration) {
           console.warn(`[sharepoint] version ${v.id} de ${file.name} trop volumineuse, ignorée`)
           continue
         }
-        // ⚠️ Graph refuse /versions/{id}/content sur la version COURANTE. Celle-ci
-        // n'est PAS toujours la dernière du tri par date (fichier restauré à une
-        // version antérieure → date courante ancienne). On prend donc /content pour
-        // la dernière ET en repli sur toute version qui répond « current version »
-        // (/content renvoie toujours le contenu courant).
-        let buffer: Buffer
-        if (idx === versions.length - 1) {
-          buffer = (await downloadItemContent(job.driveId, file.id)).buffer
-        } else {
-          try {
-            buffer = (await downloadItemVersionContent(job.driveId, file.id, v.id)).buffer
-          } catch (e) {
-            if (e instanceof Error && /current version/i.test(e.message)) {
-              buffer = (await downloadItemContent(job.driveId, file.id)).buffer
-            } else {
-              throw e
+        // Budget mémoire : le contenu de la version est réservé pour toute la
+        // durée download + upload (évite l'OOM du conteneur).
+        gdFileId = await withMem(v.size ?? file.size ?? 0, async () => {
+          // ⚠️ Graph refuse /versions/{id}/content sur la version COURANTE. Celle-ci
+          // n'est PAS toujours la dernière du tri par date (fichier restauré à une
+          // version antérieure → date courante ancienne). On prend donc /content pour
+          // la dernière ET en repli sur toute version qui répond « current version »
+          // (/content renvoie toujours le contenu courant).
+          let buffer: Buffer
+          if (idx === versions.length - 1) {
+            buffer = (await downloadItemContent(job.driveId, file.id)).buffer
+          } else {
+            try {
+              buffer = (await downloadItemVersionContent(job.driveId, file.id, v.id)).buffer
+            } catch (e) {
+              if (e instanceof Error && /current version/i.test(e.message)) {
+                buffer = (await downloadItemContent(job.driveId, file.id)).buffer
+              } else {
+                throw e
+              }
             }
           }
-        }
-        const vImpersonate = await impersonationFor(
-          resolveGoh(v.lastModifiedByEmail, v.lastModifiedByName, authorMaps),
-        )
-        if (gdFileId === null) {
-          // Première version exploitable → crée le fichier (createdTime = sa date)
-          const meta: ItemMeta = {
-            ...spMeta(file),
-            createdTime: v.lastModifiedDateTime,
-            modifiedTime: v.lastModifiedDateTime,
+          const vImpersonate = await impersonationFor(
+            resolveGoh(v.lastModifiedByEmail, v.lastModifiedByName, authorMaps),
+          )
+          if (gdFileId === null) {
+            // Première version exploitable → crée le fichier (createdTime = sa date)
+            const meta: ItemMeta = {
+              ...spMeta(file),
+              createdTime: v.lastModifiedDateTime,
+              modifiedTime: v.lastModifiedDateTime,
+            }
+            return uploadOne(file, gdParentId, buffer, meta, vImpersonate)
           }
-          gdFileId = await uploadOne(file, gdParentId, buffer, meta, vImpersonate)
-        } else {
           await addRevisionWithFallback(gdFileId, buffer, vImpersonate)
-        }
+          return gdFileId
+        })
       }
       if (gdFileId === null) {
         // Toutes les versions étaient trop volumineuses → tente la courante
-        const { buffer } = await downloadItemContent(job.driveId, file.id)
-        return uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+        return withMem(file.size ?? 0, async () => {
+          const { buffer } = await downloadItemContent(job.driveId, file.id)
+          return uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+        })
       }
       // modifiedTime final = date de la dernière version
       const last = versions[versions.length - 1]
@@ -644,8 +688,10 @@ async function processMigration(job: SharepointMigration) {
             if (job.migrateVersions) {
               gdFileId = await transferWithVersions(file, gdParentId, fileImpersonate)
             } else {
-              const { buffer } = await downloadItemContent(job.driveId, file.id)
-              gdFileId = await uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+              gdFileId = await withMem(file.size ?? 0, async () => {
+                const { buffer } = await downloadItemContent(job.driveId, file.id)
+                return uploadOne(file, gdParentId, buffer, spMeta(file), fileImpersonate)
+              })
             }
             return { kind: 'ok' as const, gdFileId, bytes: file.size ?? 0 }
           }),
@@ -718,6 +764,14 @@ async function processMigration(job: SharepointMigration) {
           }
         }
         await persistCounters()
+        // Trace mémoire périodique : permet de diagnostiquer une dérive avant
+        // que l'OOM killer d'Azure ne tue le conteneur.
+        if (migrated % 200 < BATCH_SIZE) {
+          const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024)
+          console.log(
+            `[sharepoint] ${job.id} progression: ${migrated}/${totalFiles} — RSS ${rssMb} Mo, en vol ${Math.round(memInFlight / 1024 / 1024)} Mo`,
+          )
+        }
         // Petit répit anti-throttle entre deux batches de transfert
         await new Promise((r) => setTimeout(r, 300))
       }
