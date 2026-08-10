@@ -241,6 +241,7 @@ export interface AccountCreationRecord {
   stepOuMove: AccountStepStatus
   stepNewFormat: AccountStepStatus
   stepSendAs: AccountStepStatus
+  stepContactsOnela: AccountStepStatus
   errorDetails: string | null
   initiatedBy: string
   createdAt: string

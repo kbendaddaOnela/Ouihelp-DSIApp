@@ -84,6 +84,8 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'mail_before_days', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_before_days\` int` },
     // Accounts : send-as séparé de l'alias (étape 7)
     { table: 'account_creations', column: 'step_send_as', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_send_as\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    // Accounts : import annuaire ONELA dans les contacts Google (étape 8)
+    { table: 'account_creations', column: 'step_contacts_onela', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_contacts_onela\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
   ]
   for (const p of columnPatches) {
     try {
@@ -376,6 +378,7 @@ async function ensureSchemaPatches() {
         \`step_ou_move\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_new_format\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_send_as\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+        \`step_contacts_onela\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`error_details\` text,
         \`initiated_by\` varchar(255) NOT NULL,
         \`created_at\` timestamp NOT NULL DEFAULT (now()),
