@@ -121,7 +121,10 @@ function spMeta(item: SpItem): ItemMeta {
 }
 
 const POLL_INTERVAL_MS = 5000
-const BATCH_SIZE = 3 // fichiers transférés en parallèle par dossier
+// Fichiers transférés en parallèle par dossier. Ajustable sans redéploiement
+// (SHAREPOINT_BATCH_SIZE) pour exploiter un App Service plus costaud — borné à
+// 10 : au-delà, Graph throttle (429) et le débit BAISSE au lieu de monter.
+const BATCH_SIZE = Math.min(10, Math.max(1, Number(process.env['SHAREPOINT_BATCH_SIZE'] ?? 3)))
 // Garde-fou : on bufferise chaque fichier en mémoire (×BATCH_SIZE en parallèle).
 // Au-delà de cette taille on saute le fichier (évite l'OOM du conteneur et les
 // téléchargements de 10 min type backup .pst). À transférer manuellement.
@@ -190,7 +193,10 @@ let workerStarted = false
 export function startSharepointMigrationWorker() {
   if (workerStarted) return
   workerStarted = true
-  console.log('[sharepoint-worker] started')
+  console.log(
+    `[sharepoint-worker] started — batch=${BATCH_SIZE}, budget mém=${Math.round(MEM_BUDGET_BYTES / 1024 / 1024)} Mo, ` +
+      `seuil flux=${Math.round(STREAM_THRESHOLD_BYTES / 1024 / 1024)} Mo, taille max=${Math.round(MAX_FILE_BYTES / 1024 / 1024)} Mo`,
+  )
   setInterval(() => {
     pollAndProcess().catch((err) => console.error('[sharepoint-worker] tick error:', err))
   }, POLL_INTERVAL_MS)
