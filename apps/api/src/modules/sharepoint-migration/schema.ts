@@ -52,6 +52,10 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   migratedBytes: bigint('migrated_bytes', { mode: 'number' }).default(0).notNull(),
   // Migrer l'historique des versions (toutes les révisions, pas juste la dernière)
   migrateVersions: boolean('migrate_versions').default(true).notNull(),
+  // Mode analyse : compte le contenu courant sans rien transférer (dry run)
+  analyzeOnly: boolean('analyze_only').default(false).notNull(),
+  // Résultat d'analyse (JSON : [{name, files, bytes}] trié par taille décroissante)
+  analysisResult: text('analysis_result'),
   errorDetails: text('error_details'),
   startedAt: timestamp('started_at'),
   finishedAt: timestamp('finished_at'),

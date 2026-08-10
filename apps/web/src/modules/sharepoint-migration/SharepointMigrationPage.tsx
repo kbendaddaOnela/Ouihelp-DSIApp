@@ -12,6 +12,7 @@ import {
   Search,
   HardDrive,
   Check,
+  BarChart3,
 } from 'lucide-react'
 import type {
   ResolveSiteResponse,
@@ -140,6 +141,30 @@ export default function SharepointMigrationPage() {
     setSelectedGd(null)
     setMigrateVersions(true)
     setError(null)
+  }
+
+  /** Lance une analyse (dry run) : compte le contenu courant, ne transfère rien. */
+  const onAnalyze = () => {
+    if (!resolved || !drive) return
+    setError(null)
+    createMigration.mutate(
+      {
+        siteUrl: url.trim(),
+        siteId: resolved.site.id,
+        siteName: resolved.site.displayName ?? resolved.site.name,
+        driveId: drive.id,
+        driveName: drive.name,
+        selectedRoots,
+        gdSharedDriveId: '',
+        gdSharedDriveName: '',
+        migrateVersions: false,
+        analyzeOnly: true,
+      },
+      {
+        onSuccess: () => reset(),
+        onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Analyse échouée'),
+      },
+    )
   }
 
   const onSubmit = () => {
@@ -342,14 +367,27 @@ export default function SharepointMigrationPage() {
             )}
           </div>
 
-          {currentFolderId && (
+          <div className="mt-2 flex items-center justify-between gap-3">
+            {currentFolderId ? (
+              <button
+                onClick={() => goToCrumb(crumbs.length - 2)}
+                className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+              >
+                <ArrowLeft className="h-3 w-3" /> Remonter
+              </button>
+            ) : (
+              <span />
+            )}
             <button
-              onClick={() => goToCrumb(crumbs.length - 2)}
-              className="mt-2 inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+              onClick={onAnalyze}
+              disabled={createMigration.isPending}
+              className="inline-flex items-center gap-1.5 rounded border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+              title="Compte les fichiers et le volume du contenu courant, sans rien transférer"
             >
-              <ArrowLeft className="h-3 w-3" /> Remonter
+              <BarChart3 className="h-3.5 w-3.5" />
+              Analyser sans transférer
             </button>
-          )}
+          </div>
         </section>
       )}
 

@@ -224,17 +224,20 @@ async function processMigration(job: SharepointMigration) {
       .set({ status: 'running', errorDetails: null, startedAt: new Date() })
       .where(eq(sharepointMigrations.id, job.id))
 
-    // 1) Valider le Shared Drive cible (créé manuellement par l'admin)
+    // 1) Valider le Shared Drive cible (créé manuellement par l'admin).
+    // En mode analyse on ne transfère rien → pas de cible requise.
     sharedDriveId = job.gdSharedDriveId
-    if (!sharedDriveId) {
-      throw new Error('Aucun Shared Drive Google sélectionné pour cette migration')
-    }
-    const target = await getSharedDrive(sharedDriveId)
-    if (!target) {
-      throw new Error(
-        `Le Shared Drive sélectionné (${job.gdSharedDriveName}) est introuvable côté Google. ` +
-          `A-t-il été supprimé ou renommé ? Recrée-le et relance.`,
-      )
+    if (!job.analyzeOnly) {
+      if (!sharedDriveId) {
+        throw new Error('Aucun Shared Drive Google sélectionné pour cette migration')
+      }
+      const target = await getSharedDrive(sharedDriveId)
+      if (!target) {
+        throw new Error(
+          `Le Shared Drive sélectionné (${job.gdSharedDriveName}) est introuvable côté Google. ` +
+            `A-t-il été supprimé ou renommé ? Recrée-le et relance.`,
+        )
+      }
     }
 
     // 2) Charger l'état (idempotence)
@@ -260,7 +263,7 @@ async function processMigration(job: SharepointMigration) {
     // 2b) Mapping auteur ONELA → compte Google + ajout de membre à la demande.
     const authorMaps = await loadAuthorMaps()
     const adminLower = (process.env['GOOGLE_ADMIN_EMAIL'] ?? '').toLowerCase()
-    const driveId = sharedDriveId // non-null après le check ci-dessus (pour les closures)
+    const driveId = sharedDriveId ?? '' // non-null hors mode analyse (pour les closures)
     /** Ajoute (une seule fois) un user au Shared Drive ; renvoie l'id de permission ou null. */
     const ensureMember = (gohUpn: string): Promise<string | null> => {
       let p = memberPromises.get(gohUpn)
@@ -409,16 +412,36 @@ async function processMigration(job: SharepointMigration) {
     let attributable = 0
     let fallbackCount = 0
     const unmapped = new Map<string, number>()
-    // Points de départ : les dossiers sélectionnés, ou la racine de la bibliothèque
     const selectedRoots = parseSelectedRoots(job)
-    const startIds: (string | null)[] =
-      selectedRoots.length > 0 ? selectedRoots.map((r) => r.id) : [null]
-    {
-      const countQueue: (string | null)[] = [...startIds]
-      let sinceFlush = 0
-      while (countQueue.length > 0) {
+    let sinceFlush = 0
+
+    /** Comptabilise un fichier (total + attribution prévisionnelle). */
+    const accountFile = (k: SpItem) => {
+      totalFiles++
+      totalBytes += k.size ?? 0
+      const mapped = resolveAuthorGoh(k, authorMaps)
+      if (mapped && mapped.toLowerCase() !== adminLower) {
+        attributable++
+      } else {
+        fallbackCount++
+        const who =
+          k.lastModifiedByName ??
+          k.createdByName ??
+          k.lastModifiedByEmail ??
+          k.createdByEmail ??
+          'système'
+        unmapped.set(who, (unmapped.get(who) ?? 0) + 1)
+      }
+    }
+
+    /** Compte récursivement un sous-arbre (métadonnées seules, pas de download). */
+    const countSubtree = async (startId: string | null): Promise<{ files: number; bytes: number }> => {
+      let files = 0
+      let bytes = 0
+      const q: (string | null)[] = [startId]
+      while (q.length > 0) {
         if (STOP_SIGNALS.has(job.id)) break // la pause interrompt aussi le comptage
-        const fid = countQueue.shift()!
+        const fid = q.shift()!
         let kids: SpItem[]
         try {
           kids = await listChildren(job.driveId, fid)
@@ -431,25 +454,12 @@ async function processMigration(job: SharepointMigration) {
         }
         for (const k of kids) {
           if (k.isFolder) {
-            countQueue.push(k.id)
+            q.push(k.id)
             continue
           }
-          totalFiles++
-          totalBytes += k.size ?? 0
-          // Résolution d'attribution prévisionnelle (email puis nom)
-          const mapped = resolveAuthorGoh(k, authorMaps)
-          if (mapped && mapped.toLowerCase() !== adminLower) {
-            attributable++
-          } else {
-            fallbackCount++
-            const who =
-              k.lastModifiedByName ??
-              k.createdByName ??
-              k.lastModifiedByEmail ??
-              k.createdByEmail ??
-              'système'
-            unmapped.set(who, (unmapped.get(who) ?? 0) + 1)
-          }
+          accountFile(k)
+          files++
+          bytes += k.size ?? 0
         }
         // Feedback périodique : le total grimpe pendant l'analyse (barre à 0%
         // tant que migrated=0), l'opérateur voit que ça avance.
@@ -461,7 +471,35 @@ async function processMigration(job: SharepointMigration) {
             .where(eq(sharepointMigrations.id, job.id))
         }
       }
+      return { files, bytes }
     }
+
+    // Comptage par « bucket » = dossier sélectionné, ou dossier de 1er niveau de
+    // la bibliothèque → donne la répartition du poids (contenu courant).
+    const buckets: Array<{ name: string; files: number; bytes: number }> = []
+    if (selectedRoots.length > 0) {
+      for (const r of selectedRoots) {
+        const { files, bytes } = await countSubtree(r.id)
+        buckets.push({ name: r.name, files, bytes })
+      }
+    } else {
+      const rootChildren = await listChildren(job.driveId, null)
+      for (const f of rootChildren.filter((c) => c.isFolder)) {
+        const { files, bytes } = await countSubtree(f.id)
+        buckets.push({ name: f.name, files, bytes })
+      }
+      // Fichiers posés directement à la racine de la bibliothèque
+      const rootFiles = rootChildren.filter((c) => !c.isFolder)
+      if (rootFiles.length > 0) {
+        let bytes = 0
+        for (const k of rootFiles) {
+          accountFile(k)
+          bytes += k.size ?? 0
+        }
+        buckets.push({ name: '(fichiers à la racine)', files: rootFiles.length, bytes })
+      }
+    }
+    buckets.sort((a, b) => b.bytes - a.bytes)
     console.log(
       `[sharepoint] ${job.id} pré-comptage: ${totalFiles} fichiers, ${(totalBytes / 1024 / 1024).toFixed(0)} Mo`,
     )
@@ -477,9 +515,35 @@ async function processMigration(job: SharepointMigration) {
       console.log(`[sharepoint] ${job.id} auteurs en repli (top 20): ${top}`)
     }
 
+    // Mode analyse : on s'arrête ici, rien n'est transféré.
+    if (job.analyzeOnly) {
+      const gb = (totalBytes / 1024 / 1024 / 1024).toFixed(1)
+      await db
+        .update(sharepointMigrations)
+        .set({
+          status: 'success',
+          finishedAt: new Date(),
+          totalItems: totalFiles,
+          totalBytes,
+          analysisResult: JSON.stringify(buckets),
+          errorDetails: `Analyse : ${totalFiles} fichiers, ${gb} Go (contenu courant, hors versions)`,
+        })
+        .where(eq(sharepointMigrations.id, job.id))
+      console.log(`[sharepoint] analyse terminée ${job.id}: ${totalFiles} fichiers, ${gb} Go`)
+      return
+    }
+
+    if (!sharedDriveId) throw new Error('Aucun Shared Drive Google sélectionné pour cette migration')
+
     await db
       .update(sharepointMigrations)
-      .set({ totalItems: totalFiles, totalBytes, migratedItems: migrated, failedItems: 0 })
+      .set({
+        totalItems: totalFiles,
+        totalBytes,
+        migratedItems: migrated,
+        failedItems: 0,
+        analysisResult: JSON.stringify(buckets),
+      })
       .where(eq(sharepointMigrations.id, job.id))
 
     // 3) Parcours BFS — un point de départ par dossier sélectionné (chacun RECRÉÉ
