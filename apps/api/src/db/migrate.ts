@@ -81,6 +81,7 @@ async function ensureSchemaPatches() {
     // SharePoint : mode analyse (dry run) + résultat de répartition par dossier
     { table: 'sharepoint_migrations', column: 'analyze_only', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`analyze_only\` boolean NOT NULL DEFAULT false` },
     { table: 'sharepoint_migrations', column: 'analysis_result', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`analysis_result\` text` },
+    { table: 'sharepoint_migrations', column: 'max_versions', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`max_versions\` int NOT NULL DEFAULT 5` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
     { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
     // Plafond du run en jours (passe « anciens » bornée à J-N ; null = pas de plafond)
@@ -343,6 +344,7 @@ async function ensureSchemaPatches() {
         \`total_bytes\` bigint NOT NULL DEFAULT 0,
         \`migrated_bytes\` bigint NOT NULL DEFAULT 0,
         \`migrate_versions\` boolean NOT NULL DEFAULT true,
+        \`max_versions\` int NOT NULL DEFAULT 5,
         \`analyze_only\` boolean NOT NULL DEFAULT false,
         \`analysis_result\` text,
         \`error_details\` text,

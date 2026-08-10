@@ -52,6 +52,10 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   migratedBytes: bigint('migrated_bytes', { mode: 'number' }).default(0).notNull(),
   // Migrer l'historique des versions (toutes les révisions, pas juste la dernière)
   migrateVersions: boolean('migrate_versions').default(true).notNull(),
+  // Nombre max de versions conservées (première + N-1 plus récentes). -1 = toutes.
+  // Graph n'expose pas l'expiration des versions : cette limite reproduit la
+  // politique SharePoint qui ne garde durablement que la 1re et les récentes.
+  maxVersions: int('max_versions').default(5).notNull(),
   // Mode analyse : compte le contenu courant sans rien transférer (dry run)
   analyzeOnly: boolean('analyze_only').default(false).notNull(),
   // Résultat d'analyse (JSON : [{name, files, bytes}] trié par taille décroissante)

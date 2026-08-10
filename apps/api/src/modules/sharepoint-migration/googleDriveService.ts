@@ -308,6 +308,172 @@ export async function addRevision(params: {
   }
 }
 
+/**
+ * Taille d'un morceau d'upload résumable. DOIT être un multiple de 256 Ko
+ * (contrainte Google) sauf pour le dernier morceau. 16 Mo = 64 × 256 Ko.
+ */
+const CHUNK_SIZE = 16 * 1024 * 1024
+
+/**
+ * Pousse un flux vers une session résumable, morceau par morceau.
+ *
+ * Mémoire consommée ≈ CHUNK_SIZE, quelle que soit la taille du fichier → permet
+ * de transférer des fichiers de plusieurs Go sans faire exploser le conteneur.
+ * Google répond 308 (Resume Incomplete) sur les morceaux intermédiaires et
+ * 200/201 sur le dernier.
+ */
+async function pushStreamInChunks(params: {
+  sessionUri: string
+  token: string
+  stream: ReadableStream<Uint8Array>
+  totalSize: number
+  mimeType: string
+  label: string
+}): Promise<{ id: string }> {
+  const { sessionUri, token, stream, totalSize, mimeType, label } = params
+  const reader = stream.getReader()
+  let pending = Buffer.alloc(0)
+  let offset = 0
+  let finalBody: { id: string } | null = null
+
+  const putChunk = async (chunk: Buffer, isFinal: boolean): Promise<void> => {
+    const start = offset
+    const end = offset + chunk.byteLength - 1
+    const res = await fetchWithTimeout(sessionUri, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': mimeType,
+        'Content-Length': String(chunk.byteLength),
+        'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+      },
+      body: chunk,
+      timeoutMs: 900_000,
+    })
+    // 308 = morceau accepté, la suite est attendue (fetch le considère non-ok)
+    if (res.status === 308) {
+      offset += chunk.byteLength
+      return
+    }
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Upload par morceaux "${label}" échoué (${res.status}): ${err.slice(0, 300)}`)
+    }
+    finalBody = (await res.json()) as { id: string }
+    offset += chunk.byteLength
+    if (!isFinal) {
+      throw new Error(`Upload "${label}" terminé prématurément par Google à l'octet ${offset}`)
+    }
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (value && value.byteLength > 0) {
+      pending = pending.byteLength === 0 ? Buffer.from(value) : Buffer.concat([pending, value])
+    }
+    // Envoi des morceaux pleins ; le reliquat part au dernier tour
+    while (pending.byteLength >= CHUNK_SIZE) {
+      const chunk = pending.subarray(0, CHUNK_SIZE)
+      pending = pending.subarray(CHUNK_SIZE)
+      await putChunk(chunk, false)
+    }
+    if (done) {
+      if (pending.byteLength > 0) {
+        await putChunk(pending, true)
+        pending = Buffer.alloc(0)
+      }
+      break
+    }
+  }
+
+  if (offset !== totalSize) {
+    throw new Error(
+      `Upload "${label}" incomplet : ${offset} octets envoyés sur ${totalSize} annoncés`,
+    )
+  }
+  if (!finalBody) throw new Error(`Upload "${label}" : pas de réponse finale de Google`)
+  return finalBody
+}
+
+/**
+ * Upload d'un gros fichier EN FLUX (mémoire constante) vers un Shared Drive.
+ * Même sémantique qu'uploadFile (métadonnées, impersonation), mais sans jamais
+ * charger le contenu entier en RAM.
+ */
+export async function uploadFileStreamed(params: {
+  name: string
+  parentId: string
+  stream: ReadableStream<Uint8Array>
+  size: number
+  mimeType?: string
+  meta?: ItemMeta
+  impersonate?: string
+}): Promise<string> {
+  const token = params.impersonate ? await impersonatedToken(params.impersonate) : await driveToken()
+  const initRes = await fetchWithTimeout(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify(withMeta({ name: params.name, parents: [params.parentId] }, params.meta)),
+    },
+  )
+  if (!initRes.ok) {
+    const err = await initRes.text()
+    throw new Error(`Init upload "${params.name}" échoué (${initRes.status}): ${err.slice(0, 300)}`)
+  }
+  const sessionUri = initRes.headers.get('Location')
+  if (!sessionUri) throw new Error(`Pas de session URI résumable pour "${params.name}"`)
+
+  const { id } = await pushStreamInChunks({
+    sessionUri,
+    token,
+    stream: params.stream,
+    totalSize: params.size,
+    mimeType: params.mimeType ?? 'application/octet-stream',
+    label: params.name,
+  })
+
+  if (params.meta?.modifiedTime) {
+    await setFileModifiedTime(id, params.meta.modifiedTime, params.impersonate).catch(() => {})
+  }
+  return id
+}
+
+/** Ajoute une révision EN FLUX à un fichier existant (gros fichiers). */
+export async function addRevisionStreamed(params: {
+  fileId: string
+  stream: ReadableStream<Uint8Array>
+  size: number
+  mimeType?: string
+  impersonate?: string
+}): Promise<void> {
+  const token = params.impersonate ? await impersonatedToken(params.impersonate) : await driveToken()
+  const initRes = await fetchWithTimeout(
+    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(params.fileId)}?uploadType=resumable&supportsAllDrives=true&keepRevisionForever=true&fields=id`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify({}),
+    },
+  )
+  if (!initRes.ok) {
+    const err = await initRes.text()
+    throw new Error(`Init révision ${params.fileId} échoué (${initRes.status}): ${err.slice(0, 300)}`)
+  }
+  const sessionUri = initRes.headers.get('Location')
+  if (!sessionUri) throw new Error(`Pas de session URI résumable (révision) pour ${params.fileId}`)
+
+  await pushStreamInChunks({
+    sessionUri,
+    token,
+    stream: params.stream,
+    totalSize: params.size,
+    mimeType: params.mimeType ?? 'application/octet-stream',
+    label: `révision ${params.fileId}`,
+  })
+}
+
 /** Règle le modifiedTime d'un fichier (best-effort). Utilisé après la dernière révision. */
 export async function setFileModifiedTime(
   fileId: string,

@@ -98,6 +98,12 @@ export interface CreateSharepointMigrationRequest {
   gdSharedDriveName: string
   /** Migrer l'historique des versions (toutes les révisions, pas juste la dernière) */
   migrateVersions: boolean
+  /**
+   * Nombre max de versions conservées (première + N-1 plus récentes) ; -1 = toutes.
+   * Graph n'expose pas l'expiration des versions : cette limite reproduit la
+   * politique SharePoint (seules la 1re et les récentes sont conservées).
+   */
+  maxVersions?: number
   /** Mode analyse : compte le contenu courant sans rien transférer (dry run) */
   analyzeOnly?: boolean
 }
@@ -122,6 +128,7 @@ export interface SharepointMigrationRecord {
   totalBytes: number
   migratedBytes: number
   migrateVersions: boolean
+  maxVersions: number
   analyzeOnly: boolean
   /** Répartition par dossier (null tant que l'analyse n'a pas tourné) */
   analysisResult: SharepointAnalysisBucket[] | null
