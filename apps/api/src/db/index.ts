@@ -13,7 +13,10 @@ function getPool(): mysql.Pool {
       uri,
       ssl: { rejectUnauthorized: false },
       waitForConnections: true,
-      connectionLimit: 5,
+      // Les workers de migration écrivent en continu ; avec 5 connexions, les
+      // requêtes de l'UI attendaient une connexion libre (GET /history à 8 s).
+      // Surchargeable par env si la DB devait devenir le facteur limitant.
+      connectionLimit: Number(process.env['DB_POOL_SIZE'] ?? 10),
       timezone: 'Z',
       connectTimeout: 10000,
     })
