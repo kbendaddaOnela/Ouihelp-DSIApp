@@ -23,6 +23,52 @@ function adminEmail(): string {
   return e
 }
 
+/**
+ * Google Drive throttle par utilisateur : 403 `userRateLimitExceeded` /
+ * `rateLimitExceeded`, 429, et 5xx transitoires. Sans retry, une migration de
+ * plusieurs dizaines de milliers de fichiers accumule les échecs.
+ * Backoff exponentiel + jitter (le jitter évite que les N transferts parallèles
+ * ne retentent tous en même temps).
+ */
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
+const MAX_ATTEMPTS = 6
+
+function isRateLimited(status: number, body: string): boolean {
+  if (RETRYABLE_STATUS.has(status)) return true
+  // 403 est ambigu : throttling OU permission refusée. On ne retente que le 1er cas.
+  return status === 403 && /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i.test(body)
+}
+
+/**
+ * Exécute un appel Google avec retry sur throttling. `run` doit être REJOUABLE
+ * (corps en Buffer, pas un flux à usage unique).
+ */
+async function googleFetchWithRetry(
+  run: () => Promise<Response>,
+  label: string,
+): Promise<Response> {
+  let delay = 2000
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await run()
+    if (res.ok || res.status === 308 || res.status === 404) return res
+    // On doit lire le corps pour distinguer throttling / vraie erreur : on
+    // renvoie donc une copie exploitable par l'appelant.
+    const body = await res.text()
+    if (!isRateLimited(res.status, body) || attempt === MAX_ATTEMPTS) {
+      return new Response(body, { status: res.status, headers: res.headers })
+    }
+    const retryAfter = res.headers.get('Retry-After')
+    const jitter = Math.floor(Math.random() * 1000)
+    const waitMs = retryAfter ? Math.max(parseInt(retryAfter, 10) * 1000, 1000) : delay + jitter
+    console.warn(
+      `[sharepoint] Google throttle (${res.status}) sur ${label} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs}ms`,
+    )
+    await new Promise((r) => setTimeout(r, waitMs))
+    delay = Math.min(delay * 2, 60_000)
+  }
+  throw new Error(`[sharepoint] ${label} : échec après ${MAX_ATTEMPTS} tentatives`)
+}
+
 function driveToken(): Promise<string> {
   return getGoogleAccessTokenForUser(adminEmail(), DRIVE_SCOPE)
 }
@@ -153,15 +199,14 @@ function withMeta(base: Record<string, unknown>, meta?: ItemMeta): Record<string
 
 export async function createFolder(name: string, parentId: string, meta?: ItemMeta): Promise<string> {
   const token = await driveToken()
-  const res = await fetchWithTimeout(
-    'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id',
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(
-        withMeta({ name, mimeType: FOLDER_MIME, parents: [parentId] }, meta),
-      ),
-    },
+  const res = await googleFetchWithRetry(
+    () =>
+      fetchWithTimeout('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(withMeta({ name, mimeType: FOLDER_MIME, parents: [parentId] }, meta)),
+      }),
+    `création dossier "${name}"`,
   )
   if (!res.ok) {
     const err = await res.text()
@@ -191,18 +236,20 @@ export async function uploadFile(params: {
   const token = params.impersonate ? await impersonatedToken(params.impersonate) : await driveToken()
 
   // 1) Ouvrir une session résumable (metadata + dates d'origine)
-  const initRes = await fetchWithTimeout(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json; charset=UTF-8',
-      },
-      body: JSON.stringify(
-        withMeta({ name: params.name, parents: [params.parentId] }, params.meta),
+  const initRes = await googleFetchWithRetry(
+    () =>
+      fetchWithTimeout(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json; charset=UTF-8',
+          },
+          body: JSON.stringify(withMeta({ name: params.name, parents: [params.parentId] }, params.meta)),
+        },
       ),
-    },
+    `init upload "${params.name}"`,
   )
   if (!initRes.ok) {
     const err = await initRes.text()
@@ -212,16 +259,20 @@ export async function uploadFile(params: {
   if (!sessionUri) throw new Error(`Pas de session URI résumable pour "${params.name}"`)
 
   // 2) Transférer le contenu (Buffer → un seul PUT).
-  const putRes = await fetchWithTimeout(sessionUri, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': params.mimeType ?? 'application/octet-stream',
-      'Content-Length': String(params.body.byteLength),
-    },
-    body: params.body,
-    timeoutMs: 600_000,
-  })
+  const putRes = await googleFetchWithRetry(
+    () =>
+      fetchWithTimeout(sessionUri, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': params.mimeType ?? 'application/octet-stream',
+          'Content-Length': String(params.body.byteLength),
+        },
+        body: params.body,
+        timeoutMs: 600_000,
+      }),
+    `upload "${params.name}"`,
+  )
   if (!putRes.ok) {
     const err = await putRes.text()
     throw new Error(`Upload "${params.name}" échoué (${putRes.status}): ${err.slice(0, 300)}`)
@@ -292,16 +343,20 @@ export async function addRevision(params: {
   if (!sessionUri) throw new Error(`Pas de session URI résumable (révision) pour ${params.fileId}`)
 
   // 2) PUT du contenu de la révision
-  const putRes = await fetchWithTimeout(sessionUri, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': params.mimeType ?? 'application/octet-stream',
-      'Content-Length': String(params.body.byteLength),
-    },
-    body: params.body,
-    timeoutMs: 600_000,
-  })
+  const putRes = await googleFetchWithRetry(
+    () =>
+      fetchWithTimeout(sessionUri, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': params.mimeType ?? 'application/octet-stream',
+          'Content-Length': String(params.body.byteLength),
+        },
+        body: params.body,
+        timeoutMs: 600_000,
+      }),
+    `révision ${params.fileId}`,
+  )
   if (!putRes.ok) {
     const err = await putRes.text()
     throw new Error(`Révision ${params.fileId} échouée (${putRes.status}): ${err.slice(0, 300)}`)
@@ -339,17 +394,22 @@ async function pushStreamInChunks(params: {
   const putChunk = async (chunk: Buffer, isFinal: boolean): Promise<void> => {
     const start = offset
     const end = offset + chunk.byteLength - 1
-    const res = await fetchWithTimeout(sessionUri, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': mimeType,
-        'Content-Length': String(chunk.byteLength),
-        'Content-Range': `bytes ${start}-${end}/${totalSize}`,
-      },
-      body: chunk,
-      timeoutMs: 900_000,
-    })
+    // Le chunk est un Buffer → rejouable, donc éligible au retry sur throttling.
+    const res = await googleFetchWithRetry(
+      () =>
+        fetchWithTimeout(sessionUri, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': mimeType,
+            'Content-Length': String(chunk.byteLength),
+            'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+          },
+          body: chunk,
+          timeoutMs: 900_000,
+        }),
+      `chunk ${label} @${start}`,
+    )
     // 308 = morceau accepté, la suite est attendue (fetch le considère non-ok)
     if (res.status === 308) {
       offset += chunk.byteLength
@@ -403,20 +463,32 @@ async function pushStreamInChunks(params: {
 export async function uploadFileStreamed(params: {
   name: string
   parentId: string
-  stream: ReadableStream<Uint8Array>
+  /**
+   * Ouvre le flux source. ⚠️ Appelé APRÈS l'init de session résumable : un flux
+   * ouvert trop tôt reste inactif pendant les allers-retours d'authentification
+   * et le serveur de stockage le ferme → lecture vide (« 0 octets envoyés »).
+   */
+  openStream: () => Promise<{ stream: ReadableStream<Uint8Array>; size: number | null }>
   size: number
   mimeType?: string
   meta?: ItemMeta
   impersonate?: string
 }): Promise<string> {
   const token = params.impersonate ? await impersonatedToken(params.impersonate) : await driveToken()
-  const initRes = await fetchWithTimeout(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id',
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' },
-      body: JSON.stringify(withMeta({ name: params.name, parents: [params.parentId] }, params.meta)),
-    },
+  const initRes = await googleFetchWithRetry(
+    () =>
+      fetchWithTimeout(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json; charset=UTF-8',
+          },
+          body: JSON.stringify(withMeta({ name: params.name, parents: [params.parentId] }, params.meta)),
+        },
+      ),
+    `init upload "${params.name}"`,
   )
   if (!initRes.ok) {
     const err = await initRes.text()
@@ -425,11 +497,13 @@ export async function uploadFileStreamed(params: {
   const sessionUri = initRes.headers.get('Location')
   if (!sessionUri) throw new Error(`Pas de session URI résumable pour "${params.name}"`)
 
+  // Flux ouvert seulement maintenant : la session est prête, on enchaîne direct.
+  const opened = await params.openStream()
   const { id } = await pushStreamInChunks({
     sessionUri,
     token,
-    stream: params.stream,
-    totalSize: params.size,
+    stream: opened.stream,
+    totalSize: opened.size ?? params.size,
     mimeType: params.mimeType ?? 'application/octet-stream',
     label: params.name,
   })
@@ -443,19 +517,27 @@ export async function uploadFileStreamed(params: {
 /** Ajoute une révision EN FLUX à un fichier existant (gros fichiers). */
 export async function addRevisionStreamed(params: {
   fileId: string
-  stream: ReadableStream<Uint8Array>
+  /** Ouvre le flux source — appelé après l'init de session (cf. uploadFileStreamed). */
+  openStream: () => Promise<{ stream: ReadableStream<Uint8Array>; size: number | null }>
   size: number
   mimeType?: string
   impersonate?: string
 }): Promise<void> {
   const token = params.impersonate ? await impersonatedToken(params.impersonate) : await driveToken()
-  const initRes = await fetchWithTimeout(
-    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(params.fileId)}?uploadType=resumable&supportsAllDrives=true&keepRevisionForever=true&fields=id`,
-    {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8' },
-      body: JSON.stringify({}),
-    },
+  const initRes = await googleFetchWithRetry(
+    () =>
+      fetchWithTimeout(
+        `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(params.fileId)}?uploadType=resumable&supportsAllDrives=true&keepRevisionForever=true&fields=id`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json; charset=UTF-8',
+          },
+          body: JSON.stringify({}),
+        },
+      ),
+    `init révision ${params.fileId}`,
   )
   if (!initRes.ok) {
     const err = await initRes.text()
@@ -464,11 +546,12 @@ export async function addRevisionStreamed(params: {
   const sessionUri = initRes.headers.get('Location')
   if (!sessionUri) throw new Error(`Pas de session URI résumable (révision) pour ${params.fileId}`)
 
+  const opened = await params.openStream()
   await pushStreamInChunks({
     sessionUri,
     token,
-    stream: params.stream,
-    totalSize: params.size,
+    stream: opened.stream,
+    totalSize: opened.size ?? params.size,
     mimeType: params.mimeType ?? 'application/octet-stream',
     label: `révision ${params.fileId}`,
   })

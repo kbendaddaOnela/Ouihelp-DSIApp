@@ -353,17 +353,17 @@ async function processMigration(job: SharepointMigration) {
     ): Promise<string> => {
       const size = file.size ?? 0
       if (size > STREAM_THRESHOLD_BYTES) {
-        return withMem(CHUNK_MEM_COST, async () => {
-          const { stream, size: hdrSize } = await openItemContentStream(job.driveId, file.id)
-          return uploadFileStreamed({
+        return withMem(CHUNK_MEM_COST, async () =>
+          uploadFileStreamed({
             name: file.name,
             parentId: gdParentId,
-            stream,
-            size: hdrSize ?? size,
+            // Flux ouvert seulement quand la session résumable est prête
+            openStream: () => openItemContentStream(job.driveId, file.id),
+            size,
             meta,
             impersonate,
-          })
-        })
+          }),
+        )
       }
       return withMem(size, async () => {
         const { buffer } = await downloadItemContent(job.driveId, file.id)
@@ -428,21 +428,25 @@ async function processMigration(job: SharepointMigration) {
         // Grosse version → streaming par morceaux (mémoire constante)
         if (vSize > STREAM_THRESHOLD_BYTES) {
           const vImpersonate = await vImpersonateP
-          gdFileId = await withMem(CHUNK_MEM_COST, async () => {
-            const opened = isLastVersion
-              ? await openItemContentStream(job.driveId, file.id)
-              : await openItemVersionContentStream(job.driveId, file.id, v.id).catch(async (e) => {
+          // Flux ouvert seulement quand la session résumable est prête (sinon il
+          // est fermé par le serveur pendant l'auth → « 0 octets envoyés »).
+          const openVersionStream = () =>
+            isLastVersion
+              ? openItemContentStream(job.driveId, file.id)
+              : openItemVersionContentStream(job.driveId, file.id, v.id).catch((e) => {
                   if (e instanceof Error && /current version/i.test(e.message)) {
                     return openItemContentStream(job.driveId, file.id)
                   }
                   throw e
                 })
+
+          gdFileId = await withMem(CHUNK_MEM_COST, async () => {
             if (gdFileId === null) {
               return uploadFileStreamed({
                 name: file.name,
                 parentId: gdParentId,
-                stream: opened.stream,
-                size: opened.size ?? vSize,
+                openStream: openVersionStream,
+                size: vSize,
                 meta: {
                   ...spMeta(file),
                   createdTime: v.lastModifiedDateTime,
@@ -453,8 +457,8 @@ async function processMigration(job: SharepointMigration) {
             }
             await addRevisionStreamed({
               fileId: gdFileId,
-              stream: opened.stream,
-              size: opened.size ?? vSize,
+              openStream: openVersionStream,
+              size: vSize,
               impersonate: vImpersonate,
             })
             return gdFileId
