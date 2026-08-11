@@ -312,11 +312,19 @@ async function processMigration(job: SharepointMigration) {
       if (r.isFolder && r.status === 'success' && r.gdFileId) folderGdMap.set(r.spItemId, r.gdFileId)
     }
 
+    // Octets déjà acquis lors des runs précédents : sans ça, migratedBytes
+    // repartait de 0 au resume alors que le compteur de fichiers conservait
+    // l'acquis → barre en Go incohérente avec la barre en fichiers.
+    const alreadyBytes = existing.reduce(
+      (sum, r) => (!r.isFolder && r.status === 'success' ? sum + (r.sizeBytes ?? 0) : sum),
+      0,
+    )
+
     let migrated = doneFiles.size
     let failed = 0
     let skipped = 0 // fichiers ignorés (trop volumineux) — distinct des erreurs
     let discovered = 0
-    let migratedBytes = 0
+    let migratedBytes = alreadyBytes
     // Octets RÉELLEMENT transférés (toutes versions confondues). migratedBytes ne
     // compte que la version courante, pour rester cohérent avec totalBytes : sans
     // cette seconde mesure, on sous-estime d'un facteur ~N le travail effectué.
