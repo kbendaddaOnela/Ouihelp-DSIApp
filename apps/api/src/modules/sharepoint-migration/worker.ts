@@ -317,6 +317,10 @@ async function processMigration(job: SharepointMigration) {
     let skipped = 0 // fichiers ignorés (trop volumineux) — distinct des erreurs
     let discovered = 0
     let migratedBytes = 0
+    // Octets RÉELLEMENT transférés (toutes versions confondues). migratedBytes ne
+    // compte que la version courante, pour rester cohérent avec totalBytes : sans
+    // cette seconde mesure, on sous-estime d'un facteur ~N le travail effectué.
+    let realBytes = 0
 
     // 2b) Mapping auteur ONELA → compte Google + ajout de membre à la demande.
     const authorMaps = await loadAuthorMaps()
@@ -353,6 +357,7 @@ async function processMigration(job: SharepointMigration) {
     ): Promise<string> => {
       const size = file.size ?? 0
       if (size > STREAM_THRESHOLD_BYTES) {
+        realBytes += size
         return withMem(CHUNK_MEM_COST, async () =>
           uploadFileStreamed({
             name: file.name,
@@ -367,6 +372,7 @@ async function processMigration(job: SharepointMigration) {
       }
       return withMem(size, async () => {
         const { buffer } = await downloadItemContent(job.driveId, file.id)
+        realBytes += buffer.byteLength
         return uploadOne(file, gdParentId, buffer, meta, impersonate)
       })
     }
@@ -440,6 +446,7 @@ async function processMigration(job: SharepointMigration) {
                   throw e
                 })
 
+          realBytes += vSize
           gdFileId = await withMem(CHUNK_MEM_COST, async () => {
             if (gdFileId === null) {
               return uploadFileStreamed({
@@ -488,6 +495,7 @@ async function processMigration(job: SharepointMigration) {
               }
             }
           }
+          realBytes += buffer.byteLength
           const vImpersonate = await vImpersonateP
           if (gdFileId === null) {
             // Première version exploitable → crée le fichier (createdTime = sa date)
@@ -727,11 +735,18 @@ async function processMigration(job: SharepointMigration) {
     let stoppedByUser = false
 
     // totalItems est figé par le pré-comptage : on ne l'écrase pas ici.
-    const persistCounters = () =>
-      db
+    // Écriture groupée : un UPDATE par batch saturait le pool MySQL (l'UI
+    // attendait une connexion libre → GET /history à plusieurs secondes).
+    // Le heartbeat (60 s) garde updatedAt frais, donc aucun risque d'orphelin.
+    let batchesSincePersist = 0
+    const persistCounters = async (force = false) => {
+      if (!force && ++batchesSincePersist < 5) return
+      batchesSincePersist = 0
+      await db
         .update(sharepointMigrations)
         .set({ migratedItems: migrated, failedItems: failed, skippedItems: skipped, migratedBytes })
         .where(eq(sharepointMigrations.id, job.id))
+    }
 
     while (queue.length > 0) {
       if (STOP_SIGNALS.has(job.id)) {
@@ -870,8 +885,9 @@ async function processMigration(job: SharepointMigration) {
         // que l'OOM killer d'Azure ne tue le conteneur.
         if (migrated % 200 < BATCH_SIZE) {
           const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024)
+          const gb = (n: number) => (n / 1024 / 1024 / 1024).toFixed(1)
           console.log(
-            `[sharepoint] ${job.id} progression: ${migrated}/${totalFiles} — RSS ${rssMb} Mo, en vol ${Math.round(memInFlight / 1024 / 1024)} Mo`,
+            `[sharepoint] ${job.id} progression: ${migrated}/${totalFiles} — ${gb(migratedBytes)} Go utiles / ${gb(realBytes)} Go transférés — RSS ${rssMb} Mo`,
           )
         }
         // Petit répit anti-throttle entre deux batches de transfert
@@ -879,6 +895,7 @@ async function processMigration(job: SharepointMigration) {
       }
       if (stoppedByUser) break
     }
+    await persistCounters(true) // vidage final des compteurs en attente
 
     if (stoppedByUser) {
       STOP_SIGNALS.delete(job.id)

@@ -387,7 +387,11 @@ async function pushStreamInChunks(params: {
 }): Promise<{ id: string }> {
   const { sessionUri, token, stream, totalSize, mimeType, label } = params
   const reader = stream.getReader()
-  let pending = Buffer.alloc(0)
+  // ⚠️ Accumulation par LISTE, pas par Buffer.concat successifs : concaténer à
+  // chaque morceau lu (~64 Ko) pour remplir 16 Mo recopie tout le tampon à
+  // chaque tour → O(n²) et event loop bloqué. Ici, une seule concat par chunk.
+  let parts: Uint8Array[] = []
+  let pendingLen = 0
   let offset = 0
   let finalBody: { id: string } | null = null
 
@@ -429,18 +433,23 @@ async function pushStreamInChunks(params: {
   for (;;) {
     const { done, value } = await reader.read()
     if (value && value.byteLength > 0) {
-      pending = pending.byteLength === 0 ? Buffer.from(value) : Buffer.concat([pending, value])
+      parts.push(value)
+      pendingLen += value.byteLength
     }
     // Envoi des morceaux pleins ; le reliquat part au dernier tour
-    while (pending.byteLength >= CHUNK_SIZE) {
-      const chunk = pending.subarray(0, CHUNK_SIZE)
-      pending = pending.subarray(CHUNK_SIZE)
+    while (pendingLen >= CHUNK_SIZE) {
+      const merged = Buffer.concat(parts, pendingLen)
+      const chunk = merged.subarray(0, CHUNK_SIZE)
+      const rest = merged.subarray(CHUNK_SIZE)
+      parts = rest.byteLength > 0 ? [rest] : []
+      pendingLen = rest.byteLength
       await putChunk(chunk, false)
     }
     if (done) {
-      if (pending.byteLength > 0) {
-        await putChunk(pending, true)
-        pending = Buffer.alloc(0)
+      if (pendingLen > 0) {
+        await putChunk(Buffer.concat(parts, pendingLen), true)
+        parts = []
+        pendingLen = 0
       }
       break
     }

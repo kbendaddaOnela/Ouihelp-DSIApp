@@ -11,7 +11,9 @@ export function useSharepointHistory() {
       const anyRunning = q.state.data?.migrations.some(
         (m) => m.status === 'pending' || m.status === 'running',
       )
-      return anyRunning ? 4_000 : false
+      // 8 s plutôt que 4 : pendant un gros transfert, /history peut mettre
+      // plusieurs secondes et un intervalle court empile les requêtes.
+      return anyRunning ? 8_000 : false
     },
   })
 }
