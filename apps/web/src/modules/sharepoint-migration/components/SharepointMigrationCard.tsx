@@ -96,11 +96,22 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             {m.totalBytes > 0 && <span className="text-gray-400"> / {fmtBytes(m.totalBytes)}</span>}
           </span>
         </div>
-        <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-          <div
-            className={`h-full transition-all ${m.failedItems > 0 ? 'bg-amber-500' : 'bg-blue-600'}`}
-            style={{ width: `${pct}%` }}
-          />
+        <div className="flex items-center gap-2">
+          <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-gray-100">
+            <div
+              className={`h-full rounded-full transition-[width] duration-700 ease-out ${
+                m.failedItems > 0 ? 'bg-amber-500' : 'bg-blue-600'
+              } ${isActive ? 'animate-pulse' : ''}`}
+              style={{ width: `${Math.max(pct, pct > 0 ? 1.5 : 0)}%` }}
+            />
+          </div>
+          <span
+            className={`w-12 shrink-0 text-right text-xs font-semibold tabular-nums ${
+              m.failedItems > 0 ? 'text-amber-700' : 'text-blue-700'
+            }`}
+          >
+            {pct}%
+          </span>
         </div>
       </div>
       )}
