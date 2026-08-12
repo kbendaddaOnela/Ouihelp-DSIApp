@@ -127,6 +127,8 @@ export interface SharepointMigrationRecord {
   skippedItems: number
   totalBytes: number
   migratedBytes: number
+  /** Octets soldés (migrés + ignorés + en erreur) — numérateur de la progression */
+  processedBytes: number
   migrateVersions: boolean
   maxVersions: number
   analyzeOnly: boolean
