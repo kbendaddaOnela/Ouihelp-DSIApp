@@ -153,6 +153,14 @@ let memInFlight = 0
 const STREAM_THRESHOLD_BYTES = Number(process.env['SHAREPOINT_STREAM_THRESHOLD_MB'] ?? 64) * 1024 * 1024
 /** Coût mémoire réservé pour un transfert streamé (≈ 2 morceaux en vol). */
 const CHUNK_MEM_COST = 48 * 1024 * 1024
+/**
+ * Marge de sécurité de la synchro delta pour les fichiers migrés AVANT l'ajout
+ * de `sp_last_modified` : on ne connaît que l'instant du transfert, qui est
+ * postérieur à la lecture du fichier. 30 min couvre largement le transfert d'un
+ * gros fichier streamé. Une marge trop courte ferait manquer une modification ;
+ * une marge trop longue ne coûte que quelques ré-uploads.
+ */
+const FALLBACK_REF_MARGIN_MS = 30 * 60 * 1000
 
 /** Réserve `bytes` du budget (attend si nécessaire). Un fichier plus gros que le
  *  budget passe quand même, mais seul — sinon on bloquerait indéfiniment. */
@@ -318,10 +326,15 @@ async function processMigration(job: SharepointMigration) {
     const doneRefs = new Map<string, { ref: number; gdFileId: string | null }>()
     for (const r of existing) {
       if (r.isFolder || r.status !== 'success') continue
-      doneRefs.set(r.spItemId, {
-        ref: (r.spLastModified ?? r.createdAt).getTime(),
-        gdFileId: r.gdFileId,
-      })
+      // Le repli `createdAt` est l'instant de l'INSERT, donc APRÈS la lecture du
+      // fichier côté SharePoint (jusqu'à plusieurs minutes pour un gros fichier
+      // streamé). Une modif survenue dans cet intervalle aurait une date < createdAt
+      // et passerait pour « déjà à jour ». On recule la borne d'une marge pour
+      // fermer cette fenêtre : au pire quelques ré-uploads, jamais un manque.
+      const ref = r.spLastModified
+        ? r.spLastModified.getTime()
+        : r.createdAt.getTime() - FALLBACK_REF_MARGIN_MS
+      doneRefs.set(r.spItemId, { ref, gdFileId: r.gdFileId })
     }
     const folderGdMap = new Map<string, string>() // spFolderId → gdFolderId
     for (const r of existing) {
