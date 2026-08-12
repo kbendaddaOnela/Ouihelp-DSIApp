@@ -82,6 +82,8 @@ async function ensureSchemaPatches() {
     { table: 'sharepoint_migrations', column: 'analyze_only', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`analyze_only\` boolean NOT NULL DEFAULT false` },
     { table: 'sharepoint_migrations', column: 'analysis_result', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`analysis_result\` text` },
     { table: 'sharepoint_migrations', column: 'max_versions', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`max_versions\` int NOT NULL DEFAULT 5` },
+    // SharePoint : octets soldés (migrés + ignorés + en erreur) pour la barre en Go
+    { table: 'sharepoint_migrations', column: 'processed_bytes', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`processed_bytes\` bigint NOT NULL DEFAULT 0` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
     { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
     // Plafond du run en jours (passe « anciens » bornée à J-N ; null = pas de plafond)
@@ -343,6 +345,7 @@ async function ensureSchemaPatches() {
         \`skipped_items\` int NOT NULL DEFAULT 0,
         \`total_bytes\` bigint NOT NULL DEFAULT 0,
         \`migrated_bytes\` bigint NOT NULL DEFAULT 0,
+        \`processed_bytes\` bigint NOT NULL DEFAULT 0,
         \`migrate_versions\` boolean NOT NULL DEFAULT true,
         \`max_versions\` int NOT NULL DEFAULT 5,
         \`analyze_only\` boolean NOT NULL DEFAULT false,

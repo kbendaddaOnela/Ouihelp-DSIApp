@@ -50,8 +50,16 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
   // Les fichiers ignorés (trop volumineux) sont « traités » : ils comptent dans
   // la progression mais ne sont pas des erreurs (barre ambre seulement si vrai échec).
   const total = Math.max(m.totalItems, m.migratedItems + m.failedItems + m.skippedItems)
-  const accounted = m.migratedItems + m.skippedItems
-  const pct = total > 0 ? Math.round((accounted / total) * 100) : 0
+  // La progression se mesure en OCTETS, pas en nombre de fichiers : 30 000 petits
+  // fichiers et 50 gros ne représentent pas le même travail, et un % au fichier
+  // avance par à-coups sans rapport avec le temps restant.
+  // Repli sur les fichiers tant que le pré-comptage n'a pas figé totalBytes.
+  const pct =
+    m.totalBytes > 0
+      ? Math.min(100, Math.round((m.processedBytes / m.totalBytes) * 100))
+      : total > 0
+        ? Math.round(((m.migratedItems + m.skippedItems) / total) * 100)
+        : 0
   const hasDetails = m.failedItems > 0 || m.skippedItems > 0
 
   return (

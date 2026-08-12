@@ -319,12 +319,20 @@ async function processMigration(job: SharepointMigration) {
       (sum, r) => (!r.isFolder && r.status === 'success' ? sum + (r.sizeBytes ?? 0) : sum),
       0,
     )
+    // Idem pour les octets soldés : un fichier ignoré ou en erreur est traité,
+    // il doit rester compté dans la progression après une reprise.
+    const alreadyProcessedBytes = existing.reduce(
+      (sum, r) => (r.isFolder ? sum : sum + (r.sizeBytes ?? 0)),
+      0,
+    )
 
     let migrated = doneFiles.size
     let failed = 0
     let skipped = 0 // fichiers ignorés (trop volumineux) — distinct des erreurs
     let discovered = 0
     let migratedBytes = alreadyBytes
+    // Numérateur de la barre de progression : migrés + ignorés + en erreur.
+    let processedBytes = alreadyProcessedBytes
     // Octets RÉELLEMENT transférés (toutes versions confondues). migratedBytes ne
     // compte que la version courante, pour rester cohérent avec totalBytes : sans
     // cette seconde mesure, on sous-estime d'un facteur ~N le travail effectué.
@@ -752,7 +760,13 @@ async function processMigration(job: SharepointMigration) {
       batchesSincePersist = 0
       await db
         .update(sharepointMigrations)
-        .set({ migratedItems: migrated, failedItems: failed, skippedItems: skipped, migratedBytes })
+        .set({
+          migratedItems: migrated,
+          failedItems: failed,
+          skippedItems: skipped,
+          migratedBytes,
+          processedBytes,
+        })
         .where(eq(sharepointMigrations.id, job.id))
     }
 
@@ -845,6 +859,7 @@ async function processMigration(job: SharepointMigration) {
                 })
                 .onDuplicateKeyUpdate({ set: { status: 'skipped', errorDetails: v.reason } })
               skipped++
+              processedBytes += file.size ?? 0
               continue
             }
             // kind === 'ok'
@@ -866,6 +881,7 @@ async function processMigration(job: SharepointMigration) {
               })
             migrated++
             migratedBytes += v.bytes
+            processedBytes += v.bytes
           } else {
             const errorDetails = (
               res.reason instanceof Error ? res.reason.message : String(res.reason)
@@ -885,6 +901,7 @@ async function processMigration(job: SharepointMigration) {
               })
               .onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
             failed++
+            processedBytes += file.size ?? 0
             console.warn(`[sharepoint] fichier ${file.name} erreur:`, errorDetails.slice(0, 200))
           }
         }
@@ -916,6 +933,7 @@ async function processMigration(job: SharepointMigration) {
           failedItems: failed,
           skippedItems: skipped,
           migratedBytes,
+          processedBytes,
           errorDetails: `En pause (${migrated} fichiers migrés)`,
         })
         .where(eq(sharepointMigrations.id, job.id))
@@ -935,6 +953,7 @@ async function processMigration(job: SharepointMigration) {
         failedItems: failed,
         skippedItems: skipped,
         migratedBytes,
+        processedBytes,
         errorDetails: failed > 0 ? `${failed} fichier(s) en erreur` : null,
       })
       .where(eq(sharepointMigrations.id, job.id))
