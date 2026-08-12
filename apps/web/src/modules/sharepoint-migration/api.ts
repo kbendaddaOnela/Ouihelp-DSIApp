@@ -7,6 +7,7 @@ import type {
   SharepointMigrationRecord,
   SharepointMigrationHistoryResponse,
   SharepointMigrationErrorsResponse,
+  SharepointMigrationChangesResponse,
 } from '@dsi-app/shared'
 
 export const sharepointMigrationApi = {
@@ -53,5 +54,10 @@ export const sharepointMigrationApi = {
   errors: (id: string) =>
     apiClient
       .get<SharepointMigrationErrorsResponse>(`/sharepoint-migration/${id}/errors`)
+      .then((r) => r.data),
+
+  changes: (id: string) =>
+    apiClient
+      .get<SharepointMigrationChangesResponse>(`/sharepoint-migration/${id}/changes`)
       .then((r) => r.data),
 }

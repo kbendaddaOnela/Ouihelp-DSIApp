@@ -285,9 +285,12 @@ async function processMigration(job: SharepointMigration) {
   const memberPromises = new Map<string, Promise<string | null>>()
   let sharedDriveId: string | null = null
   try {
+    // Borne du run : tout item dont `syncedAt` est postérieur a été touché par
+    // CETTE passe. C'est ce qui permet de lister « ce que le delta a changé ».
+    const runStartedAt = new Date()
     await db
       .update(sharepointMigrations)
-      .set({ status: 'running', errorDetails: null, startedAt: new Date() })
+      .set({ status: 'running', errorDetails: null, startedAt: runStartedAt, scannedItems: 0 })
       .where(eq(sharepointMigrations.id, job.id))
 
     // 1) Valider le Shared Drive cible (créé manuellement par l'admin).
@@ -836,6 +839,8 @@ async function processMigration(job: SharepointMigration) {
           migratedBytes,
           processedBytes,
           updatedItems: updated,
+
+          scannedItems: discovered,
         })
         .where(eq(sharepointMigrations.id, job.id))
     }
@@ -950,6 +955,7 @@ async function processMigration(job: SharepointMigration) {
                 .set({
                   sizeBytes: file.size ?? null,
                   spLastModified: new Date(v.spMod),
+                  syncedAt: new Date(),
                   status: 'success',
                   errorDetails: null,
                 })
@@ -999,6 +1005,7 @@ async function processMigration(job: SharepointMigration) {
                 status: 'success',
                 // Référence de la synchro delta pour les passes suivantes
                 spLastModified: v.spMod,
+                syncedAt: new Date(),
               })
               .onDuplicateKeyUpdate({
                 set: {
@@ -1006,6 +1013,7 @@ async function processMigration(job: SharepointMigration) {
                   gdFileId: v.gdFileId,
                   errorDetails: null,
                   spLastModified: v.spMod,
+                  syncedAt: new Date(),
                 },
               })
             doneRefs.set(file.id, {
@@ -1068,6 +1076,8 @@ async function processMigration(job: SharepointMigration) {
           migratedBytes,
           processedBytes,
           updatedItems: updated,
+
+          scannedItems: discovered,
           errorDetails: `En pause (${migrated} fichiers migrés)`,
         })
         .where(eq(sharepointMigrations.id, job.id))
@@ -1089,6 +1099,8 @@ async function processMigration(job: SharepointMigration) {
         migratedBytes,
         processedBytes,
         updatedItems: updated,
+
+        scannedItems: discovered,
         errorDetails: failed > 0 ? `${failed} fichier(s) en erreur` : null,
       })
       .where(eq(sharepointMigrations.id, job.id))

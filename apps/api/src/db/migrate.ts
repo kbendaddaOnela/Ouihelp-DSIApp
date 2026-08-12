@@ -87,6 +87,10 @@ async function ensureSchemaPatches() {
     // SharePoint : synchro delta — date de modif SharePoint au moment du transfert
     { table: 'sharepoint_migrated_items', column: 'sp_last_modified', ddl: `ALTER TABLE \`sharepoint_migrated_items\` ADD COLUMN \`sp_last_modified\` timestamp NULL` },
     { table: 'sharepoint_migrations', column: 'updated_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`updated_items\` int NOT NULL DEFAULT 0` },
+    // SharePoint : progression du parcours (barre en octets inutile en passe delta)
+    { table: 'sharepoint_migrations', column: 'scanned_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`scanned_items\` int NOT NULL DEFAULT 0` },
+    // SharePoint : marqueur « touché par ce run » pour lister le contenu d'une passe
+    { table: 'sharepoint_migrated_items', column: 'synced_at', ddl: `ALTER TABLE \`sharepoint_migrated_items\` ADD COLUMN \`synced_at\` timestamp NULL` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
     { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
     // Plafond du run en jours (passe « anciens » bornée à J-N ; null = pas de plafond)
@@ -350,6 +354,7 @@ async function ensureSchemaPatches() {
         \`migrated_bytes\` bigint NOT NULL DEFAULT 0,
         \`processed_bytes\` bigint NOT NULL DEFAULT 0,
         \`updated_items\` int NOT NULL DEFAULT 0,
+        \`scanned_items\` int NOT NULL DEFAULT 0,
         \`migrate_versions\` boolean NOT NULL DEFAULT true,
         \`max_versions\` int NOT NULL DEFAULT 5,
         \`analyze_only\` boolean NOT NULL DEFAULT false,
@@ -433,6 +438,7 @@ async function ensureSchemaPatches() {
         \`status\` enum('success','error','skipped') NOT NULL,
         \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`sp_last_modified\` timestamp NULL,
+        \`synced_at\` timestamp NULL,
         \`created_at\` timestamp NOT NULL DEFAULT (now()),
         PRIMARY KEY (\`id\`),
         UNIQUE KEY \`sharepoint_migrated_items_unique\` (\`migration_id\`, \`sp_item_id\`),

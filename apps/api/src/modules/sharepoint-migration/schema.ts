@@ -55,6 +55,10 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   processedBytes: bigint('processed_bytes', { mode: 'number' }).default(0).notNull(),
   // Fichiers ré-uploadés par une passe delta (contenu modifié depuis la 1re passe)
   updatedItems: int('updated_items').default(0).notNull(),
+  // Fichiers parcourus par le run en cours. Sur une passe delta, la barre en
+  // octets est à 100 % dès le départ (tout est déjà migré) : c'est ce compteur
+  // qui dit réellement où on en est.
+  scannedItems: int('scanned_items').default(0).notNull(),
   // Migrer l'historique des versions (toutes les révisions, pas juste la dernière)
   migrateVersions: boolean('migrate_versions').default(true).notNull(),
   // Nombre max de versions conservées (première + N-1 plus récentes). -1 = toutes.
@@ -107,6 +111,11 @@ export const sharepointMigratedItems = mysqlTable(
     // on retombe alors sur `createdAt` (l'instant du transfert), qui est une
     // borne valable : rien migré avant cet instant n'a pu être raté.
     spLastModified: timestamp('sp_last_modified'),
+    // Dernière fois que CE run a touché le fichier (création ou révision delta).
+    // Comparé au `startedAt` de la migration, il permet de lister exactement ce
+    // qu'une passe a changé — sinon un item mis à jour est indiscernable des
+    // 29 000 autres lignes `success`.
+    syncedAt: timestamp('synced_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (t) => ({

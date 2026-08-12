@@ -17,6 +17,8 @@ import type {
   SharepointMigrationRecord,
   SharepointMigrationHistoryResponse,
   SharepointMigrationErrorsResponse,
+  SharepointChangedItem,
+  SharepointMigrationChangesResponse,
 } from '@dsi-app/shared'
 
 export const sharepointMigrationRouter = new Hono<{ Variables: RbacVariables }>()
@@ -72,6 +74,7 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     migratedBytes: m.migratedBytes,
     processedBytes: m.processedBytes,
     updatedItems: m.updatedItems,
+    scannedItems: m.scannedItems,
     migrateVersions: m.migrateVersions,
     maxVersions: m.maxVersions,
     analyzeOnly: m.analyzeOnly,
@@ -251,4 +254,55 @@ sharepointMigrationRouter.get('/:id/errors', requirePermission('migration:read')
   const errors = rows.filter((r) => r.status === 'error').map(toItem)
   const skipped = rows.filter((r) => r.status === 'skipped').map(toItem)
   return c.json<SharepointMigrationErrorsResponse>({ errors, skipped })
+})
+
+// ── Ce que la dernière passe a changé ─────────────────────────────────────────
+// Sur une passe delta, « 35 mis à jour » sans la liste est inexploitable :
+// l'opérateur doit pouvoir vérifier CE QUI a bougé avant de valider.
+sharepointMigrationRouter.get('/:id/changes', requirePermission('migration:read'), async (c) => {
+  const id = c.req.param('id')
+  const [job] = await db
+    .select()
+    .from(sharepointMigrations)
+    .where(eq(sharepointMigrations.id, id))
+    .limit(1)
+  if (!job) return c.json({ error: 'Not Found' }, 404)
+
+  const rows = await db
+    .select()
+    .from(sharepointMigratedItems)
+    .where(eq(sharepointMigratedItems.migrationId, id))
+
+  const runStart = job.startedAt
+  const toItem = (r: (typeof rows)[number]): SharepointChangedItem => ({
+    id: r.id,
+    name: r.name,
+    spPath: r.spPath,
+    sizeBytes: r.sizeBytes,
+    spLastModified: r.spLastModified?.toISOString() ?? null,
+    syncedAt: r.syncedAt?.toISOString() ?? null,
+  })
+
+  // Touché par cette passe = syncedAt >= début du run. Créé pendant cette passe
+  // = la ligne elle-même est née pendant le run (createdAt >= début du run).
+  const touched = runStart
+    ? rows.filter((r) => !r.isFolder && r.syncedAt && r.syncedAt >= runStart)
+    : []
+  const created = touched.filter((r) => r.createdAt >= runStart!).map(toItem)
+  const updated = touched.filter((r) => r.createdAt < runStart!).map(toItem)
+
+  const bySyncDesc = (a: SharepointChangedItem, b: SharepointChangedItem) =>
+    (b.syncedAt ?? '').localeCompare(a.syncedAt ?? '')
+  // Une PREMIÈRE migration a des dizaines de milliers de « créés » : on plafonne
+  // la réponse (les compteurs restent exacts). Une passe delta, elle, tient
+  // largement sous la limite — c'est le cas d'usage visé.
+  const CAP = 500
+  return c.json<SharepointMigrationChangesResponse>({
+    runStartedAt: runStart?.toISOString() ?? null,
+    createdCount: created.length,
+    updatedCount: updated.length,
+    truncated: created.length > CAP || updated.length > CAP,
+    created: created.sort(bySyncDesc).slice(0, CAP),
+    updated: updated.sort(bySyncDesc).slice(0, CAP),
+  })
 })
