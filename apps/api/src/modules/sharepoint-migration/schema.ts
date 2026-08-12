@@ -53,6 +53,8 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   // Octets SOLDÉS = migrés + ignorés + en erreur. Sert de numérateur à la barre
   // de progression : sans ça, un fichier de 2,4 Go ignoré bloque la barre à vie.
   processedBytes: bigint('processed_bytes', { mode: 'number' }).default(0).notNull(),
+  // Fichiers ré-uploadés par une passe delta (contenu modifié depuis la 1re passe)
+  updatedItems: int('updated_items').default(0).notNull(),
   // Migrer l'historique des versions (toutes les révisions, pas juste la dernière)
   migrateVersions: boolean('migrate_versions').default(true).notNull(),
   // Nombre max de versions conservées (première + N-1 plus récentes). -1 = toutes.
@@ -99,6 +101,12 @@ export const sharepointMigratedItems = mysqlTable(
     gdFileId: varchar('gd_file_id', { length: 255 }),
     status: mysqlEnum('status', itemStatus).notNull(),
     errorDetails: text('error_details'),
+    // Date de dernière modification côté SharePoint AU MOMENT du transfert.
+    // C'est la référence de la synchro delta : si Graph renvoie plus récent, le
+    // fichier a bougé depuis. Null pour les items migrés avant cette colonne →
+    // on retombe alors sur `createdAt` (l'instant du transfert), qui est une
+    // borne valable : rien migré avant cet instant n'a pu être raté.
+    spLastModified: timestamp('sp_last_modified'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (t) => ({

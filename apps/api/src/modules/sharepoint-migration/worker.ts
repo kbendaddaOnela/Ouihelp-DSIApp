@@ -13,7 +13,7 @@
 // Single-instance comme le worker shared-mailbox : une migration à la fois
 // (les transferts Drive saturent vite la bande passante du conteneur).
 
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { db } from '../../db/index'
 import {
   sharepointMigrations,
@@ -307,6 +307,22 @@ async function processMigration(job: SharepointMigration) {
     const doneFiles = new Set(
       existing.filter((r) => !r.isFolder && r.status === 'success').map((r) => r.spItemId),
     )
+    /**
+     * Synchro delta : pour chaque fichier déjà transféré, la date de référence
+     * au-delà de laquelle une modification SharePoint est un vrai changement.
+     * - `spLastModified` si connue (transferts récents) ;
+     * - sinon `createdAt`, l'instant du transfert : borne sûre, car un fichier
+     *   modifié AVANT qu'on le copie est forcément déjà à jour dans le Drive.
+     * Ce repli évite de re-télécharger les 293 Go déjà migrés du CDG.
+     */
+    const doneRefs = new Map<string, { ref: number; gdFileId: string | null }>()
+    for (const r of existing) {
+      if (r.isFolder || r.status !== 'success') continue
+      doneRefs.set(r.spItemId, {
+        ref: (r.spLastModified ?? r.createdAt).getTime(),
+        gdFileId: r.gdFileId,
+      })
+    }
     const folderGdMap = new Map<string, string>() // spFolderId → gdFolderId
     for (const r of existing) {
       if (r.isFolder && r.status === 'success' && r.gdFileId) folderGdMap.set(r.spItemId, r.gdFileId)
@@ -329,6 +345,8 @@ async function processMigration(job: SharepointMigration) {
     let migrated = doneFiles.size
     let failed = 0
     let skipped = 0 // fichiers ignorés (trop volumineux) — distinct des erreurs
+    let updated = 0 // fichiers ré-uploadés par la passe delta (contenu modifié)
+    let unchanged = 0 // fichiers inchangés depuis le dernier passage (cas majoritaire)
     let discovered = 0
     let migratedBytes = alreadyBytes
     // Numérateur de la barre de progression : migrés + ignorés + en erreur.
@@ -391,6 +409,44 @@ async function processMigration(job: SharepointMigration) {
         realBytes += buffer.byteLength
         return uploadOne(file, gdParentId, buffer, meta, impersonate)
       })
+    }
+
+    /**
+     * Synchro delta : le fichier existe déjà côté Google, seul son contenu a
+     * changé. On empile une NOUVELLE RÉVISION sur le fichier existant plutôt
+     * que d'en créer un second — sinon chaque passe delta dupliquerait le
+     * fichier et casserait les liens partagés côté utilisateurs.
+     * L'ancienne version reste consultable via « Gérer les versions ».
+     */
+    const updateExisting = async (
+      file: SpItem,
+      gdFileId: string,
+      impersonate: string | undefined,
+    ): Promise<void> => {
+      const size = file.size ?? 0
+      if (size > STREAM_THRESHOLD_BYTES) {
+        realBytes += size
+        await withMem(CHUNK_MEM_COST, async () =>
+          addRevisionStreamed({
+            fileId: gdFileId,
+            openStream: () => openItemContentStream(job.driveId, file.id),
+            size,
+            impersonate,
+          }),
+        )
+      } else {
+        await withMem(size, async () => {
+          const { buffer } = await downloadItemContent(job.driveId, file.id)
+          realBytes += buffer.byteLength
+          await addRevision({ fileId: gdFileId, body: buffer, impersonate })
+        })
+      }
+      // La date de la révision n'est pas inscriptible, mais le modifiedTime du
+      // fichier l'est : c'est lui que voient les utilisateurs dans le Drive.
+      const meta = spMeta(file)
+      if (meta.modifiedTime) {
+        await setFileModifiedTime(gdFileId, meta.modifiedTime, impersonate).catch(() => {})
+      }
     }
 
     /**
@@ -766,6 +822,7 @@ async function processMigration(job: SharepointMigration) {
           skippedItems: skipped,
           migratedBytes,
           processedBytes,
+          updatedItems: updated,
         })
         .where(eq(sharepointMigrations.id, job.id))
     }
@@ -814,7 +871,27 @@ async function processMigration(job: SharepointMigration) {
         const results = await Promise.allSettled(
           batch.map(async (file) => {
             discovered++
-            if (doneFiles.has(file.id)) return { kind: 'doneskip' as const }
+            // ── Synchro delta ────────────────────────────────────────────────
+            // Déjà transféré : on ne re-télécharge que si SharePoint dit que le
+            // fichier a bougé DEPUIS. C'est ce qui rend une passe delta courte.
+            const prev = doneRefs.get(file.id)
+            if (prev) {
+              const spMod = file.lastModifiedDateTime
+                ? Date.parse(file.lastModifiedDateTime)
+                : NaN
+              // Date illisible → on ne touche à rien (ne jamais re-uploader dans le doute)
+              if (!Number.isFinite(spMod) || spMod <= prev.ref) {
+                return { kind: 'unchanged' as const }
+              }
+              if (!prev.gdFileId) {
+                // Cas théorique (ligne success sans id Google) : on ne peut pas
+                // ajouter de révision, on laisse tel quel plutôt que de dupliquer.
+                return { kind: 'unchanged' as const }
+              }
+              const upImpersonate = await impersonationFor(resolveAuthorGoh(file, authorMaps))
+              await updateExisting(file, prev.gdFileId, upImpersonate)
+              return { kind: 'updated' as const, gdFileId: prev.gdFileId, spMod }
+            }
             // Trop volumineux → ignoré (PAS une erreur) : à transférer à la main
             if (file.size != null && file.size > MAX_FILE_BYTES) {
               return {
@@ -832,7 +909,15 @@ async function processMigration(job: SharepointMigration) {
             } else {
               gdFileId = await transferCurrent(file, gdParentId, spMeta(file), fileImpersonate)
             }
-            return { kind: 'ok' as const, gdFileId, bytes: file.size ?? 0 }
+            const spMod = file.lastModifiedDateTime
+              ? new Date(file.lastModifiedDateTime)
+              : null
+            return {
+              kind: 'ok' as const,
+              gdFileId,
+              bytes: file.size ?? 0,
+              spMod: Number.isFinite(spMod?.getTime() ?? NaN) ? spMod : null,
+            }
           }),
         )
 
@@ -842,7 +927,31 @@ async function processMigration(job: SharepointMigration) {
           const filePath = path ? `${path}/${file.name}` : file.name
           if (res.status === 'fulfilled') {
             const v = res.value
-            if (v.kind === 'doneskip') continue // déjà migré, rien à écrire
+            if (v.kind === 'unchanged') {
+              unchanged++
+              continue // déjà migré et inchangé — rien à écrire
+            }
+            if (v.kind === 'updated') {
+              await db
+                .update(sharepointMigratedItems)
+                .set({
+                  sizeBytes: file.size ?? null,
+                  spLastModified: new Date(v.spMod),
+                  status: 'success',
+                  errorDetails: null,
+                })
+                .where(
+                  and(
+                    eq(sharepointMigratedItems.migrationId, job.id),
+                    eq(sharepointMigratedItems.spItemId, file.id),
+                  ),
+                )
+              // Le fichier était déjà compté dans `migrated` : on ne le recompte
+              // pas, on trace juste la mise à jour.
+              updated++
+              doneRefs.set(file.id, { ref: v.spMod, gdFileId: v.gdFileId })
+              continue
+            }
             if (v.kind === 'oversized') {
               await db
                 .insert(sharepointMigratedItems)
@@ -875,10 +984,21 @@ async function processMigration(job: SharepointMigration) {
                 sizeBytes: file.size ?? null,
                 gdFileId: v.gdFileId,
                 status: 'success',
+                // Référence de la synchro delta pour les passes suivantes
+                spLastModified: v.spMod,
               })
               .onDuplicateKeyUpdate({
-                set: { status: 'success', gdFileId: v.gdFileId, errorDetails: null },
+                set: {
+                  status: 'success',
+                  gdFileId: v.gdFileId,
+                  errorDetails: null,
+                  spLastModified: v.spMod,
+                },
               })
+            doneRefs.set(file.id, {
+              ref: (v.spMod ?? new Date()).getTime(),
+              gdFileId: v.gdFileId,
+            })
             migrated++
             migratedBytes += v.bytes
             processedBytes += v.bytes
@@ -912,7 +1032,7 @@ async function processMigration(job: SharepointMigration) {
           const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024)
           const gb = (n: number) => (n / 1024 / 1024 / 1024).toFixed(1)
           console.log(
-            `[sharepoint] ${job.id} progression: ${migrated}/${totalFiles} — ${gb(migratedBytes)} Go utiles / ${gb(realBytes)} Go transférés — RSS ${rssMb} Mo`,
+            `[sharepoint] ${job.id} progression: ${migrated}/${totalFiles} — ${gb(migratedBytes)} Go utiles / ${gb(realBytes)} Go transférés — ${unchanged} inchangés, ${updated} maj — RSS ${rssMb} Mo`,
           )
         }
         // Petit répit anti-throttle entre deux batches de transfert
@@ -934,6 +1054,7 @@ async function processMigration(job: SharepointMigration) {
           skippedItems: skipped,
           migratedBytes,
           processedBytes,
+          updatedItems: updated,
           errorDetails: `En pause (${migrated} fichiers migrés)`,
         })
         .where(eq(sharepointMigrations.id, job.id))
@@ -954,11 +1075,12 @@ async function processMigration(job: SharepointMigration) {
         skippedItems: skipped,
         migratedBytes,
         processedBytes,
+        updatedItems: updated,
         errorDetails: failed > 0 ? `${failed} fichier(s) en erreur` : null,
       })
       .where(eq(sharepointMigrations.id, job.id))
     console.log(
-      `[sharepoint] done ${job.id}: ${migrated} migrés, ${failed} échecs, ${skipped} ignorés (trop gros), ${discovered} découverts`,
+      `[sharepoint] done ${job.id}: ${migrated} migrés, ${updated} mis à jour (delta), ${unchanged} inchangés, ${failed} échecs, ${skipped} ignorés (trop gros), ${discovered} découverts`,
     )
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
