@@ -84,6 +84,9 @@ async function ensureSchemaPatches() {
     { table: 'sharepoint_migrations', column: 'max_versions', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`max_versions\` int NOT NULL DEFAULT 5` },
     // SharePoint : octets soldés (migrés + ignorés + en erreur) pour la barre en Go
     { table: 'sharepoint_migrations', column: 'processed_bytes', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`processed_bytes\` bigint NOT NULL DEFAULT 0` },
+    // SharePoint : synchro delta — date de modif SharePoint au moment du transfert
+    { table: 'sharepoint_migrated_items', column: 'sp_last_modified', ddl: `ALTER TABLE \`sharepoint_migrated_items\` ADD COLUMN \`sp_last_modified\` timestamp NULL` },
+    { table: 'sharepoint_migrations', column: 'updated_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`updated_items\` int NOT NULL DEFAULT 0` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
     { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
     // Plafond du run en jours (passe « anciens » bornée à J-N ; null = pas de plafond)
@@ -346,6 +349,7 @@ async function ensureSchemaPatches() {
         \`total_bytes\` bigint NOT NULL DEFAULT 0,
         \`migrated_bytes\` bigint NOT NULL DEFAULT 0,
         \`processed_bytes\` bigint NOT NULL DEFAULT 0,
+        \`updated_items\` int NOT NULL DEFAULT 0,
         \`migrate_versions\` boolean NOT NULL DEFAULT true,
         \`max_versions\` int NOT NULL DEFAULT 5,
         \`analyze_only\` boolean NOT NULL DEFAULT false,
@@ -428,6 +432,7 @@ async function ensureSchemaPatches() {
         \`gd_file_id\` varchar(255),
         \`status\` enum('success','error','skipped') NOT NULL,
         \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`sp_last_modified\` timestamp NULL,
         \`created_at\` timestamp NOT NULL DEFAULT (now()),
         PRIMARY KEY (\`id\`),
         UNIQUE KEY \`sharepoint_migrated_items_unique\` (\`migration_id\`, \`sp_item_id\`),

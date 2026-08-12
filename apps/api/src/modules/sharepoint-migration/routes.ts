@@ -71,6 +71,7 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     totalBytes: m.totalBytes,
     migratedBytes: m.migratedBytes,
     processedBytes: m.processedBytes,
+    updatedItems: m.updatedItems,
     migrateVersions: m.migrateVersions,
     maxVersions: m.maxVersions,
     analyzeOnly: m.analyzeOnly,

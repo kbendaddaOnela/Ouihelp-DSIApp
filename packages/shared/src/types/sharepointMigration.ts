@@ -129,6 +129,8 @@ export interface SharepointMigrationRecord {
   migratedBytes: number
   /** Octets soldés (migrés + ignorés + en erreur) — numérateur de la progression */
   processedBytes: number
+  /** Fichiers ré-uploadés par une passe delta (contenu modifié depuis la 1re passe) */
+  updatedItems: number
   migrateVersions: boolean
   maxVersions: number
   analyzeOnly: boolean

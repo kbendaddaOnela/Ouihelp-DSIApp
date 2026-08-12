@@ -94,6 +94,9 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
         <div className="mb-1 flex items-center justify-between text-xs text-gray-600">
           <span>
             {m.migratedItems} / {total} fichiers
+            {m.updatedItems > 0 && (
+              <span className="ml-1 text-blue-600">· {m.updatedItems} mis à jour</span>
+            )}
             {m.failedItems > 0 && <span className="ml-1 text-red-600">· {m.failedItems} échec(s)</span>}
             {m.skippedItems > 0 && (
               <span className="ml-1 text-amber-600">· {m.skippedItems} ignoré(s) (trop gros)</span>
@@ -171,7 +174,15 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             className="inline-flex items-center gap-1.5 rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
           >
             <Play className="h-3.5 w-3.5" />
-            {m.analyzeOnly ? 'Relancer l’analyse' : m.migratedItems > 0 ? 'Reprendre' : 'Lancer'}
+            {m.analyzeOnly
+              ? 'Relancer l’analyse'
+              : // Une migration terminée qu'on relance ne recopie pas tout : elle
+                // ne repasse que ce qui a changé côté SharePoint (synchro delta).
+                m.status === 'success'
+                ? 'Synchroniser (delta)'
+                : m.migratedItems > 0
+                  ? 'Reprendre'
+                  : 'Lancer'}
           </button>
         )}
         {isActive && (

@@ -311,7 +311,56 @@ Ajouté le **23/06/2026**. Transfère une **bibliothèque** (ou un sous-dossier)
 - **Dossiers** créés par le compte admin (pas d'attribution d'auteur).
 - **Permissions SharePoint** non migrées — décision : **remise à plat des droits avec les responsables de service** (pas un copier-coller des ACL SharePoint).
 
-### 12.9 Endpoints
+### 12.9 Synchro delta (stratégie de bascule)
+
+**Pourquoi.** Débits mesurés en août 2026 : ~24 Go/h **mais seulement ~2 470 fichiers/h**. C'est le nombre de fichiers qui commande, pas le volume — chaque fichier coûte 4-5 allers-retours API incompressibles.
+
+| Dossier | Fichiers | Taille | Moyenne / fichier | Durée |
+|---|---|---|---|---|
+| Contrôle de gestion | 29 654 | 293 Go | ~10 Mo | ~12 h |
+| ADV | 158 519 | 196 Go | ~1,3 Mo | ~30-60 h estimées |
+
+L'ADV est **plus petit en volume mais plus long à migrer** que le CDG. Conclusion : **la bascule complète en un seul week-end (62 h) n'est pas jouable.**
+
+**La méthode.** Pré-migrer maintenant, en semaine, sans contrainte → passes delta hebdomadaires → dernière passe delta courte le jour J. Le week-end sert à **figer**, pas à transférer.
+
+**Comment ça marche.** Relancer une migration terminée déclenche une passe delta (bouton **« Synchroniser (delta) »**). Pour chaque fichier déjà transféré, on compare le `lastModifiedDateTime` de Graph à une date de référence :
+
+- **inchangé** (cas massivement majoritaire) → sauté, coût ≈ un appel de listage partagé entre 1 000 items ;
+- **modifié** → nouvelle **révision** sur le `gd_file_id` existant (jamais un second fichier : cela dupliquerait et casserait les liens partagés), puis `modifiedTime` remis à jour ;
+- **absent** → migré normalement.
+
+**Date de référence** = `sp_last_modified` (relevée au moment du transfert), ou à défaut `created_at` de la ligne pour les fichiers migrés avant l'ajout de la colonne. Ce repli est une borne sûre — un fichier modifié *avant* qu'on le copie est forcément déjà à jour — et il évite de re-télécharger les 293 Go déjà migrés du CDG.
+
+⚠️ Une passe delta **parcourt quand même toute l'arborescence Graph** pour comparer les dates. Sur l'ADV, compter ~30-60 min de balayage même si rien n'a bougé, plus le transfert du delta réel.
+
+Compteur `updated_items` = fichiers ré-uploadés par une passe delta (affiché « N mis à jour » dans l'UI).
+
+### 12.10 🔙 Retour arrière (rollback)
+
+**Point de retour connu-bon** : tag Git `stable-2026-08-12-avant-delta` (commit `fff2a12`) — état où toutes les migrations (mail, boîtes partagées, SharePoint, comptes) sont opérationnelles en prod.
+
+Voir ce qui a changé depuis :
+
+```bash
+git log --oneline stable-2026-08-12-avant-delta..main
+```
+
+**Annuler une livraison fautive** — toujours par `revert`, jamais par `reset`/force-push sur `main` (le déploiement Azure suit `main`) :
+
+```bash
+git revert -m 1 <sha-du-merge-commit> && git push
+```
+
+Le push redéclenche les deux workflows et redéploie l'état précédent en ~5 min.
+
+**Côté base de données, rien à défaire.** Toutes les évolutions de schéma passent par `ensureSchemaPatches()` et sont **strictement additives** (nouvelles colonnes avec `DEFAULT`, nouvelles tables). Une version antérieure du code ignore simplement les colonnes qu'elle ne connaît pas. Ne **jamais** écrire de `DROP COLUMN` dans les patches : c'est ce qui rendrait un retour arrière destructeur.
+
+**Côté données déjà migrées** : un revert ne supprime rien dans Google Drive. Les tables `sharepoint_migrated_items` gardent la trace de ce qui est passé, donc une reprise après retour arrière reste idempotente (les fichiers déjà migrés sont sautés). Si l'on veut vraiment repartir de zéro sur un Drive : vider le Shared Drive **et** supprimer la migration dans l'UI — sinon les fichiers seront considérés comme déjà transférés.
+
+**Après tout redéploiement** : les workers in-process sont tués. Les migrations restées en `running` doivent être débloquées (bouton **Débloquer**) puis relancées.
+
+### 12.11 Endpoints
 
 | Endpoint | Usage |
 |---|---|
@@ -322,7 +371,7 @@ Ajouté le **23/06/2026**. Transfère une **bibliothèque** (ou un sous-dossier)
 | `POST /:id/run` · `/:id/pause` · `/:id/unstick` | Lancer-reprendre / pause / débloquer un worker hung |
 | `GET /:id/errors` · `DELETE /:id` | Erreurs détaillées / supprimer le suivi |
 
-### 12.10 Services externes ajoutés
+### 12.12 Services externes ajoutés
 
 - **Microsoft Graph (Sites/Drives)** : `/sites`, `/drives`, `/items/{id}/children`, `/items/{id}/content`, `/items/{id}/versions` (+ `/versions/{vid}/content`).
 - **Google Drive API v3** (DwD) : `drives` (recherche Shared Drives), `files` (création dossiers, upload résumable, révisions via PATCH `keepRevisionForever`, `modifiedTime`), `permissions` (membre temporaire pour l'impersonation). `supportsAllDrives=true` partout.
