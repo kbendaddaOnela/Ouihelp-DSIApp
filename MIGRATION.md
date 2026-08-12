@@ -334,7 +334,11 @@ L'ADV est **plus petit en volume mais plus long à migrer** que le CDG. Conclusi
 
 ⚠️ Une passe delta **parcourt quand même toute l'arborescence Graph** pour comparer les dates. Sur l'ADV, compter ~30-60 min de balayage même si rien n'a bougé, plus le transfert du delta réel.
 
-Compteur `updated_items` = fichiers ré-uploadés par une passe delta (affiché « N mis à jour » dans l'UI).
+**Compteurs et vérification d'une passe.**
+
+- `updated_items` = fichiers **déjà présents** dont le contenu a changé (affiché « N mis à jour »). Un fichier **créé** depuis la passe précédente n'entre PAS dans ce compteur : il est compté dans `migrated_items`.
+- `scanned_items` = fichiers parcourus par le run. **Indispensable en passe delta** : la barre en octets y est à 100 % dès la première seconde (tout est déjà migré), donc seule la barre de parcours dit où en est réellement le run. Une estimation de fin est extrapolée du rythme de parcours observé.
+- Bouton **« Voir les changements »** (`GET /:id/changes`) : liste séparée des **nouveaux fichiers** et du **contenu mis à jour** de la dernière passe, avec export CSV (BOM UTF-8 pour Excel). Discriminant : `synced_at >= startedAt` du run = touché par cette passe ; parmi eux, `created_at >= startedAt` = nouveau, sinon = mis à jour. Réponse plafonnée à 500 par catégorie (les totaux restent exacts) — une première migration a des dizaines de milliers de « créés ».
 
 ### 12.10 🔙 Retour arrière (rollback)
 

@@ -60,4 +60,6 @@ export type {
   SharepointMigrationRecord,
   SharepointMigrationHistoryResponse,
   SharepointMigrationErrorsResponse,
+  SharepointChangedItem,
+  SharepointMigrationChangesResponse,
 } from './types/sharepointMigration'

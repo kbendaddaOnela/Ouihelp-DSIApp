@@ -131,6 +131,8 @@ export interface SharepointMigrationRecord {
   processedBytes: number
   /** Fichiers ré-uploadés par une passe delta (contenu modifié depuis la 1re passe) */
   updatedItems: number
+  /** Fichiers parcourus par le run en cours — la vraie progression d'une passe delta */
+  scannedItems: number
   migrateVersions: boolean
   maxVersions: number
   analyzeOnly: boolean
@@ -164,6 +166,32 @@ export interface SharepointMigrationErrorsResponse {
   errors: SharepointProblemItem[]
   /** Fichiers volontairement ignorés (trop volumineux, status='skipped') */
   skipped: SharepointProblemItem[]
+}
+
+/** Un fichier touché par la dernière passe (création ou mise à jour delta). */
+export interface SharepointChangedItem {
+  id: number
+  name: string | null
+  spPath: string | null
+  sizeBytes: number | null
+  /** Date de dernière modification côté SharePoint */
+  spLastModified: string | null
+  /** Instant où cette passe a traité le fichier */
+  syncedAt: string | null
+}
+
+export interface SharepointMigrationChangesResponse {
+  /** Début de la passe : borne qui définit « touché par ce run » */
+  runStartedAt: string | null
+  /** Totaux exacts, même si les listes ci-dessous sont tronquées */
+  createdCount: number
+  updatedCount: number
+  /** true si les listes ont été plafonnées (cas d'une première migration) */
+  truncated: boolean
+  /** Fichiers absents avant cette passe (plafonné) */
+  created: SharepointChangedItem[]
+  /** Fichiers déjà présents dont le contenu a changé (nouvelle révision Drive, plafonné) */
+  updated: SharepointChangedItem[]
 }
 
 /** Réutilise le vocabulaire d'étape commun au reste de l'app */

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Play,
   Pause,
@@ -9,8 +9,14 @@ import {
   CheckCircle2,
   XCircle,
   FolderOpen,
+  FileClock,
+  Download,
 } from 'lucide-react'
-import type { SharepointMigrationRecord } from '@dsi-app/shared'
+import type {
+  SharepointMigrationRecord,
+  SharepointChangedItem,
+  SharepointMigrationChangesResponse,
+} from '@dsi-app/shared'
 import {
   useRunSharepointMigration,
   usePauseSharepointMigration,
@@ -26,6 +32,15 @@ function fmtBytes(n: number): string {
   return `${(n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
+function fmtDuration(sec: number): string {
+  if (sec < 90) return 'moins d’une minute'
+  const h = Math.floor(sec / 3600)
+  const min = Math.round((sec % 3600) / 60)
+  if (h === 0) return `${min} min`
+  if (h < 24) return min > 0 ? `${h} h ${min} min` : `${h} h`
+  return `${Math.floor(h / 24)} j ${h % 24} h`
+}
+
 const STATUS_STYLES: Record<
   SharepointMigrationRecord['status'],
   { label: string; cls: string; icon: React.ElementType }
@@ -39,6 +54,7 @@ const STATUS_STYLES: Record<
 
 export function SharepointMigrationCard({ migration: m }: { migration: SharepointMigrationRecord }) {
   const [showErrors, setShowErrors] = useState(false)
+  const [showChanges, setShowChanges] = useState(false)
   const run = useRunSharepointMigration()
   const pause = usePauseSharepointMigration()
   const unstick = useUnstickSharepointMigration()
@@ -61,6 +77,17 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
         ? Math.round(((m.migratedItems + m.skippedItems) / total) * 100)
         : 0
   const hasDetails = m.failedItems > 0 || m.skippedItems > 0
+  const scanPct = total > 0 ? Math.min(100, Math.round((m.scannedItems / total) * 100)) : 0
+  // Estimation de fin : extrapolation linéaire du rythme de parcours observé
+  // depuis le début du run. Volontairement basée sur le PARCOURS et non sur les
+  // octets — c'est lui qui commande la durée (cf. ADV : 158 519 petits fichiers).
+  const eta = (() => {
+    if (!isActive || !m.startedAt || m.scannedItems < 50 || total <= m.scannedItems) return null
+    const elapsedSec = (Date.now() - new Date(m.startedAt).getTime()) / 1000
+    if (elapsedSec < 30) return null
+    const remainingSec = ((total - m.scannedItems) * elapsedSec) / m.scannedItems
+    return fmtDuration(remainingSec)
+  })()
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
@@ -124,6 +151,27 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             {pct}%
           </span>
         </div>
+
+        {/* Progression du PARCOURS. Indispensable en passe delta : la barre en
+            octets y est à 100 % dès la première seconde (tout est déjà migré),
+            donc seule cette ligne dit où en est réellement le run. */}
+        {isActive && total > 0 && (
+          <div className="mt-2">
+            <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+              <span>
+                Parcours : {m.scannedItems.toLocaleString('fr-FR')} / {total.toLocaleString('fr-FR')} fichiers
+              </span>
+              <span className="tabular-nums">{scanPct}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
+              <div
+                className="h-full rounded-full bg-gray-400 transition-[width] duration-700 ease-out"
+                style={{ width: `${Math.max(scanPct, scanPct > 0 ? 1.5 : 0)}%` }}
+              />
+            </div>
+            {eta && <p className="mt-1 text-xs text-gray-400">Fin estimée dans {eta}</p>}
+          </div>
+        )}
       </div>
       )}
 
@@ -206,6 +254,16 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             Débloquer
           </button>
         )}
+        {(m.updatedItems > 0 || m.status === 'success') && !m.analyzeOnly && (
+          <button
+            onClick={() => setShowChanges((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            title="Lister les fichiers créés et mis à jour par la dernière passe"
+          >
+            <FileClock className="h-3.5 w-3.5" />
+            {showChanges ? 'Masquer' : 'Voir'} les changements
+          </button>
+        )}
         {hasDetails && (
           <button
             onClick={() => setShowErrors((v) => !v)}
@@ -229,7 +287,128 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
         </button>
       </div>
 
+      {showChanges && <ChangeList migrationId={m.id} driveName={m.gdSharedDriveName} />}
       {showErrors && <ErrorList migrationId={m.id} />}
+    </div>
+  )
+}
+
+/**
+ * Liste ce que la dernière passe a changé. Sans elle, « 35 mis à jour » est
+ * invérifiable : l'opérateur ne peut pas valider une passe delta à l'aveugle.
+ */
+function ChangeList({ migrationId, driveName }: { migrationId: string; driveName: string }) {
+  const [data, setData] = useState<SharepointMigrationChangesResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    sharepointMigrationApi
+      .changes(migrationId)
+      .then((d) => alive && setData(d))
+      .finally(() => alive && setLoading(false))
+    return () => {
+      alive = false
+    }
+  }, [migrationId])
+
+  const created = data?.created ?? []
+  const updated = data?.updated ?? []
+
+  const downloadCsv = () => {
+    const esc = (v: string | number | null) =>
+      `"${String(v ?? '').replace(/"/g, '""')}"`
+    const lines = [
+      ['Type', 'Nom', 'Chemin SharePoint', 'Taille (octets)', 'Modifié le (SharePoint)', 'Traité le'].join(';'),
+      ...[
+        ...created.map((i) => ['Créé', i] as const),
+        ...updated.map((i) => ['Mis à jour', i] as const),
+      ].map(([type, i]) =>
+        [esc(type), esc(i.name), esc(i.spPath), esc(i.sizeBytes), esc(i.spLastModified), esc(i.syncedAt)].join(';'),
+      ),
+    ]
+    // BOM UTF-8 : sans lui, Excel affiche « Contrôle de gestion » en mojibake.
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `changements-${driveName.replace(/[^\w-]+/g, '_')}-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const Section = ({
+    title,
+    count,
+    items,
+    tone,
+  }: {
+    title: string
+    count: number
+    items: SharepointChangedItem[]
+    tone: string
+  }) => (
+    <div>
+      <p className={`mb-1 font-semibold ${tone}`}>
+        {title} ({count.toLocaleString('fr-FR')})
+      </p>
+      <ul className="space-y-1.5">
+        {items.map((i) => (
+          <li key={i.id} className="border-b border-gray-100 pb-1.5 last:border-0">
+            <div className="font-medium text-gray-800">{i.name}</div>
+            {i.spPath && <div className="truncate text-gray-400">{i.spPath}</div>}
+            <div className="text-gray-500">
+              {i.sizeBytes != null && <>{fmtBytes(i.sizeBytes)} · </>}
+              modifié le{' '}
+              {i.spLastModified
+                ? new Date(i.spLastModified).toLocaleString('fr-FR')
+                : 'date inconnue'}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+
+  return (
+    <div className="mt-3 max-h-72 space-y-3 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 text-xs">
+      {loading && <p className="text-gray-500">Chargement…</p>}
+      {!loading && created.length === 0 && updated.length === 0 && (
+        <p className="text-gray-500">
+          Aucun changement lors de la dernière passe — la source et le Drive sont identiques.
+        </p>
+      )}
+      {(created.length > 0 || updated.length > 0) && (
+        <button
+          onClick={downloadCsv}
+          className="inline-flex items-center gap-1.5 rounded border border-gray-200 bg-white px-2.5 py-1 font-medium text-gray-600 hover:bg-gray-100"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Télécharger le CSV
+        </button>
+      )}
+      {data?.truncated && (
+        <p className="rounded bg-amber-50 px-2 py-1 text-amber-700">
+          Liste tronquée aux 500 plus récents par catégorie — les totaux affichés restent exacts.
+        </p>
+      )}
+      {created.length > 0 && (
+        <Section
+          title="Nouveaux fichiers"
+          count={data?.createdCount ?? created.length}
+          items={created}
+          tone="text-green-700"
+        />
+      )}
+      {updated.length > 0 && (
+        <Section
+          title="Contenu mis à jour"
+          count={data?.updatedCount ?? updated.length}
+          items={updated}
+          tone="text-blue-700"
+        />
+      )}
     </div>
   )
 }
