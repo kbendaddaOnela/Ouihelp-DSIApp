@@ -62,7 +62,8 @@ export interface MigrationRecord {
   archivedAt: string | null
   initiatedBy: string
   errorDetails: string | null
-  exchangePsScript: string | null
+  /** Script PowerShell Exchange — omis des listes (`/history`), présent sur `/migration/:id` */
+  exchangePsScript?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -106,5 +107,14 @@ export interface MigrateUsersResponse {
 
 export interface MigrationHistoryResponse {
   migrations: MigrationRecord[]
+  /** Nombre total de migrations correspondant au filtre (pas la taille de la page) */
   total: number
+  page: number
+  limit: number
+  hasMore: boolean
+}
+
+/** UPN ONELA dont le compte GOH a déjà été créé (ou volontairement ignoré) */
+export interface MigratedUpnsResponse {
+  upns: string[]
 }

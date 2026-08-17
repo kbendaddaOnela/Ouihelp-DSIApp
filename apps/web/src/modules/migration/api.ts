@@ -5,6 +5,7 @@ import type {
   MigrateExistingRequest,
   MigrateUsersResponse,
   MigrationHistoryResponse,
+  MigratedUpnsResponse,
   MigrationRecord,
 } from '@dsi-app/shared'
 
@@ -20,8 +21,13 @@ export const migrationApi = {
   runExisting: (req: MigrateExistingRequest) =>
     apiClient.post<MigrateUsersResponse>('/migration/run-existing', req).then((r) => r.data),
 
-  history: (page = 1) =>
-    apiClient.get<MigrationHistoryResponse>(`/migration/history?page=${page}`).then((r) => r.data),
+  history: ({ archived = false, page = 1 }: { archived?: boolean; page?: number } = {}) =>
+    apiClient
+      .get<MigrationHistoryResponse>(`/migration/history?archived=${archived ? 1 : 0}&page=${page}`)
+      .then((r) => r.data),
+
+  migratedUpns: () =>
+    apiClient.get<MigratedUpnsResponse>('/migration/migrated-upns').then((r) => r.data),
 
   addGoogleAlias: (id: string, alias?: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/google-alias`, alias ? { alias } : {}).then((r) => r.data),

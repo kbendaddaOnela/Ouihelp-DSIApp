@@ -14,6 +14,7 @@ export type {
   MigrateUsersResponse,
   SearchOnelaUsersResponse,
   MigrationHistoryResponse,
+  MigratedUpnsResponse,
 } from './types/migration'
 
 export type {

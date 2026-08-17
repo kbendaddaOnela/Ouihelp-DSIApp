@@ -1,7 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
-import { Search, UserPlus, X, ChevronDown, ChevronRight, ArrowRightLeft } from 'lucide-react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { Search, UserPlus, X, ChevronDown, ChevronRight, ArrowRightLeft, Filter } from 'lucide-react'
 import type { MigrationRecord, MigrateUsersRequest, OnelaUser } from '@dsi-app/shared'
-import { useMigrationSearch, useMigrationHistory, useRunMigration, useRunMigrationExisting } from './hooks/useMigration'
+import {
+  useMigrationSearch,
+  useMigrationHistory,
+  useArchivedMigrations,
+  useMigratedUpns,
+  useRunMigration,
+  useRunMigrationExisting,
+} from './hooks/useMigration'
 import { MigrationCard } from './components/MigrationCard'
 import { UserRow } from './components/UserRow'
 import { MigrationDashboard } from './components/MigrationDashboard'
@@ -37,17 +44,40 @@ export default function MigrationPage() {
   const { mutate: runExisting, isPending: isPendingExisting } = useRunMigrationExisting(onMigrationSuccess)
 
   const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const [archivedPage, setArchivedPage] = useState(1)
+  const { data: archivedData, isFetching: isFetchingArchived } = useArchivedMigrations(
+    archivedPage,
+    archivedExpanded
+  )
+  const { data: migratedUpnsData } = useMigratedUpns()
+
+  // Filtre local sur les migrations actives — un lot fait 15 personnes, la liste
+  // dépasse vite la hauteur de l'écran.
+  const [activeFilter, setActiveFilter] = useState('')
 
   const foundUsers = searchData?.users ?? []
-  const allMigrations = historyData?.migrations ?? []
-  const activeMigrations = allMigrations.filter((m) => !m.archived)
-  const archivedMigrations = allMigrations.filter((m) => m.archived)
-  const migratedUpns = new Set(
-    allMigrations
-      .filter((m) => m.stepCreateAccount === 'success' || m.stepCreateAccount === 'skipped')
-      .map((m) => m.onelaUpn)
+  const activeMigrations = historyData?.migrations ?? []
+  const archivedMigrations = archivedData?.migrations ?? []
+  const migratedUpns = useMemo(
+    () => new Set(migratedUpnsData?.upns ?? []),
+    [migratedUpnsData]
   )
   const selectedIds = new Set(selectedUsers.map((u) => u.id))
+
+  const filteredActive = useMemo(() => {
+    const needle = activeFilter.trim().toLowerCase()
+    if (!needle) return activeMigrations
+    return activeMigrations.filter((m) =>
+      [m.onelaDisplayName, m.onelaUpn, m.gohUpn, m.onelaDepartment]
+        .some((f) => f?.toLowerCase().includes(needle))
+    )
+  }, [activeMigrations, activeFilter])
+
+  // Les migrations tout juste lancées réapparaissent dans « actives » dès le
+  // refetch : sans ce filtre, la même carte s'affichait deux fois à l'écran.
+  const activeIds = useMemo(() => new Set(activeMigrations.map((m) => m.id)), [activeMigrations])
+  const lastResultIds = useMemo(() => new Set(lastResults.map((m) => m.id)), [lastResults])
+  const pendingResults = lastResults.filter((m) => !activeIds.has(m.id))
 
   const toggleUser = (u: OnelaUser) => {
     if (existingMode) {
@@ -185,12 +215,12 @@ export default function MigrationPage() {
           )}
         </div>
 
-        {/* Résultats de la dernière migration (juste après le clic) */}
-        {lastResults.length > 0 && (
+        {/* Migrations tout juste lancées, avant que le refetch de la liste arrive */}
+        {pendingResults.length > 0 && (
           <section>
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">Résultats</h2>
             <div className="flex flex-col gap-3">
-              {lastResults.map((m) => <MigrationCard key={m.id} m={m} defaultExpanded />)}
+              {pendingResults.map((m) => <MigrationCard key={m.id} m={m} defaultExpanded />)}
             </div>
           </section>
         )}
@@ -198,32 +228,79 @@ export default function MigrationPage() {
         {/* Migrations actives (cartes repliées par défaut) */}
         {activeMigrations.length > 0 && (
           <section>
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
-              Migrations actives ({activeMigrations.length})
-            </h2>
-            <div className="flex flex-col gap-3">
-              {activeMigrations.map((m) => <MigrationCard key={m.id} m={m} />)}
-            </div>
-          </section>
-        )}
-
-        {/* Historique (collapsable) */}
-        {archivedMigrations.length > 0 && (
-          <section>
-            <button
-              onClick={() => setArchivedExpanded((v) => !v)}
-              className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
-            >
-              {archivedExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              Historique ({archivedMigrations.length})
-            </button>
-            {archivedExpanded && (
-              <div className="flex flex-col gap-3">
-                {archivedMigrations.map((m) => <MigrationCard key={m.id} m={m} />)}
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Migrations actives ({activeFilter ? `${filteredActive.length}/` : ''}
+                {activeMigrations.length})
+              </h2>
+              <div className="relative w-56">
+                <Filter className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="search"
+                  value={activeFilter}
+                  onChange={(e) => setActiveFilter(e.target.value)}
+                  placeholder="Filtrer (nom, UPN, service)…"
+                  aria-label="Filtrer les migrations actives"
+                  className="w-full rounded-lg border border-gray-300 py-1.5 pl-8 pr-2 text-xs focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                />
               </div>
+            </div>
+            <div className="flex flex-col gap-3">
+              {filteredActive.map((m) => (
+                <MigrationCard key={m.id} m={m} defaultExpanded={lastResultIds.has(m.id)} />
+              ))}
+            </div>
+            {activeFilter && filteredActive.length === 0 && (
+              <p className="text-sm text-gray-500">Aucune migration active pour « {activeFilter} ».</p>
             )}
           </section>
         )}
+
+        {/* Historique (collapsable, paginé) */}
+        <section>
+          <button
+            onClick={() => setArchivedExpanded((v) => !v)}
+            aria-expanded={archivedExpanded}
+            className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
+          >
+            {archivedExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            Historique{archivedData ? ` (${archivedData.total})` : ''}
+          </button>
+          {archivedExpanded && (
+            <>
+              {isFetchingArchived && !archivedData ? (
+                <p className="text-sm text-gray-500">Chargement…</p>
+              ) : archivedMigrations.length === 0 ? (
+                <p className="text-sm text-gray-500">Aucune migration archivée.</p>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {archivedMigrations.map((m) => <MigrationCard key={m.id} m={m} />)}
+                </div>
+              )}
+              {archivedData && (archivedData.hasMore || archivedPage > 1) && (
+                <div className="mt-3 flex items-center justify-center gap-3 text-xs text-gray-600">
+                  <button
+                    onClick={() => setArchivedPage((p) => Math.max(1, p - 1))}
+                    disabled={archivedPage === 1 || isFetchingArchived}
+                    className="rounded-lg border border-gray-300 px-2.5 py-1.5 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    Précédent
+                  </button>
+                  <span>
+                    Page {archivedPage} / {Math.max(1, Math.ceil(archivedData.total / archivedData.limit))}
+                  </span>
+                  <button
+                    onClick={() => setArchivedPage((p) => p + 1)}
+                    disabled={!archivedData.hasMore || isFetchingArchived}
+                    className="rounded-lg border border-gray-300 px-2.5 py-1.5 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    Suivant
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </section>
       </div>
 
       {/* ── Panel latéral : utilisateurs sélectionnés ──────────────────── */}

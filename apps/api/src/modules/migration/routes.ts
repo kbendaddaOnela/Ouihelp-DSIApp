@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, desc, and } from 'drizzle-orm'
+import { eq, desc, and, inArray, sql } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -25,6 +25,7 @@ import type {
   MigrateExistingRequest,
   MigrateUsersResponse,
   MigrationHistoryResponse,
+  MigratedUpnsResponse,
 } from '@dsi-app/shared'
 
 export const migrationRouter = new Hono<{ Variables: RbacVariables }>()
@@ -350,18 +351,48 @@ migrationRouter.post('/run-existing', requirePermission('migration:read'), async
 })
 
 // ── Historique des migrations ─────────────────────────────────────────────────
+// `archived=1` renvoie l'historique paginé, sinon les migrations actives.
+// Les deux jeux sont filtrés côté SQL : sans ça, un lot d'archives récentes
+// pouvait pousser des migrations actives hors de la page 1 et les faire
+// disparaître de l'écran.
+const HISTORY_MAX_LIMIT = 200
+
 migrationRouter.get('/history', requirePermission('migration:read'), async (c) => {
   const db = getDb()
-  const page = Number(c.req.query('page') ?? 1)
-  const limit = 50
+  const archivedFlag = ['1', 'true'].includes(c.req.query('archived') ?? '') ? 1 : 0
+  const page = Math.max(1, Number(c.req.query('page')) || 1)
+  const requestedLimit = Number(c.req.query('limit')) || (archivedFlag ? 50 : HISTORY_MAX_LIMIT)
+  const limit = Math.min(HISTORY_MAX_LIMIT, Math.max(1, requestedLimit))
   const offset = (page - 1) * limit
+  const where = eq(migrations.archived, archivedFlag)
 
-  const rows = await db.select().from(migrations).orderBy(desc(migrations.createdAt)).limit(limit).offset(offset)
+  const [rows, countRows] = await Promise.all([
+    db.select().from(migrations).where(where).orderBy(desc(migrations.createdAt)).limit(limit).offset(offset),
+    db.select({ n: sql<number>`count(*)` }).from(migrations).where(where),
+  ])
 
+  const total = Number(countRows[0]?.n ?? rows.length)
   const response: MigrationHistoryResponse = {
-    migrations: rows.map(serializeMigration),
-    total: rows.length,
+    migrations: rows.map(serializeMigrationLight),
+    total,
+    page,
+    limit,
+    hasMore: offset + rows.length < total,
   }
+  return c.json(response)
+})
+
+// ── UPN déjà migrés (badge « déjà migré » dans la recherche) ──────────────────
+// Endpoint dédié : la liste des actives ne suffit plus pour ce test depuis que
+// l'historique est paginé séparément.
+migrationRouter.get('/migrated-upns', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const rows = await db
+    .selectDistinct({ upn: migrations.onelaUpn })
+    .from(migrations)
+    .where(inArray(migrations.stepCreateAccount, ['success', 'skipped']))
+
+  const response: MigratedUpnsResponse = { upns: rows.map((r) => r.upn) }
   return c.json(response)
 })
 
@@ -1113,4 +1144,12 @@ function serializeMigration(m: typeof migrations.$inferSelect) {
     archived: m.archived === 1,
     archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null,
   }
+}
+
+// Variante pour les listes : `exchangePsScript` est une colonne TEXT que le front
+// ne lit jamais. La garder dans /history alourdissait chaque poll (toutes les 5 s
+// pendant une migration) sans rien afficher. Elle reste servie par /migration/:id.
+function serializeMigrationLight(m: typeof migrations.$inferSelect) {
+  const { exchangePsScript: _omit, ...rest } = serializeMigration(m)
+  return rest
 }

@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { MigrationRecord, MigrateUsersRequest, MigrateExistingRequest } from '@dsi-app/shared'
 import { migrationApi, migrationTargetsApi } from '../api'
@@ -12,10 +11,15 @@ export function useMigrationSearch(query: string) {
   })
 }
 
+/**
+ * Migrations actives (non archivées). Filtré côté SQL : l'ancien /history
+ * paginait actives + archivées ensemble, donc une migration active pouvait
+ * sortir de la page 1 dès que 50 archives plus récentes existaient.
+ */
 export function useMigrationHistory() {
   return useQuery({
     queryKey: ['migration-history'],
-    queryFn: () => migrationApi.history(),
+    queryFn: () => migrationApi.history({ archived: false }),
     staleTime: 5_000,
     refetchInterval: (q) => {
       // Refresh actif quand au moins une migration (mail/cal/contacts) est en cours
@@ -29,6 +33,26 @@ export function useMigrationHistory() {
   })
 }
 
+/** Historique archivé — paginé, chargé seulement quand la section est dépliée. */
+export function useArchivedMigrations(page: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ['migration-archived', page],
+    queryFn: () => migrationApi.history({ archived: true, page }),
+    enabled,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+/** UPN déjà migrés, pour le badge « déjà migré » sur les résultats de recherche. */
+export function useMigratedUpns() {
+  return useQuery({
+    queryKey: ['migrated-upns'],
+    queryFn: () => migrationApi.migratedUpns(),
+    staleTime: 60_000,
+  })
+}
+
 export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => void) {
   const queryClient = useQueryClient()
   return useMutation({
@@ -36,6 +60,7 @@ export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => vo
     onSuccess: (data) => {
       onSuccess(data.migrations)
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+      queryClient.invalidateQueries({ queryKey: ['migrated-upns'] })
       // Provisioning Entra tourne en background — relancer plusieurs fois pour récupérer
       // les transitions pending → running → success/error
       const refreshTimes = [3000, 8000, 15000, 30000]
@@ -115,13 +140,20 @@ export function useMigrateContacts() {
   })
 }
 
+/**
+ * Sondage Admin SDK « le compte est-il provisionné par SCIM ? ».
+ * Un appel Google par carte concernée : sur un lot de 15 comptes fraîchement
+ * créés, l'intervalle de 30 s faisait 30 appels/min en tâche de fond. Le SCIM
+ * met 5 à 40 min — 60 s suffit largement, et on s'arrête dès que c'est prêt.
+ */
 export function useCheckGoogle(id: string, enabled: boolean) {
   return useQuery({
     queryKey: ['check-google', id],
     queryFn: () => migrationApi.checkGoogle(id),
     enabled,
-    refetchInterval: enabled ? 30_000 : false,
-    staleTime: 15_000,
+    refetchInterval: (q) => (enabled && q.state.data?.exists !== true ? 60_000 : false),
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
   })
 }
 
@@ -134,11 +166,18 @@ export function useMigrationErrors(id: string, phase: 'mail' | 'calendar' | 'con
   })
 }
 
+// Archiver / désarchiver / supprimer déplace une ligne entre les deux listes :
+// il faut invalider les deux caches, pas seulement les actives.
+function invalidateBothLists(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ['migration-history'] })
+  qc.invalidateQueries({ queryKey: ['migration-archived'] })
+}
+
 export function useArchiveMigration() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => migrationApi.archive(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+    onSuccess: () => invalidateBothLists(qc),
   })
 }
 
@@ -146,7 +185,7 @@ export function useUnarchiveMigration() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => migrationApi.unarchive(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+    onSuccess: () => invalidateBothLists(qc),
   })
 }
 
@@ -154,7 +193,10 @@ export function useDeleteMigration() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => migrationApi.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-history'] }),
+    onSuccess: () => {
+      invalidateBothLists(qc)
+      qc.invalidateQueries({ queryKey: ['migrated-upns'] })
+    },
   })
 }
 
@@ -227,12 +269,20 @@ export function useRemoveForwarding() {
   })
 }
 
+/**
+ * Statut de la redirection Exchange. Un appel Exchange Admin REST par carte
+ * dépliée, sur le même tenant que le worker mail : on met en cache 5 min et on
+ * ne refetch pas au focus. Les mutations set/remove invalident déjà la clé.
+ */
 export function useForwardingStatus(id: string, enabled: boolean) {
   return useQuery({
     queryKey: ['forwarding-status', id],
     queryFn: () => migrationApi.checkForwarding(id),
     enabled,
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
+    gcTime: 10 * 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   })
 }
 
@@ -259,13 +309,4 @@ export function useResetDone() {
     mutationFn: () => migrationTargetsApi.resetDone(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['migration-stats'] }),
   })
-}
-
-export function useDebounce(value: string, delay = 400) {
-  const [debounced, setDebounced] = useState(value)
-  useState(() => {
-    const t = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(t)
-  })
-  return debounced
 }

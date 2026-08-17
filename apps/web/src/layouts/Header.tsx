@@ -1,5 +1,5 @@
 import { useLocation } from 'react-router-dom'
-import { LogOut, Moon, Sun } from 'lucide-react'
+import { LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -12,6 +12,9 @@ const ROUTE_LABELS: Record<string, string> = {
   apps: 'Inventaire applicatif',
   licenses: 'Licences',
   budget: 'Budget & Facturation',
+  migration: 'Migration ONELA',
+  'shared-mailbox': 'Migration Shared Mailbox',
+  'sharepoint-migration': 'Migration SharePoint',
 }
 
 const ROLE_LABELS = {
@@ -20,7 +23,7 @@ const ROLE_LABELS = {
   collaborator: 'Collaborateur',
 } as const
 
-export const Header = () => {
+export const Header = ({ onOpenNav }: { onOpenNav: () => void }) => {
   const { user, role, logout } = useAuth()
   const { pathname } = useLocation()
 
@@ -35,12 +38,19 @@ export const Header = () => {
     .slice(0, 2)
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-gray-200 bg-white px-6">
+    <header className="flex h-14 items-center justify-between border-b border-gray-200 bg-white px-4 sm:px-6">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm">
-        <span className="text-gray-400">DSI App</span>
-        <span className="text-gray-300">/</span>
-        <span className="font-medium text-gray-900">{currentLabel}</span>
+      <div className="flex min-w-0 items-center gap-2 text-sm">
+        <button
+          onClick={onOpenNav}
+          className="-ml-1 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 lg:hidden"
+          aria-label="Ouvrir la navigation"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+        <span className="hidden text-gray-400 sm:inline">DSI App</span>
+        <span className="hidden text-gray-300 sm:inline">/</span>
+        <span className="truncate font-medium text-gray-900">{currentLabel}</span>
       </div>
 
       {/* Actions utilisateur */}

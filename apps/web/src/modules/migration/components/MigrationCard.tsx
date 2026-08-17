@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, RefreshCw, Mail, Calendar, Users, Archive, Trash2, ArchiveRestore, FolderInput, Loader2, CheckCircle2, Clock, Send, XCircle, Tags, Copy, BookUser, RotateCw } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
@@ -25,7 +25,7 @@ import {
   useActivateNewFormat,
 } from '../hooks/useMigration'
 
-export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationRecord; defaultExpanded?: boolean }) {
+function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [aliasMessage, setAliasMessage] = useState<string | null>(null)
   const [ouMessage, setOuMessage] = useState<string | null>(null)
@@ -657,6 +657,12 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
     </div>
   )
 }
+
+// La liste des migrations est repollée toutes les 5 s pendant un run. Le structural
+// sharing de TanStack Query conserve l'identité des lignes inchangées, donc ce memo
+// limite le re-render aux seules cartes dont les compteurs ont bougé — au lieu de
+// reconstruire les ~50 cartes et leurs sous-arbres à chaque tick.
+export const MigrationCard = memo(MigrationCardInner)
 
 // Bloc numéroté pour chaque étape
 function StepBlock({
