@@ -31,9 +31,11 @@ export const sharepointMigrationApi = {
       )
       .then((r) => r.data),
 
-  history: () =>
+  history: ({ archived = false }: { archived?: boolean } = {}) =>
     apiClient
-      .get<SharepointMigrationHistoryResponse>('/sharepoint-migration/history')
+      .get<SharepointMigrationHistoryResponse>(
+        `/sharepoint-migration/history?archived=${archived ? 1 : 0}`,
+      )
       .then((r) => r.data),
 
   create: (req: CreateSharepointMigrationRequest) =>
@@ -47,6 +49,16 @@ export const sharepointMigrationApi = {
 
   unstick: (id: string) =>
     apiClient.post<{ ok: boolean }>(`/sharepoint-migration/${id}/unstick`).then((r) => r.data),
+
+  archive: (id: string) =>
+    apiClient
+      .post<SharepointMigrationRecord>(`/sharepoint-migration/${id}/archive`)
+      .then((r) => r.data),
+
+  unarchive: (id: string) =>
+    apiClient
+      .post<SharepointMigrationRecord>(`/sharepoint-migration/${id}/unarchive`)
+      .then((r) => r.data),
 
   remove: (id: string) =>
     apiClient.delete(`/sharepoint-migration/${id}`).then((r) => r.data),

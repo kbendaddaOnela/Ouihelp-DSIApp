@@ -18,6 +18,17 @@ export function useSharepointHistory() {
   })
 }
 
+/** Migrations archivées — chargées seulement quand la section est dépliée. */
+export function useArchivedSharepointMigrations(enabled: boolean) {
+  return useQuery({
+    queryKey: ['sharepoint-migration-archived'],
+    queryFn: () => sharepointMigrationApi.history({ archived: true }),
+    enabled,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+  })
+}
+
 export function useResolveSite() {
   return useMutation({
     mutationFn: (url: string) => sharepointMigrationApi.resolveSite(url),
@@ -72,10 +83,33 @@ export function useUnstickSharepointMigration() {
   })
 }
 
+/** Invalide les DEUX listes : un archivage fait passer une carte de l'une à l'autre. */
+function useArchiveMutation(fn: (id: string) => Promise<unknown>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sharepoint-migration-history'] })
+      void qc.invalidateQueries({ queryKey: ['sharepoint-migration-archived'] })
+    },
+  })
+}
+
+export function useArchiveSharepointMigration() {
+  return useArchiveMutation((id) => sharepointMigrationApi.archive(id))
+}
+
+export function useUnarchiveSharepointMigration() {
+  return useArchiveMutation((id) => sharepointMigrationApi.unarchive(id))
+}
+
 export function useDeleteSharepointMigration() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => sharepointMigrationApi.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['sharepoint-migration-history'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sharepoint-migration-history'] })
+      void qc.invalidateQueries({ queryKey: ['sharepoint-migration-archived'] })
+    },
   })
 }

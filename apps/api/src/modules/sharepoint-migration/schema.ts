@@ -59,6 +59,10 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   // octets est à 100 % dès le départ (tout est déjà migré) : c'est ce compteur
   // qui dit réellement où on en est.
   scannedItems: int('scanned_items').default(0).notNull(),
+  // Archivage : 0 = actif, 1 = rangé dans l'historique. Même convention que le
+  // module migration (int et non boolean) pour rester cohérent entre modules.
+  archived: int('archived').default(0).notNull(),
+  archivedAt: timestamp('archived_at'),
   // Migrer l'historique des versions (toutes les révisions, pas juste la dernière)
   migrateVersions: boolean('migrate_versions').default(true).notNull(),
   // Nombre max de versions conservées (première + N-1 plus récentes). -1 = toutes.
