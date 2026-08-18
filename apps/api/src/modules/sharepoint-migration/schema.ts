@@ -37,6 +37,9 @@ export const sharepointMigrations = mysqlTable('sharepoint_migrations', {
   // Dossiers source sélectionnés (JSON : [{id,name}]). Chacun est RECRÉÉ à la
   // racine du Shared Drive. Vide/null = toute la bibliothèque (sans wrapper).
   selectedRoots: text('selected_roots'),
+  // Libellé libre saisi par l'opérateur (ex. « Finance — lot 1 »). Sert de titre
+  // de carte quand il est renseigné ; sinon on retombe sur le nom du Shared Drive.
+  label: varchar('label', { length: 200 }),
   // Cible Google Shared Drive
   gdSharedDriveId: varchar('gd_shared_drive_id', { length: 255 }),
   gdSharedDriveName: varchar('gd_shared_drive_name', { length: 500 }).notNull(),

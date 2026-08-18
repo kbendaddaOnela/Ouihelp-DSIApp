@@ -50,6 +50,11 @@ export const sharepointMigrationApi = {
   unstick: (id: string) =>
     apiClient.post<{ ok: boolean }>(`/sharepoint-migration/${id}/unstick`).then((r) => r.data),
 
+  rename: (id: string, label: string) =>
+    apiClient
+      .patch<SharepointMigrationRecord>(`/sharepoint-migration/${id}`, { label })
+      .then((r) => r.data),
+
   archive: (id: string) =>
     apiClient
       .post<SharepointMigrationRecord>(`/sharepoint-migration/${id}/archive`)

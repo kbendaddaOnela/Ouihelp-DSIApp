@@ -92,6 +92,8 @@ async function ensureSchemaPatches() {
     // SharePoint : archivage des migrations terminées (même convention que `migrations`)
     { table: 'sharepoint_migrations', column: 'archived', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`archived\` int NOT NULL DEFAULT 0` },
     { table: 'sharepoint_migrations', column: 'archived_at', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`archived_at\` timestamp NULL` },
+    // SharePoint : libellé libre de la migration (repli sur le nom du Shared Drive)
+    { table: 'sharepoint_migrations', column: 'label', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`label\` varchar(200)` },
     // SharePoint : marqueur « touché par ce run » pour lister le contenu d'une passe
     { table: 'sharepoint_migrated_items', column: 'synced_at', ddl: `ALTER TABLE \`sharepoint_migrated_items\` ADD COLUMN \`synced_at\` timestamp NULL` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
@@ -346,6 +348,7 @@ async function ensureSchemaPatches() {
         \`root_item_id\` varchar(500),
         \`root_path\` varchar(1000),
         \`selected_roots\` text,
+        \`label\` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`gd_shared_drive_id\` varchar(255),
         \`gd_shared_drive_name\` varchar(500) NOT NULL,
         \`status\` enum('pending','running','paused','success','error') NOT NULL DEFAULT 'pending',

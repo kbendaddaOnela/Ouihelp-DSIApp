@@ -340,7 +340,15 @@ L'ADV est **plus petit en volume mais plus long à migrer** que le CDG. Conclusi
 - `scanned_items` = fichiers parcourus par le run. **Indispensable en passe delta** : la barre en octets y est à 100 % dès la première seconde (tout est déjà migré), donc seule la barre de parcours dit où en est réellement le run. Une estimation de fin est extrapolée du rythme de parcours observé.
 - Bouton **« Voir les changements »** (`GET /:id/changes`) : liste séparée des **nouveaux fichiers** et du **contenu mis à jour** de la dernière passe, avec export CSV (BOM UTF-8 pour Excel). Discriminant : `synced_at >= startedAt` du run = touché par cette passe ; parmi eux, `created_at >= startedAt` = nouveau, sinon = mis à jour. Réponse plafonnée à 500 par catégorie (les totaux restent exacts) — une première migration a des dizaines de milliers de « créés ».
 
-### 12.10 Archivage des migrations terminées
+### 12.10 Libellé libre
+
+Champ `label` (facultatif, 200 car.) saisi à la création ou modifié après coup via l'icône crayon sur la carte (`PATCH /:id`). Il devient le **titre de la carte** ; vide = repli sur le nom du Shared Drive (comportement d'origine).
+
+Quand un libellé est affiché, le Drive cible passe en sous-titre (`→ Finance · ALL-ONELA / Documents / …`) — sinon on perdrait l'information de destination.
+
+Purement cosmétique : aucun effet sur le transfert ni sur l'idempotence.
+
+### 12.11 Archivage des migrations terminées
 
 Même convention que le module `migration` (colonne `archived` en `int`, 0/1). Bouton **Archiver** sur toute migration non active ; l'historique est une section repliée, chargée seulement à l'ouverture.
 
@@ -351,7 +359,7 @@ Deux garde-fous, parce qu'une migration archivée **sort du polling du worker** 
 
 Archiver ne supprime rien : ni le Shared Drive, ni les lignes `sharepoint_migrated_items`. Une migration désarchivée reprend sa synchro delta exactement où elle en était.
 
-### 12.11 🔙 Retour arrière (rollback)
+### 12.12 🔙 Retour arrière (rollback)
 
 **Point de retour connu-bon** : tag Git `stable-2026-08-12-avant-delta` (commit `fff2a12`) — état où toutes les migrations (mail, boîtes partagées, SharePoint, comptes) sont opérationnelles en prod.
 
@@ -375,7 +383,7 @@ Le push redéclenche les deux workflows et redéploie l'état précédent en ~5 
 
 **Après tout redéploiement** : les workers in-process sont tués. Les migrations restées en `running` doivent être débloquées (bouton **Débloquer**) puis relancées.
 
-### 12.12 Endpoints
+### 12.13 Endpoints
 
 | Endpoint | Usage |
 |---|---|
@@ -385,9 +393,10 @@ Le push redéclenche les deux workflows et redéploie l'état précédent en ~5 
 | `POST /sharepoint-migration` · `GET /history` · `GET /:id` | Créer / lister / détail |
 | `POST /:id/run` · `/:id/pause` · `/:id/unstick` | Lancer-reprendre / pause / débloquer un worker hung |
 | `GET /:id/errors` · `GET /:id/changes` | Erreurs détaillées / changements de la dernière passe |
+| `PATCH /:id` | Renommer (libellé libre ; vide = nom du Drive) |
 | `POST /:id/archive` · `/:id/unarchive` · `DELETE /:id` | Archiver / désarchiver / supprimer le suivi |
 
-### 12.13 Services externes ajoutés
+### 12.14 Services externes ajoutés
 
 - **Microsoft Graph (Sites/Drives)** : `/sites`, `/drives`, `/items/{id}/children`, `/items/{id}/content`, `/items/{id}/versions` (+ `/versions/{vid}/content`).
 - **Google Drive API v3** (DwD) : `drives` (recherche Shared Drives), `files` (création dossiers, upload résumable, révisions via PATCH `keepRevisionForever`, `modifiedTime`), `permissions` (membre temporaire pour l'impersonation). `supportsAllDrives=true` partout.
