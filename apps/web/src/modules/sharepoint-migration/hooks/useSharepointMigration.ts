@@ -95,6 +95,18 @@ function useArchiveMutation(fn: (id: string) => Promise<unknown>) {
   })
 }
 
+export function useRenameSharepointMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, label }: { id: string; label: string }) =>
+      sharepointMigrationApi.rename(id, label),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sharepoint-migration-history'] })
+      void qc.invalidateQueries({ queryKey: ['sharepoint-migration-archived'] })
+    },
+  })
+}
+
 export function useArchiveSharepointMigration() {
   return useArchiveMutation((id) => sharepointMigrationApi.archive(id))
 }

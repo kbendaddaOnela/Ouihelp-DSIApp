@@ -13,6 +13,9 @@ import {
   Download,
   Archive,
   ArchiveRestore,
+  Pencil,
+  Check,
+  X,
 } from 'lucide-react'
 import type {
   SharepointMigrationRecord,
@@ -23,6 +26,7 @@ import {
   useRunSharepointMigration,
   usePauseSharepointMigration,
   useUnstickSharepointMigration,
+  useRenameSharepointMigration,
   useArchiveSharepointMigration,
   useUnarchiveSharepointMigration,
   useDeleteSharepointMigration,
@@ -59,9 +63,11 @@ const STATUS_STYLES: Record<
 export function SharepointMigrationCard({ migration: m }: { migration: SharepointMigrationRecord }) {
   const [showErrors, setShowErrors] = useState(false)
   const [showChanges, setShowChanges] = useState(false)
+  const [editingLabel, setEditingLabel] = useState<string | null>(null)
   const run = useRunSharepointMigration()
   const pause = usePauseSharepointMigration()
   const unstick = useUnstickSharepointMigration()
+  const rename = useRenameSharepointMigration()
   const archive = useArchiveSharepointMigration()
   const unarchive = useUnarchiveSharepointMigration()
   const del = useDeleteSharepointMigration()
@@ -101,9 +107,63 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <HardDriveDownload className="h-4 w-4 shrink-0 text-gray-400" />
-            <h3 className="truncate font-semibold text-gray-900">{m.gdSharedDriveName}</h3>
+            {editingLabel === null ? (
+              <>
+                {/* Le libellé libre prime ; sans lui on retombe sur le nom du Drive. */}
+                <h3 className="truncate font-semibold text-gray-900">
+                  {m.label || m.gdSharedDriveName}
+                </h3>
+                <button
+                  onClick={() => setEditingLabel(m.label ?? '')}
+                  className="shrink-0 text-gray-300 hover:text-gray-600"
+                  title="Renommer cette migration"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              </>
+            ) : (
+              <form
+                className="flex min-w-0 flex-1 items-center gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  rename.mutate(
+                    { id: m.id, label: editingLabel },
+                    { onSuccess: () => setEditingLabel(null) },
+                  )
+                }}
+              >
+                <input
+                  autoFocus
+                  value={editingLabel}
+                  onChange={(e) => setEditingLabel(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Escape' && setEditingLabel(null)}
+                  maxLength={200}
+                  placeholder={m.gdSharedDriveName}
+                  className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm font-semibold text-gray-900 focus:border-blue-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={rename.isPending}
+                  className="shrink-0 rounded p-1 text-green-600 hover:bg-green-50 disabled:opacity-50"
+                  title="Enregistrer (vide = nom du Drive)"
+                >
+                  <Check className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingLabel(null)}
+                  className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-50"
+                  title="Annuler"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </form>
+            )}
           </div>
           <p className="mt-0.5 truncate text-xs text-gray-500">
+            {/* Quand un libellé est affiché en titre, le Drive cible passe ici —
+                sinon on perdrait l'information de destination. */}
+            {m.label && !m.analyzeOnly ? `→ ${m.gdSharedDriveName} · ` : ''}
             {m.siteName} / {m.driveName}
             {m.rootPath ? ` / ${m.rootPath}` : ''}
           </p>

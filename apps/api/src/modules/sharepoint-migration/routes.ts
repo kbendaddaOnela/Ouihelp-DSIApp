@@ -60,6 +60,7 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     siteName: m.siteName,
     driveId: m.driveId,
     driveName: m.driveName,
+    label: m.label,
     rootItemId: m.rootItemId,
     rootPath: m.rootPath,
     selectedRoots: parseRoots(m.selectedRoots),
@@ -189,6 +190,7 @@ sharepointMigrationRouter.post('/', requirePermission('migration:write'), async 
     siteName: body.siteName,
     driveId: body.driveId,
     driveName: body.driveName,
+    label: body.label?.trim() || null,
     rootItemId: null,
     rootPath: displayPath,
     selectedRoots: roots.length > 0 ? JSON.stringify(roots) : null,
@@ -246,6 +248,26 @@ sharepointMigrationRouter.delete('/:id', requirePermission('migration:write'), a
   await db.delete(sharepointMigratedItems).where(eq(sharepointMigratedItems.migrationId, id))
   await db.delete(sharepointMigrations).where(eq(sharepointMigrations.id, id))
   return c.json({ ok: true })
+})
+
+// ── Renommer (libellé libre) ──────────────────────────────────────────────────
+// Purement cosmétique : aucun impact sur le transfert ni sur l'idempotence.
+sharepointMigrationRouter.patch('/:id', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json<{ label?: string | null }>()
+  // Chaîne vide = retour au libellé par défaut (nom du Shared Drive), pas une erreur.
+  const label = typeof body.label === 'string' ? body.label.trim().slice(0, 200) || null : null
+  await db
+    .update(sharepointMigrations)
+    .set({ label })
+    .where(eq(sharepointMigrations.id, id))
+  const [updated] = await db
+    .select()
+    .from(sharepointMigrations)
+    .where(eq(sharepointMigrations.id, id))
+    .limit(1)
+  if (!updated) return c.json({ error: 'Not Found' }, 404)
+  return c.json(toRecord(updated))
 })
 
 // ── Archiver / désarchiver ────────────────────────────────────────────────────

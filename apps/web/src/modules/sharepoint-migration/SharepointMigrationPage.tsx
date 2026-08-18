@@ -49,6 +49,7 @@ export default function SharepointMigrationPage() {
   const [gdQuery, setGdQuery] = useState('')
   const [selectedGd, setSelectedGd] = useState<GoogleSharedDrive | null>(null)
   const [migrateVersions, setMigrateVersions] = useState(true)
+  const [label, setLabel] = useState('')
   const [maxVersions, setMaxVersions] = useState(5)
   const [historyExpanded, setHistoryExpanded] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -148,6 +149,7 @@ export default function SharepointMigrationPage() {
     setSelectedGd(null)
     setMigrateVersions(true)
     setMaxVersions(5)
+    setLabel('')
     setError(null)
   }
 
@@ -165,6 +167,7 @@ export default function SharepointMigrationPage() {
         selectedRoots,
         gdSharedDriveId: '',
         gdSharedDriveName: '',
+        label: label.trim() || undefined,
         migrateVersions: false,
         analyzeOnly: true,
       },
@@ -191,6 +194,7 @@ export default function SharepointMigrationPage() {
         selectedRoots,
         gdSharedDriveId: selectedGd.id,
         gdSharedDriveName: selectedGd.name,
+        label: label.trim() || undefined,
         migrateVersions,
         maxVersions,
       },
@@ -470,6 +474,18 @@ export default function SharepointMigrationPage() {
                 )}
               </div>
             )}
+
+            <label className="block text-xs text-gray-700">
+              <span className="font-medium">Libellé</span>{' '}
+              <span className="text-gray-400">(facultatif — pour s'y retrouver dans la liste)</span>
+              <input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                maxLength={200}
+                placeholder={selectedGd?.name ?? 'ex. Finance — lot 1 (CDG + Compta + ADV)'}
+                className="mt-1 w-full rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </label>
 
             <label className="flex cursor-pointer items-start gap-2 rounded border border-gray-200 px-3 py-2 text-xs text-gray-700">
               <input

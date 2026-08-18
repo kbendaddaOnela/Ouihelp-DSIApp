@@ -96,6 +96,8 @@ export interface CreateSharepointMigrationRequest {
   gdSharedDriveId: string
   /** Nom du Shared Drive sélectionné (affichage) */
   gdSharedDriveName: string
+  /** Libellé libre pour s'y retrouver (ex. « Finance — lot 1 ») ; vide = nom du Drive */
+  label?: string
   /** Migrer l'historique des versions (toutes les révisions, pas juste la dernière) */
   migrateVersions: boolean
   /**
@@ -115,6 +117,8 @@ export interface SharepointMigrationRecord {
   siteName: string
   driveId: string
   driveName: string
+  /** Libellé libre saisi par l'opérateur ; null = on affiche le nom du Shared Drive */
+  label: string | null
   rootItemId: string | null
   rootPath: string | null
   selectedRoots: SharepointSelectedRoot[]
