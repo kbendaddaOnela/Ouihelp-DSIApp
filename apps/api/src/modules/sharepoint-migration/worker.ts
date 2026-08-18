@@ -224,7 +224,12 @@ function startHeartbeat(id: string): () => void {
 }
 
 async function pollAndProcess() {
-  const all = await db.select().from(sharepointMigrations)
+  // Les archivées sont hors-jeu : ni relancées, ni surveillées pour orphelins.
+  // Filtrer ici allège aussi le poll (relu toutes les 5 s).
+  const all = await db
+    .select()
+    .from(sharepointMigrations)
+    .where(eq(sharepointMigrations.archived, 0))
 
   // Détection d'orphelins : 'running' mais pas dans RUNNING et inactif > 15min → reset
   for (const job of all) {

@@ -340,7 +340,18 @@ L'ADV est **plus petit en volume mais plus long à migrer** que le CDG. Conclusi
 - `scanned_items` = fichiers parcourus par le run. **Indispensable en passe delta** : la barre en octets y est à 100 % dès la première seconde (tout est déjà migré), donc seule la barre de parcours dit où en est réellement le run. Une estimation de fin est extrapolée du rythme de parcours observé.
 - Bouton **« Voir les changements »** (`GET /:id/changes`) : liste séparée des **nouveaux fichiers** et du **contenu mis à jour** de la dernière passe, avec export CSV (BOM UTF-8 pour Excel). Discriminant : `synced_at >= startedAt` du run = touché par cette passe ; parmi eux, `created_at >= startedAt` = nouveau, sinon = mis à jour. Réponse plafonnée à 500 par catégorie (les totaux restent exacts) — une première migration a des dizaines de milliers de « créés ».
 
-### 12.10 🔙 Retour arrière (rollback)
+### 12.10 Archivage des migrations terminées
+
+Même convention que le module `migration` (colonne `archived` en `int`, 0/1). Bouton **Archiver** sur toute migration non active ; l'historique est une section repliée, chargée seulement à l'ouverture.
+
+Deux garde-fous, parce qu'une migration archivée **sort du polling du worker** :
+
+- on refuse d'archiver un run `running`/`pending` (409) — il continuerait en arrière-plan sans être visible nulle part ;
+- on refuse de relancer une migration archivée (409, et le bouton est masqué) — elle resterait en `pending` pour toujours sans que rien ne la traite.
+
+Archiver ne supprime rien : ni le Shared Drive, ni les lignes `sharepoint_migrated_items`. Une migration désarchivée reprend sa synchro delta exactement où elle en était.
+
+### 12.11 🔙 Retour arrière (rollback)
 
 **Point de retour connu-bon** : tag Git `stable-2026-08-12-avant-delta` (commit `fff2a12`) — état où toutes les migrations (mail, boîtes partagées, SharePoint, comptes) sont opérationnelles en prod.
 
@@ -364,7 +375,7 @@ Le push redéclenche les deux workflows et redéploie l'état précédent en ~5 
 
 **Après tout redéploiement** : les workers in-process sont tués. Les migrations restées en `running` doivent être débloquées (bouton **Débloquer**) puis relancées.
 
-### 12.11 Endpoints
+### 12.12 Endpoints
 
 | Endpoint | Usage |
 |---|---|
@@ -373,9 +384,10 @@ Le push redéclenche les deux workflows et redéploie l'état précédent en ~5 
 | `GET /sharepoint-migration/search-drives?q=` | Rechercher un Shared Drive Google par nom |
 | `POST /sharepoint-migration` · `GET /history` · `GET /:id` | Créer / lister / détail |
 | `POST /:id/run` · `/:id/pause` · `/:id/unstick` | Lancer-reprendre / pause / débloquer un worker hung |
-| `GET /:id/errors` · `DELETE /:id` | Erreurs détaillées / supprimer le suivi |
+| `GET /:id/errors` · `GET /:id/changes` | Erreurs détaillées / changements de la dernière passe |
+| `POST /:id/archive` · `/:id/unarchive` · `DELETE /:id` | Archiver / désarchiver / supprimer le suivi |
 
-### 12.12 Services externes ajoutés
+### 12.13 Services externes ajoutés
 
 - **Microsoft Graph (Sites/Drives)** : `/sites`, `/drives`, `/items/{id}/children`, `/items/{id}/content`, `/items/{id}/versions` (+ `/versions/{vid}/content`).
 - **Google Drive API v3** (DwD) : `drives` (recherche Shared Drives), `files` (création dossiers, upload résumable, révisions via PATCH `keepRevisionForever`, `modifiedTime`), `permissions` (membre temporaire pour l'impersonation). `supportsAllDrives=true` partout.

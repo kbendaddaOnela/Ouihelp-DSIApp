@@ -11,6 +11,8 @@ import {
   FolderOpen,
   FileClock,
   Download,
+  Archive,
+  ArchiveRestore,
 } from 'lucide-react'
 import type {
   SharepointMigrationRecord,
@@ -21,6 +23,8 @@ import {
   useRunSharepointMigration,
   usePauseSharepointMigration,
   useUnstickSharepointMigration,
+  useArchiveSharepointMigration,
+  useUnarchiveSharepointMigration,
   useDeleteSharepointMigration,
 } from '../hooks/useSharepointMigration'
 import { sharepointMigrationApi } from '../api'
@@ -58,6 +62,8 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
   const run = useRunSharepointMigration()
   const pause = usePauseSharepointMigration()
   const unstick = useUnstickSharepointMigration()
+  const archive = useArchiveSharepointMigration()
+  const unarchive = useUnarchiveSharepointMigration()
   const del = useDeleteSharepointMigration()
 
   const isActive = m.status === 'running' || m.status === 'pending'
@@ -215,7 +221,7 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
 
       {/* Actions */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {!isActive && (
+        {!isActive && !m.archived && (
           <button
             onClick={() => run.mutate(m.id)}
             disabled={run.isPending}
@@ -273,6 +279,30 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             {showErrors ? 'Masquer' : 'Voir'} les détails
           </button>
         )}
+        {m.archived ? (
+          <button
+            onClick={() => unarchive.mutate(m.id)}
+            disabled={unarchive.isPending}
+            className="ml-auto inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+          >
+            <ArchiveRestore className="h-3.5 w-3.5" />
+            Désarchiver
+          </button>
+        ) : (
+          <button
+            onClick={() => archive.mutate(m.id)}
+            disabled={archive.isPending || isActive}
+            className="ml-auto inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            title={
+              isActive
+                ? 'Mets la migration en pause avant de l’archiver'
+                : 'Ranger dans l’historique (le Shared Drive et le suivi sont conservés)'
+            }
+          >
+            <Archive className="h-3.5 w-3.5" />
+            Archiver
+          </button>
+        )}
         <button
           onClick={() => {
             if (confirm(`Supprimer la migration vers "${m.gdSharedDriveName}" ? (le Shared Drive Google n'est PAS supprimé)`)) {
@@ -280,7 +310,7 @@ export function SharepointMigrationCard({ migration: m }: { migration: Sharepoin
             }
           }}
           disabled={del.isPending || isActive}
-          className="ml-auto inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
           title={isActive ? 'Arrête la migration avant de supprimer' : 'Supprimer le suivi'}
         >
           <Trash2 className="h-3.5 w-3.5" />

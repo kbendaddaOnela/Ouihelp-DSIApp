@@ -133,6 +133,9 @@ export interface SharepointMigrationRecord {
   updatedItems: number
   /** Fichiers parcourus par le run en cours — la vraie progression d'une passe delta */
   scannedItems: number
+  /** Rangée dans l'historique (sort de la liste active et du polling du worker) */
+  archived: boolean
+  archivedAt: string | null
   migrateVersions: boolean
   maxVersions: number
   analyzeOnly: boolean
@@ -148,6 +151,7 @@ export interface SharepointMigrationRecord {
 
 export interface SharepointMigrationHistoryResponse {
   migrations: SharepointMigrationRecord[]
+  total: number
 }
 
 interface SharepointProblemItem {

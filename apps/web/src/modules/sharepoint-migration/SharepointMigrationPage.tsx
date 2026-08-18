@@ -26,6 +26,7 @@ import {
   useBrowse,
   useSearchSharedDrives,
   useCreateSharepointMigration,
+  useArchivedSharepointMigrations,
 } from './hooks/useSharepointMigration'
 import { SharepointMigrationCard } from './components/SharepointMigrationCard'
 
@@ -68,6 +69,11 @@ export default function SharepointMigrationPage() {
   const createMigration = useCreateSharepointMigration()
   const { data: historyData } = useSharepointHistory()
   const migrations = historyData?.migrations ?? []
+  // Les archivées ne sont chargées qu'à l'ouverture de la section.
+  const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const { data: archivedData, isFetching: isFetchingArchived } =
+    useArchivedSharepointMigrations(archivedExpanded)
+  const archivedMigrations = archivedData?.migrations ?? []
 
   const currentFolder = crumbs.length > 0 ? crumbs[crumbs.length - 1]! : null
   const currentFolderId = currentFolder?.id ?? null
@@ -537,11 +543,36 @@ export default function SharepointMigrationPage() {
         {historyExpanded && (
           <div className="space-y-3">
             {migrations.length === 0 && (
-              <p className="text-sm text-gray-500">Aucune migration SharePoint encore.</p>
+              <p className="text-sm text-gray-500">Aucune migration SharePoint active.</p>
             )}
             {migrations.map((m) => (
               <SharepointMigrationCard key={m.id} migration={m} />
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* Archives — repliées par défaut, chargées à la demande */}
+      <section>
+        <button
+          onClick={() => setArchivedExpanded((v) => !v)}
+          aria-expanded={archivedExpanded}
+          className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
+        >
+          {archivedExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          Historique{archivedData ? ` (${archivedData.total})` : ''}
+        </button>
+        {archivedExpanded && (
+          <div className="space-y-3">
+            {isFetchingArchived && !archivedData ? (
+              <p className="text-sm text-gray-500">Chargement…</p>
+            ) : archivedMigrations.length === 0 ? (
+              <p className="text-sm text-gray-500">Aucune migration archivée.</p>
+            ) : (
+              archivedMigrations.map((m) => (
+                <SharepointMigrationCard key={m.id} migration={m} />
+              ))
+            )}
           </div>
         )}
       </section>

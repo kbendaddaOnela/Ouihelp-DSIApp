@@ -89,6 +89,9 @@ async function ensureSchemaPatches() {
     { table: 'sharepoint_migrations', column: 'updated_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`updated_items\` int NOT NULL DEFAULT 0` },
     // SharePoint : progression du parcours (barre en octets inutile en passe delta)
     { table: 'sharepoint_migrations', column: 'scanned_items', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`scanned_items\` int NOT NULL DEFAULT 0` },
+    // SharePoint : archivage des migrations terminées (même convention que `migrations`)
+    { table: 'sharepoint_migrations', column: 'archived', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`archived\` int NOT NULL DEFAULT 0` },
+    { table: 'sharepoint_migrations', column: 'archived_at', ddl: `ALTER TABLE \`sharepoint_migrations\` ADD COLUMN \`archived_at\` timestamp NULL` },
     // SharePoint : marqueur « touché par ce run » pour lister le contenu d'une passe
     { table: 'sharepoint_migrated_items', column: 'synced_at', ddl: `ALTER TABLE \`sharepoint_migrated_items\` ADD COLUMN \`synced_at\` timestamp NULL` },
     // Sens du parcours mail ('desc' = récents d'abord par défaut, 'asc' = anciens d'abord)
@@ -355,6 +358,8 @@ async function ensureSchemaPatches() {
         \`processed_bytes\` bigint NOT NULL DEFAULT 0,
         \`updated_items\` int NOT NULL DEFAULT 0,
         \`scanned_items\` int NOT NULL DEFAULT 0,
+        \`archived\` int NOT NULL DEFAULT 0,
+        \`archived_at\` timestamp NULL,
         \`migrate_versions\` boolean NOT NULL DEFAULT true,
         \`max_versions\` int NOT NULL DEFAULT 5,
         \`analyze_only\` boolean NOT NULL DEFAULT false,

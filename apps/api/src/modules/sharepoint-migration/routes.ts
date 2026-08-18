@@ -75,6 +75,8 @@ function toRecord(m: typeof sharepointMigrations.$inferSelect): SharepointMigrat
     processedBytes: m.processedBytes,
     updatedItems: m.updatedItems,
     scannedItems: m.scannedItems,
+    archived: m.archived === 1,
+    archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null,
     migrateVersions: m.migrateVersions,
     maxVersions: m.maxVersions,
     analyzeOnly: m.analyzeOnly,
@@ -149,12 +151,19 @@ sharepointMigrationRouter.get('/search-drives', requirePermission('migration:rea
 })
 
 // ── Historique ────────────────────────────────────────────────────────────────
+// `archived=1` renvoie l'historique, sinon les migrations actives. Le filtre est
+// fait en SQL : la liste active ne doit pas se diluer au fil des passes delta.
 sharepointMigrationRouter.get('/history', requirePermission('migration:read'), async (c) => {
+  const archivedFlag = ['1', 'true'].includes(c.req.query('archived') ?? '') ? 1 : 0
   const rows = await db
     .select()
     .from(sharepointMigrations)
+    .where(eq(sharepointMigrations.archived, archivedFlag))
     .orderBy(desc(sharepointMigrations.createdAt))
-  return c.json<SharepointMigrationHistoryResponse>({ migrations: rows.map(toRecord) })
+  return c.json<SharepointMigrationHistoryResponse>({
+    migrations: rows.map(toRecord),
+    total: rows.length,
+  })
 })
 
 // ── Création d'une migration ──────────────────────────────────────────────────
@@ -199,6 +208,11 @@ sharepointMigrationRouter.post('/:id/run', requirePermission('migration:write'),
   const id = c.req.param('id')
   const [row] = await db.select().from(sharepointMigrations).where(eq(sharepointMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  // Le worker ignore les archivées : sans ce garde-fou, le job resterait en
+  // 'pending' pour toujours sans que rien ne le traite.
+  if (row.archived === 1) {
+    return c.json({ error: 'Migration archivée — désarchive-la avant de la relancer' }, 409)
+  }
   await db
     .update(sharepointMigrations)
     .set({ status: 'pending', errorDetails: null })
@@ -232,6 +246,51 @@ sharepointMigrationRouter.delete('/:id', requirePermission('migration:write'), a
   await db.delete(sharepointMigratedItems).where(eq(sharepointMigratedItems.migrationId, id))
   await db.delete(sharepointMigrations).where(eq(sharepointMigrations.id, id))
   return c.json({ ok: true })
+})
+
+// ── Archiver / désarchiver ────────────────────────────────────────────────────
+// Une migration archivée sort de la liste active ET du polling du worker.
+// On refuse d'archiver un run en cours : il continuerait en arrière-plan sans
+// être visible nulle part.
+sharepointMigrationRouter.post('/:id/archive', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db
+    .select()
+    .from(sharepointMigrations)
+    .where(eq(sharepointMigrations.id, id))
+    .limit(1)
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (row.status === 'running' || row.status === 'pending') {
+    return c.json(
+      { error: 'Migration en cours — mets-la en pause avant de l\'archiver' },
+      409,
+    )
+  }
+  await db
+    .update(sharepointMigrations)
+    .set({ archived: 1, archivedAt: new Date() })
+    .where(eq(sharepointMigrations.id, id))
+  const [updated] = await db
+    .select()
+    .from(sharepointMigrations)
+    .where(eq(sharepointMigrations.id, id))
+    .limit(1)
+  return c.json(toRecord(updated!))
+})
+
+sharepointMigrationRouter.post('/:id/unarchive', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  await db
+    .update(sharepointMigrations)
+    .set({ archived: 0, archivedAt: null })
+    .where(eq(sharepointMigrations.id, id))
+  const [updated] = await db
+    .select()
+    .from(sharepointMigrations)
+    .where(eq(sharepointMigrations.id, id))
+    .limit(1)
+  if (!updated) return c.json({ error: 'Not Found' }, 404)
+  return c.json(toRecord(updated))
 })
 
 // ── Erreurs détaillées ────────────────────────────────────────────────────────
