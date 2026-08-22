@@ -333,7 +333,15 @@ async function processMigration(job: SharepointMigration) {
      */
     const doneRefs = new Map<string, { ref: number; gdFileId: string | null }>()
     for (const r of existing) {
-      if (r.isFolder || r.status !== 'success') continue
+      if (r.isFolder) continue
+      // On retient un item dès qu'un fichier Google EXISTE pour lui, même si la
+      // dernière passe a échoué (une révision delta en erreur laisse la ligne en
+      // 'error' mais conserve le gd_file_id). Sans ça, la passe suivante le
+      // prendrait pour un nouveau fichier et en CRÉERAIT UN DOUBLON dans le
+      // Drive — Google autorise deux fichiers de même nom dans un dossier.
+      // La date de référence n'ayant pas été mise à jour, la révision est
+      // simplement retentée.
+      if (r.status !== 'success' && !r.gdFileId) continue
       // Le repli `createdAt` est l'instant de l'INSERT, donc APRÈS la lecture du
       // fichier côté SharePoint (jusqu'à plusieurs minutes pour un gros fichier
       // streamé). Une modif survenue dans cet intervalle aurait une date < createdAt
@@ -390,9 +398,31 @@ async function processMigration(job: SharepointMigration) {
       }
       return p
     }
+    /**
+     * Auteurs dont l'usurpation est inutilisable : Drive répond 404/403 sur TOUS
+     * leurs appels (service Drive désactivé pour le compte, licence absente…).
+     * Sans cette liste, chacun de leurs fichiers repaie un aller-retour perdu —
+     * et sur le chemin bufferisé, un téléchargement complet jeté.
+     */
+    const brokenImpersonation = new Set<string>()
+
+    /** Coupe l'usurpation d'un auteur dès que Drive la déclare inaccessible. */
+    const markImpersonationBroken = (impersonate: string | undefined, err: unknown): void => {
+      if (!impersonate || brokenImpersonation.has(impersonate)) return
+      const msg = err instanceof Error ? err.message : String(err)
+      // Les erreurs Drive sont formatées « … échoué (404): … » par le service.
+      if (!/\((?:403|404)\)/.test(msg)) return
+      brokenImpersonation.add(impersonate)
+      console.warn(
+        `[sharepoint] usurpation désactivée pour ${impersonate} — Drive inaccessible (404/403). ` +
+          `Ses fichiers suivants seront attribués au compte admin. ` +
+          `À vérifier côté Admin Console : le service Drive est-il activé pour ce compte ?`,
+      )
+    }
+
     /** Renvoie l'email à usurper (membre garanti) ou undefined (→ repli admin). */
     const impersonationFor = async (gohUpn: string | undefined): Promise<string | undefined> => {
-      if (gohUpn && gohUpn.toLowerCase() !== adminLower) {
+      if (gohUpn && !brokenImpersonation.has(gohUpn) && gohUpn.toLowerCase() !== adminLower) {
         const permId = await ensureMember(gohUpn)
         if (permId) return gohUpn
       }
@@ -448,18 +478,20 @@ async function processMigration(job: SharepointMigration) {
       if (size > STREAM_THRESHOLD_BYTES) {
         realBytes += size
         await withMem(CHUNK_MEM_COST, async () =>
-          addRevisionStreamed({
-            fileId: gdFileId,
-            openStream: () => openItemContentStream(job.driveId, file.id),
+          addRevisionStreamedWithFallback(
+            gdFileId,
+            () => openItemContentStream(job.driveId, file.id),
             size,
             impersonate,
-          }),
+          ),
         )
       } else {
         await withMem(size, async () => {
           const { buffer } = await downloadItemContent(job.driveId, file.id)
           realBytes += buffer.byteLength
-          await addRevision({ fileId: gdFileId, body: buffer, impersonate })
+          // Repli admin OBLIGATOIRE ici : sans lui, une usurpation cassée fait
+          // échouer le fichier et son contenu reste PÉRIMÉ dans le Drive.
+          await addRevisionWithFallback(gdFileId, buffer, impersonate)
         })
       }
       // La date de la révision n'est pas inscriptible, mais le modifiedTime du
@@ -627,6 +659,7 @@ async function processMigration(job: SharepointMigration) {
         return await uploadFile({ name: file.name, parentId: gdParentId, body: buffer, meta, impersonate })
       } catch (e) {
         if (!impersonate) throw e
+        markImpersonationBroken(impersonate, e)
         console.warn(
           `[sharepoint] upload usurpé (${impersonate}) échoué pour ${file.name}, repli admin:`,
           e instanceof Error ? e.message : e,
@@ -645,8 +678,32 @@ async function processMigration(job: SharepointMigration) {
         await addRevision({ fileId, body: buffer, impersonate })
       } catch (e) {
         if (!impersonate) throw e
+        markImpersonationBroken(impersonate, e)
         console.warn(`[sharepoint] révision usurpée (${impersonate}) échouée, repli admin:`, e instanceof Error ? e.message : e)
         await addRevision({ fileId, body: buffer })
+      }
+    }
+
+    /**
+     * Idem en FLUX. Le repli doit ré-ouvrir la source : le premier flux a été
+     * consommé (partiellement) par la tentative usurpée, il n'est pas rejouable.
+     */
+    const addRevisionStreamedWithFallback = async (
+      fileId: string,
+      openStream: () => Promise<{ stream: ReadableStream<Uint8Array>; size: number | null }>,
+      size: number,
+      impersonate: string | undefined,
+    ): Promise<void> => {
+      try {
+        await addRevisionStreamed({ fileId, openStream, size, impersonate })
+      } catch (e) {
+        if (!impersonate) throw e
+        markImpersonationBroken(impersonate, e)
+        console.warn(
+          `[sharepoint] révision streamée usurpée (${impersonate}) échouée, repli admin:`,
+          e instanceof Error ? e.message : e,
+        )
+        await addRevisionStreamed({ fileId, openStream, size })
       }
     }
 
@@ -971,7 +1028,17 @@ async function processMigration(job: SharepointMigration) {
                   ),
                 )
               // Le fichier était déjà compté dans `migrated` : on ne le recompte
-              // pas, on trace juste la mise à jour.
+              // pas, on trace juste la mise à jour. EXCEPTION : une reprise après
+              // échec — la ligne était en 'error', donc absente de `doneFiles` et
+              // jamais comptée. Sans ce rattrapage, le compteur sous-estimerait
+              // définitivement le nombre de fichiers migrés.
+              if (!doneFiles.has(file.id)) {
+                doneFiles.add(file.id)
+                migrated++
+                migratedBytes += file.size ?? 0
+                // Pas de `failed--` : ce compteur ne recense que les échecs du
+                // run courant, or cette ligne a échoué lors d'un run précédent.
+              }
               updated++
               doneRefs.set(file.id, { ref: v.spMod, gdFileId: v.gdFileId })
               continue
