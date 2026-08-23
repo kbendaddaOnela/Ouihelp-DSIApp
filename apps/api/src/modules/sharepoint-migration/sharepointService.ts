@@ -84,7 +84,21 @@ async function graphFetchWithRetry(url: string, token: string, label: string): P
   const MAX_ATTEMPTS = 5
   let delay = 1500
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
+    let res: Response
+    try {
+      res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
+    } catch (e) {
+      // Un timeout ou une coupure réseau LÈVE une exception : il n'y a aucun
+      // statut HTTP, donc le retry par statut ci-dessous ne s'appliquait pas.
+      // Sans ce rattrapage, un seul appel lent (ex. listChildren sur un gros
+      // dossier) faisait échouer TOUTE la migration.
+      if (attempt === MAX_ATTEMPTS) throw e
+      const msg = e instanceof Error ? e.message : String(e)
+      console.warn(`[sharepoint] ${label} échec réseau (${msg}) — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${delay}ms`)
+      await new Promise((r) => setTimeout(r, delay))
+      delay = Math.min(delay * 2, 16_000)
+      continue
+    }
     if (res.ok || res.status === 404) return res
     if (!RETRYABLE.has(res.status) || attempt === MAX_ATTEMPTS) return res
     const retryAfter = res.headers.get('Retry-After')
