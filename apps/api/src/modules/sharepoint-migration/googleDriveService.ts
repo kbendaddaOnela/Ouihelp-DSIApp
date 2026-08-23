@@ -49,7 +49,18 @@ async function googleFetchWithRetry(
 ): Promise<Response> {
   let delay = 2000
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const res = await run()
+    let res: Response
+    try {
+      res = await run()
+    } catch (e) {
+      // Idem côté Google : un timeout lève, il n'a pas de statut à tester.
+      if (attempt === MAX_ATTEMPTS) throw e
+      const msg = e instanceof Error ? e.message : String(e)
+      console.warn(`[sharepoint] ${label} échec réseau (${msg}) — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${delay}ms`)
+      await new Promise((r) => setTimeout(r, delay))
+      delay = Math.min(delay * 2, 60_000)
+      continue
+    }
     if (res.ok || res.status === 308 || res.status === 404) return res
     // On doit lire le corps pour distinguer throttling / vraie erreur : on
     // renvoie donc une copie exploitable par l'appelant.
