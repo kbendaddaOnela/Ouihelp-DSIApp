@@ -12,7 +12,14 @@ import { cn } from '@/lib/utils'
 import { useCreateAccount, useSearchManagers, useAgencies } from '../hooks/useAccounts'
 
 function normalizePart(s: string): string {
-  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '')
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // diacritiques
+    .replace(/[\s_]+/g, '-') // espaces → tiret (prénoms/noms composés)
+    .replace(/[^a-z-]/g, '') // ne garde que lettres et tiret
+    .replace(/-+/g, '-') // tirets multiples → un seul
+    .replace(/^-|-$/g, '') // pas de tiret en début/fin
 }
 function capitalize(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : ''
