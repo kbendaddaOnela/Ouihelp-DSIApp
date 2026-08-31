@@ -15,6 +15,7 @@ const ROUTE_LABELS: Record<string, string> = {
   migration: 'Migration ONELA',
   'shared-mailbox': 'Migration Shared Mailbox',
   'sharepoint-migration': 'Migration SharePoint',
+  'sharepoint-ximi': 'Migration SharePoint Ximi',
 }
 
 const ROLE_LABELS = {

@@ -70,3 +70,21 @@ export type {
   SharepointChangedItem,
   SharepointMigrationChangesResponse,
 } from './types/sharepointMigration'
+
+export type {
+  XimiMigrationStatus,
+  XimiStepStatus,
+  XimiSourceSite,
+  XimiSourceSitesResponse,
+  XimiTargetGroup,
+  XimiTargetGroupsResponse,
+  CreateXimiMigrationRequest,
+  XimiMigrationRecord,
+  XimiMigrationHistoryResponse,
+  XimiMappingRow,
+  XimiMappingResponse,
+  XimiProblemItem,
+  XimiMigrationErrorsResponse,
+  XimiChangedItem,
+  XimiMigrationChangesResponse,
+} from './types/ximiMigration'

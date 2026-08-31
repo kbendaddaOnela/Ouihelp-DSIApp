@@ -11,6 +11,7 @@ import {
   ArrowRightLeft,
   Mail,
   HardDriveDownload,
+  Network,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAnyPermission } from '@/hooks/usePermission'
@@ -41,6 +42,12 @@ const NAV_ITEMS: NavItem[] = [
     path: '/sharepoint-migration',
     label: 'Migration SharePoint',
     icon: HardDriveDownload,
+    requiredPermissions: ['migration:read'],
+  },
+  {
+    path: '/sharepoint-ximi',
+    label: 'Migration SharePoint Ximi',
+    icon: Network,
     requiredPermissions: ['migration:read'],
   },
   {

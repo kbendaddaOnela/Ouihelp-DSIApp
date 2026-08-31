@@ -20,6 +20,7 @@ const BudgetPage = lazy(() => import('@/modules/budget/BudgetPage'))
 const MigrationPage = lazy(() => import('@/modules/migration/MigrationPage'))
 const SharedMailboxPage = lazy(() => import('@/modules/shared-mailbox/SharedMailboxPage'))
 const SharepointMigrationPage = lazy(() => import('@/modules/sharepoint-migration/SharepointMigrationPage'))
+const XimiMigrationPage = lazy(() => import('@/modules/sharepoint-ximi/XimiMigrationPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -120,6 +121,14 @@ export function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <SharepointMigrationPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="sharepoint-ximi"
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <XimiMigrationPage />
                   </Suspense>
                 }
               />

@@ -6,6 +6,7 @@ import { inventoryRouter } from '../modules/inventory/routes'
 import { budgetRouter } from '../modules/budget/routes'
 import { sharedMailboxRouter } from '../modules/shared-mailbox/routes'
 import { sharepointMigrationRouter } from '../modules/sharepoint-migration/routes'
+import { ximiMigrationRouter } from '../modules/sharepoint-ximi/routes'
 import { onelaContactsRouter } from '../modules/onela-contacts/routes'
 import { accountsRouter } from '../modules/accounts/routes'
 
@@ -18,6 +19,7 @@ apiRouter.route('/inventory', inventoryRouter)
 apiRouter.route('/budget', budgetRouter)
 apiRouter.route('/shared-mailbox', sharedMailboxRouter)
 apiRouter.route('/sharepoint-migration', sharepointMigrationRouter)
+apiRouter.route('/sharepoint-ximi', ximiMigrationRouter)
 apiRouter.route('/onela-contacts', onelaContactsRouter)
 apiRouter.route('/accounts', accountsRouter)
 
