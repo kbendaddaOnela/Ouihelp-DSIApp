@@ -16,6 +16,14 @@ async function columnExists(table: string, column: string): Promise<boolean> {
   return rows.length > 0
 }
 
+async function columnIsNullable(table: string, column: string): Promise<boolean> {
+  const [rows] = (await pool.query(
+    `SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+    [table, column]
+  )) as [Array<{ IS_NULLABLE: string }>, unknown]
+  return rows[0]?.IS_NULLABLE === 'YES'
+}
+
 async function tableExists(table: string): Promise<boolean> {
   const [rows] = (await pool.query(
     `SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
@@ -104,6 +112,25 @@ async function ensureSchemaPatches() {
     { table: 'account_creations', column: 'step_send_as', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_send_as\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
     // Accounts : import annuaire ONELA dans les contacts Google (étape 8)
     { table: 'account_creations', column: 'step_contacts_onela', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_contacts_onela\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    // Boîtes partagées : nouveau mode « compte Google classique » (licence Business
+    // Plus hors app + délégations Gmail). Les migrations existantes restent 'group'.
+    { table: 'shared_migrations', column: 'mode', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`mode\` enum('group','account') NOT NULL DEFAULT 'group'` },
+    { table: 'shared_migrations', column: 'target_user_email', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`target_user_email\` varchar(255)` },
+    { table: 'shared_migrations', column: 'target_user_alias', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`target_user_alias\` varchar(255)` },
+    { table: 'shared_migrations', column: 'target_display_name', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`target_display_name\` varchar(255)` },
+    { table: 'shared_migrations', column: 'target_user_id', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`target_user_id\` varchar(255)` },
+    { table: 'shared_migrations', column: 'target_password', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`target_password\` varchar(255)` },
+    { table: 'shared_migrations', column: 'step_create_account', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`step_create_account\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'shared_migrations', column: 'create_account_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`create_account_error\` text` },
+    { table: 'shared_migrations', column: 'step_license', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`step_license\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'shared_migrations', column: 'license_ack_at', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_ack_at\` timestamp NULL` },
+    { table: 'shared_migrations', column: 'license_ack_by', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_ack_by\` varchar(255)` },
+    { table: 'shared_migrations', column: 'step_alias_send_as', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`step_alias_send_as\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'shared_migrations', column: 'alias_send_as_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`alias_send_as_error\` text` },
+    { table: 'shared_migrations', column: 'step_delegates', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`step_delegates\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'shared_migrations', column: 'delegates_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`delegates_error\` text` },
+    // Id Gmail du message importé (mode account ; null en mode group)
+    { table: 'shared_migrated_messages', column: 'gmail_message_id', ddl: `ALTER TABLE \`shared_migrated_messages\` ADD COLUMN \`gmail_message_id\` varchar(255)` },
   ]
   for (const p of columnPatches) {
     try {
@@ -116,6 +143,40 @@ async function ensureSchemaPatches() {
     } catch (err) {
       console.error(`[migrate] Patch failed: ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
     }
+  }
+
+  // Les colonnes « groupe » deviennent optionnelles : en mode 'account' la cible
+  // est un compte Google, pas un groupe. Rendre NULLABLE est rétro-compatible
+  // (l'ancien code continue d'écrire une valeur).
+  const nullablePatches: Array<{ table: string; column: string; ddl: string }> = [
+    { table: 'shared_migrations', column: 'target_group_email', ddl: `ALTER TABLE \`shared_migrations\` MODIFY COLUMN \`target_group_email\` varchar(255) NULL` },
+    { table: 'shared_migrations', column: 'target_group_name', ddl: `ALTER TABLE \`shared_migrations\` MODIFY COLUMN \`target_group_name\` varchar(255) NULL` },
+  ]
+  for (const p of nullablePatches) {
+    try {
+      if (!(await columnExists(p.table, p.column))) continue
+      if (await columnIsNullable(p.table, p.column)) continue
+      await db.execute(sql.raw(p.ddl))
+      console.log(`[migrate] Patch OK (nullable): ${p.table}.${p.column}`)
+    } catch (err) {
+      console.error(`[migrate] Patch failed (nullable): ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Les migrations legacy (mode 'group') n'ont pas d'étape « compte » : on les
+  // marque 'skipped' une bonne fois pour que l'UI ne les affiche pas en attente.
+  try {
+    if (await columnExists('shared_migrations', 'step_create_account')) {
+      await db.execute(
+        sql.raw(
+          `UPDATE \`shared_migrations\` SET \`step_create_account\`='skipped', \`step_license\`='skipped', ` +
+            `\`step_alias_send_as\`='skipped', \`step_delegates\`='skipped' ` +
+            `WHERE \`mode\`='group' AND \`step_create_account\`='pending'`,
+        ),
+      )
+    }
+  } catch (err) {
+    console.error('[migrate] Backfill étapes shared_migrations legacy échoué:', err instanceof Error ? err.message : String(err))
   }
 
   // Conversions charset pour supporter les emojis (utf8mb4)
@@ -291,6 +352,22 @@ async function ensureSchemaPatches() {
         PRIMARY KEY (\`id\`),
         UNIQUE KEY \`shared_migrated_messages_unique\` (\`shared_migration_id\`, \`graph_message_id\`),
         KEY \`idx_shared_msg_migration_id\` (\`shared_migration_id\`)
+      )`,
+    },
+    {
+      table: 'shared_mailbox_delegates',
+      ddl: `CREATE TABLE \`shared_mailbox_delegates\` (
+        \`id\` int NOT NULL AUTO_INCREMENT,
+        \`shared_migration_id\` varchar(36) NOT NULL,
+        \`source_upn\` varchar(255),
+        \`google_email\` varchar(255) NOT NULL,
+        \`display_name\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`status\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+        \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`shared_mailbox_delegates_unique\` (\`shared_migration_id\`, \`google_email\`),
+        KEY \`idx_shared_delegates_migration_id\` (\`shared_migration_id\`)
       )`,
     },
     {

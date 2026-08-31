@@ -22,7 +22,7 @@ Application interne ONELA pilotant la migration **Microsoft 365 (tenant ONELA)**
 | Module | Rôle |
 |---|---|
 | **migration** | Migration d'un utilisateur : mail + calendrier + contacts + alias + send-as + OU + redirection Exchange. Le plus gros et le plus critique. |
-| **shared-mailbox** | Boîtes partagées Exchange → Google Groups / Gmail-label-as-shared-mailbox. Worker indépendant. |
+| **shared-mailbox** | Boîtes partagées Exchange → **compte Google classique** (licence Business Plus + délégations Gmail). Worker indépendant. Ancien mode Google Group conservé en lecture. Voir §14. |
 | **migration-targets** | Import CSV de la cible totale (dashboard de suivi global par département/site). |
 | **inventory** | Cache Entra (users + devices), sync incrémentale. |
 | **budget** | Suivi des coûts (entité de facturation, quantité, coût unitaire). |
@@ -459,3 +459,63 @@ Portées de l'ancienne app interne (`create_user`) dans `packages/shared/src/typ
 | `POST /:id/finalize-google` | Reprendre la finalisation Google (SCIM → OU → alias) |
 | `POST /:id/retry` | Rejouer le provisioning (étapes 1-3 en erreur) |
 | `DELETE /:id` (`?purgeRouting=1`) | Supprimer le suivi (+ le MailContact ONELA si `purgeRouting`) |
+
+---
+
+## 14. Module `shared-mailbox` (Boîtes partagées → compte Google + délégations)
+
+Refondu le **31/08/2026**. Une boîte aux lettres partagée Exchange devient un **compte Google classique** (licence **Business Plus**), et les personnes du service y accèdent par **délégation Gmail**.
+
+### 14.1 Pourquoi ce changement (l'ancien mode « Google Group »)
+
+La v1 archivait la BAL dans un **Google Group** pour ne pas consommer de licence. En usage réel, c'est inexploitable pour les collaborateurs ONELA : pas de vraie boîte, pas de brouillons partagés, pas de dossiers, ergonomie très éloignée d'Outlook — d'où les contournements (libellé + filtre + send-as chez chaque membre) qui ne convainquaient pas non plus.
+
+Le mode `account` restitue exactement ce que les utilisateurs avaient : la boîte apparaît dans le sélecteur de compte Gmail, avec lecture, réponse, envoi et brouillons. Coût : une licence Business Plus par BAL — arbitrage assumé.
+
+Les migrations déjà réalisées restent en mode `group` (colonne `mode`), consultables et relançables ; le mode groupe n'est **plus proposé à la création**.
+
+### 14.2 Cible et adressage (le piège à connaître)
+
+Même convention que les comptes nominatifs :
+
+| | Exchange (source) | Google (cible) |
+|---|---|---|
+| BAL partagée | `compta@onela.com` | primaire `compta@mig.onela.com` + alias `compta@onela.com` |
+| Personne | `pnom@onela.com` | primaire `prenom.nom@mig.onela.com` + alias `prenom.nom@onela.com` |
+
+**Les deux identités n'ont aucune adresse en commun.** L'API de délégation Gmail exige l'adresse **primaire** Google : l'app résout donc `pnom@onela.com` → `prenom.nom@mig.onela.com` via la table `migrations` (mapping établi lors de la migration de la personne), puis `account_creations`, puis en dernier recours l'annuaire Google (si l'adresse ONELA y existe comme alias). Une personne non encore migrée ressort « compte Google non retrouvé » : elle s'ajoute à la main plus tard.
+
+L'adresse primaire étant déjà sur `mig.onela.com`, le **dual delivery** vise directement cette adresse (pas d'alias de routage à poser, contrairement au mode groupe).
+
+### 14.3 Séquence
+
+1. **Compte Google** — création directe via Admin SDK Directory (`users.insert`), mot de passe aléatoire jamais communiqué (personne ne s'y connecte), OU `GOOGLE_SHARED_MAILBOX_OU_PATH` (défaut : celle des users ONELA). Idempotent.
+2. **Licence Business Plus** — **hors application** (OU ou console admin). Le worker s'arrête ici (`step_mail_import = 'skipped'`) et attend le bouton **« Licence attribuée »**, qui vérifie `isMailboxSetup` avant de relancer : sans Gmail provisionné, l'import échouerait avec des erreurs illisibles.
+3. **Alias + « Envoyer en tant que »** — alias `@onela.com` posé sur le compte, identité send-as créée et marquée **par défaut** (les réponses partent avec l'adresse historique du service). Non bloquant : rejouable via un bouton.
+4. **Dual delivery** — transport rule Exchange `BlindCopyTo` → adresse primaire du compte (posée automatiquement, rejouable).
+5. **Import mail** — Exchange → Gmail, **dossiers convertis en libellés**, dédup par `Message-ID`, reprise idempotente (`shared_migrated_messages`), delta via `mail_last_sync_at`. Exactement le traitement d'un utilisateur nominatif (mêmes helpers `mailService`).
+6. **Délégations Gmail** — posées sur chaque délégué de `shared_mailbox_delegates`. Rejouable ; ajout/retrait possible à tout moment depuis la carte.
+
+### 14.4 Prérequis d'exploitation
+
+- **Scopes DwD** (Google Admin Console) : `admin.directory.user` (création du compte, alias), `gmail.settings.sharing` (délégations + send-as), `gmail.settings.basic`, `https://mail.google.com/` (import). Les trois derniers sont déjà en place pour la migration classique.
+- **Délégation Gmail** : nécessite une édition qui la supporte (Business Plus convient) et des comptes du **même domaine** — c'est le cas, tous les comptes sont primaires sur `mig.onela.com`. Si un délégué venait d'un autre domaine du Workspace, activer la délégation inter-domaines en console.
+- **App reg ONELA** : `Exchange.ManageAsApp` + rôle *Recipient Management* — déjà requis pour les transport rules ; sert aussi à `Get-MailboxPermission` (pré-remplissage des délégués).
+- La **suppression** d'une migration dans l'UI n'efface que le suivi : compte, licence et délégations restent en place.
+
+### 14.5 Endpoints
+
+| Endpoint | Usage |
+|---|---|
+| `GET /shared-mailbox/search?q=` | Lister les BAL partagées Exchange |
+| `POST /shared-mailbox` · `GET /history` | Créer (mode `account`) / lister |
+| `POST /:id/run` · `/:id/stop` · `DELETE /:id` | Lancer-reprendre / arrêter / supprimer le suivi |
+| `GET /:id/account` | État du compte Google (existence, OU, alias, boîte Gmail prête) |
+| `POST /:id/license-ack` | Acquitter la licence (vérifie `isMailboxSetup`) et lancer l'import |
+| `POST /:id/alias-send-as` | (Re)poser alias + « Envoyer en tant que » par défaut |
+| `GET /:id/delegate-candidates` | Candidats issus du FullAccess Exchange, résolus en comptes Google |
+| `GET /google-users/search?q=` | Recherche annuaire Google (ajout manuel d'un délégué) |
+| `POST /:id/delegates` · `DELETE /:id/delegates/:delegateId` · `POST /:id/delegates/apply` | Ajouter / retirer / réappliquer les délégations |
+| `GET /:id/delegates/live` | Délégations réellement posées côté Gmail |
+| `GET`/`POST`/`DELETE /:id/dual-delivery` | Transport rule BCC |
+| `POST /:id/group/*` · `/:id/members/*` | Réglages **legacy** (refusés si `mode = 'account'`) |

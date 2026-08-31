@@ -8,11 +8,22 @@ import {
 } from './hooks/useSharedMailbox'
 import { SharedMailboxCard } from './components/SharedMailboxCard'
 
+/** Domaine de transition utilisé pour l'adresse primaire du compte Google. */
+const TRANSITION_PREFIX = 'mig'
+
+/** `compta@onela.com` → `compta@mig.onela.com` (adresse primaire du compte cible). */
+function buildTargetPrimary(email: string): string {
+  const [local, domain] = email.split('@')
+  if (!local || !domain) return ''
+  return `${local}@${TRANSITION_PREFIX}.${domain}`
+}
+
 export default function SharedMailboxPage() {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<SharedMailbox | null>(null)
-  const [targetGroupEmail, setTargetGroupEmail] = useState('')
-  const [targetGroupName, setTargetGroupName] = useState('')
+  const [targetUserEmail, setTargetUserEmail] = useState('')
+  const [targetUserAlias, setTargetUserAlias] = useState('')
+  const [targetDisplayName, setTargetDisplayName] = useState('')
   const [historyExpanded, setHistoryExpanded] = useState(true)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -30,23 +41,42 @@ export default function SharedMailboxPage() {
 
   const onSelect = (mb: SharedMailbox) => {
     setSelected(mb)
-    // Convention : le groupe Google a la MÊME adresse que la BAL Exchange
-    // (ex. dsi@onela.com sur Exchange ET sur Google Workspace).
-    // Le dual delivery utilise une adresse de routage Google (test-google-a.com)
-    // pour éviter la boucle, géré automatiquement côté API.
-    if (!targetGroupEmail) setTargetGroupEmail(mb.email)
-    if (!targetGroupName) setTargetGroupName(mb.displayName)
+    // Convention identique aux comptes nominatifs : l'adresse PRIMAIRE Google est
+    // sur le domaine de transition (mig.onela.com), l'adresse historique de la BAL
+    // devient l'alias — et l'adresse d'envoi par défaut.
+    setTargetUserEmail(buildTargetPrimary(mb.email))
+    setTargetUserAlias(mb.email)
+    setTargetDisplayName(mb.displayName)
+    setSubmitError(null)
+  }
+
+  const reset = () => {
+    setSelected(null)
+    setTargetUserEmail('')
+    setTargetUserAlias('')
+    setTargetDisplayName('')
     setSubmitError(null)
   }
 
   const onSubmit = () => {
     if (!selected) return
-    if (!/^[^@]+@[^@]+\.[^@]+$/.test(targetGroupEmail)) {
-      setSubmitError('Adresse du groupe Google invalide')
+    const isEmail = (s: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)
+    if (!isEmail(targetUserEmail)) {
+      setSubmitError('Adresse primaire du compte Google invalide')
       return
     }
-    if (!targetGroupName.trim()) {
-      setSubmitError('Nom du groupe requis')
+    if (!isEmail(targetUserAlias)) {
+      setSubmitError('Alias invalide')
+      return
+    }
+    if (targetUserEmail.toLowerCase() === targetUserAlias.toLowerCase()) {
+      setSubmitError(
+        'L’adresse primaire doit être sur le domaine de transition (mig.onela.com) et différer de l’alias.',
+      )
+      return
+    }
+    if (!targetDisplayName.trim()) {
+      setSubmitError('Nom d’affichage requis')
       return
     }
     createMigration(
@@ -55,18 +85,19 @@ export default function SharedMailboxPage() {
         onelaUpn: selected.upn,
         onelaEmail: selected.email,
         onelaDisplayName: selected.displayName,
-        targetGroupEmail: targetGroupEmail.trim().toLowerCase(),
-        targetGroupName: targetGroupName.trim(),
+        targetUserEmail: targetUserEmail.trim().toLowerCase(),
+        targetUserAlias: targetUserAlias.trim().toLowerCase(),
+        targetDisplayName: targetDisplayName.trim(),
       },
       {
         onSuccess: () => {
-          setSelected(null)
-          setTargetGroupEmail('')
-          setTargetGroupName('')
+          reset()
           setQuery('')
         },
         onError: (err: unknown) => {
-          setSubmitError(err instanceof Error ? err.message : 'Échec de la création')
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const apiErr = (err as any)?.response?.data?.error
+          setSubmitError(apiErr || (err instanceof Error ? err.message : 'Échec de la création'))
         },
       },
     )
@@ -77,8 +108,8 @@ export default function SharedMailboxPage() {
       <header className="space-y-1">
         <h1 className="text-2xl font-bold text-gray-900">Migration Shared Mailbox</h1>
         <p className="text-sm text-gray-600">
-          Migre une boîte aux lettres partagée Exchange vers l'archive d'un Google Group
-          — sans consommer de licence Workspace.
+          Migre une boîte aux lettres partagée Exchange vers un <strong>compte Google classique</strong>{' '}
+          (licence Business Plus), avec délégation Gmail pour les personnes du service.
         </p>
       </header>
 
@@ -139,23 +170,36 @@ export default function SharedMailboxPage() {
       {/* Formulaire cible */}
       {selected && (
         <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold text-gray-800">2. Cible Google Group</h2>
+          <h2 className="mb-3 text-sm font-semibold text-gray-800">2. Compte Google cible</h2>
           <div className="space-y-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-700">Adresse email du groupe</label>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                Adresse primaire (domaine de transition)
+              </label>
               <input
-                value={targetGroupEmail}
-                onChange={(e) => setTargetGroupEmail(e.target.value)}
-                placeholder="compta@ouihelp.com"
+                value={targetUserEmail}
+                onChange={(e) => setTargetUserEmail(e.target.value)}
+                placeholder="compta@mig.onela.com"
                 className="w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-700">Nom d'affichage du groupe</label>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                Alias définitif (= adresse actuelle de la BAL, et adresse d’envoi par défaut)
+              </label>
               <input
-                value={targetGroupName}
-                onChange={(e) => setTargetGroupName(e.target.value)}
-                placeholder="Compta"
+                value={targetUserAlias}
+                onChange={(e) => setTargetUserAlias(e.target.value)}
+                placeholder="compta@onela.com"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">Nom d’affichage du compte</label>
+              <input
+                value={targetDisplayName}
+                onChange={(e) => setTargetDisplayName(e.target.value)}
+                placeholder="Comptabilité"
                 className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
@@ -164,12 +208,7 @@ export default function SharedMailboxPage() {
             )}
             <div className="flex justify-end gap-2 pt-1">
               <button
-                onClick={() => {
-                  setSelected(null)
-                  setTargetGroupEmail('')
-                  setTargetGroupName('')
-                  setSubmitError(null)
-                }}
+                onClick={reset}
                 className="rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
                 Annuler
@@ -182,13 +221,21 @@ export default function SharedMailboxPage() {
                 {isCreating ? 'Création…' : 'Créer la migration'}
               </button>
             </div>
-            <p className="text-xs text-gray-500">
-              Convention : <strong>même adresse</strong> sur Exchange et Google. Si le groupe
-              n'existe pas, l'app le crée automatiquement (Admin SDK). Le dual delivery
-              utilise l'adresse de routage Google <code>&lt;localpart&gt;@&lt;domaine&gt;.test-google-a.com</code>
-              pour éviter la boucle. Active ensuite la « Collaborative Inbox » côté Google
-              Groups si tu veux que les membres puissent répondre depuis l'archive.
-            </p>
+            <div className="rounded bg-blue-50 px-3 py-2 text-xs text-blue-900">
+              <p className="font-medium">Enchaînement après création :</p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+                <li>L’app crée le compte Google (mot de passe aléatoire — personne ne s’y connecte).</li>
+                <li>
+                  <strong>Tu attribues la licence Business Plus</strong> dans la console Google, puis tu
+                  cliques « Licence attribuée » sur la carte.
+                </li>
+                <li>L’app pose l’alias + « Envoyer en tant que », importe les mails, puis les délégations.</li>
+                <li>
+                  Les délégués se choisissent sur la carte : pré-remplis depuis les accès FullAccess
+                  Exchange, complétables par recherche dans l’annuaire Google.
+                </li>
+              </ol>
+            </div>
           </div>
         </section>
       )}

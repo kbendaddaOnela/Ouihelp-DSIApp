@@ -19,6 +19,12 @@ export type {
 
 export type {
   SharedMailbox,
+  SharedMigrationMode,
+  SharedMailboxDelegate,
+  DelegateCandidate,
+  DelegateCandidatesResponse,
+  GoogleUserSuggestion,
+  SearchGoogleUsersResponse,
   CreateSharedMigrationRequest,
   SharedMigrationRecord,
   SearchSharedMailboxesResponse,
