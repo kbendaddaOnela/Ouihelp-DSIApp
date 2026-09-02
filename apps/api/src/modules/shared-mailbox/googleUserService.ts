@@ -21,6 +21,8 @@ import { getGoogleAccessTokenForUser } from '../migration/googleService'
 
 const SCOPE_DIRECTORY_USER = 'https://www.googleapis.com/auth/admin.directory.user'
 const SCOPE_GMAIL_SETTINGS_SHARING = 'https://www.googleapis.com/auth/gmail.settings.sharing'
+/** Accès complet à la boîte — déjà autorisé en DwD pour l'import mail. */
+const SCOPE_GMAIL_FULL = 'https://mail.google.com/'
 
 function adminEmail(): string {
   const e = process.env['GOOGLE_ADMIN_EMAIL']
@@ -193,37 +195,97 @@ interface GmailDelegate {
   verificationStatus?: 'accepted' | 'pending' | 'rejected' | 'expired'
 }
 
+/**
+ * Scopes acceptables pour `settings/delegates`, dans l'ordre d'essai.
+ *
+ * Google documente `gmail.settings.sharing` pour ces endpoints, mais renvoie
+ * selon les tenants un 403 « insufficient authentication scopes » avec ce
+ * scope seul — constaté en prod le 02/09/2026 sur dsi@mig.onela.com, alors que
+ * le même scope fonctionnait pour `settings/sendAs` sur la MÊME boîte.
+ * `https://mail.google.com/` (accès complet, déjà autorisé pour l'import mail)
+ * couvre les paramètres, donc on l'essaie en repli plutôt que de bloquer.
+ *
+ * Le scope qui passe est mémorisé pour ne pas repayer un aller-retour raté à
+ * chaque délégué.
+ */
+const DELEGATE_SCOPES = [SCOPE_GMAIL_SETTINGS_SHARING, SCOPE_GMAIL_FULL] as const
+let workingDelegateScope: string | null = null
+
+/** Vrai si la réponse est un refus de scope (et non un vrai refus de droit). */
+function isScopeRejection(status: number, body: string): boolean {
+  if (status !== 403 && status !== 401) return false
+  return /insufficient (authentication scopes|permission)|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(body)
+}
+
+interface DelegateResponse {
+  status: number
+  ok: boolean
+  body: string
+}
+
+/**
+ * Appelle `settings/delegates` en impersonnant la BOÎTE cible (la délégation se
+ * pose depuis le compte délégant), en essayant les scopes jusqu'à ce que l'un
+ * soit accepté.
+ */
 async function gmailDelegateFetch(
   mailboxEmail: string,
   path: string,
   init?: Parameters<typeof fetchWithTimeout>[1],
-): Promise<Response> {
-  // On impersonne la BOÎTE cible : la délégation se pose depuis le compte délégant.
-  const token = await getGoogleAccessTokenForUser(mailboxEmail, SCOPE_GMAIL_SETTINGS_SHARING)
-  return fetchWithTimeout(
-    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(mailboxEmail)}/settings/delegates${path}`,
-    {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        ...(init?.headers ?? {}),
+): Promise<DelegateResponse> {
+  const ordered = workingDelegateScope
+    ? [workingDelegateScope, ...DELEGATE_SCOPES.filter((s) => s !== workingDelegateScope)]
+    : [...DELEGATE_SCOPES]
+
+  const rejections: string[] = []
+  for (const scope of ordered) {
+    let token: string
+    try {
+      token = await getGoogleAccessTokenForUser(mailboxEmail, scope)
+    } catch (err) {
+      // unauthorized_client = scope absent de la delegation domain-wide
+      rejections.push(`${scope} → ${err instanceof Error ? err.message : String(err)}`)
+      continue
+    }
+    const res = await fetchWithTimeout(
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(mailboxEmail)}/settings/delegates${path}`,
+      {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(init?.headers ?? {}),
+        },
       },
-    },
+    )
+    const body = await res.text()
+    if (isScopeRejection(res.status, body)) {
+      rejections.push(`${scope} → ${res.status} ${body.slice(0, 200)}`)
+      continue
+    }
+    if (workingDelegateScope !== scope) {
+      workingDelegateScope = scope
+      console.log(`[shared-account] délégations Gmail : scope retenu = ${scope}`)
+    }
+    return { status: res.status, ok: res.ok, body }
+  }
+
+  throw new Error(
+    `Aucun scope accepté pour les délégations Gmail sur ${mailboxEmail}. ` +
+      `Autorise l'un de ces scopes pour le service account dans Google Admin Console → ` +
+      `Sécurité → Contrôles des API → Délégation à l'échelle du domaine : ` +
+      `${DELEGATE_SCOPES.join(' ou ')}. Détail des refus : ${rejections.join(' | ')}`,
   )
 }
 
 export async function listGmailDelegates(mailboxEmail: string): Promise<GmailDelegate[]> {
   const res = await gmailDelegateFetch(mailboxEmail, '')
   if (!res.ok) {
-    throw new Error(
-      `List delegates error (${res.status}) sur ${mailboxEmail}: ${(await res.text()).slice(0, 300)}`,
-    )
+    throw new Error(`List delegates error (${res.status}) sur ${mailboxEmail}: ${res.body.slice(0, 300)}`)
   }
-  const text = await res.text()
-  if (!text.trim()) return []
-  const data = JSON.parse(text) as { delegates?: GmailDelegate[] }
+  if (!res.body.trim()) return []
+  const data = JSON.parse(res.body) as { delegates?: GmailDelegate[] }
   return data.delegates ?? []
 }
 
@@ -248,10 +310,18 @@ export async function ensureGmailDelegate(
     body: JSON.stringify({ delegateEmail }),
   })
   if (!res.ok) {
-    const err = (await res.text()).slice(0, 400)
-    throw new Error(`Ajout délégation ${delegateEmail} sur ${mailboxEmail} : ${res.status} ${err}`)
+    const mailboxDomain = mailboxEmail.split('@')[1] ?? ''
+    const delegateDomain = delegateEmail.split('@')[1] ?? ''
+    const crossDomainHint =
+      mailboxDomain !== delegateDomain
+        ? ` — le délégué est sur un autre domaine (${delegateDomain}) que la boîte (${mailboxDomain}) :` +
+          ` la délégation inter-domaines doit être autorisée dans la console Google.`
+        : ''
+    throw new Error(
+      `Ajout délégation ${delegateEmail} sur ${mailboxEmail} : ${res.status} ${res.body.slice(0, 400)}${crossDomainHint}`,
+    )
   }
-  const data = (await res.json()) as GmailDelegate
+  const data = JSON.parse(res.body) as GmailDelegate
   return { created: true, verificationStatus: data.verificationStatus }
 }
 
@@ -262,7 +332,7 @@ export async function removeGmailDelegate(mailboxEmail: string, delegateEmail: s
   // 404 = déjà absent → idempotent
   if (!res.ok && res.status !== 404) {
     throw new Error(
-      `Suppression délégation ${delegateEmail} sur ${mailboxEmail} : ${res.status} ${(await res.text()).slice(0, 300)}`,
+      `Suppression délégation ${delegateEmail} sur ${mailboxEmail} : ${res.status} ${res.body.slice(0, 300)}`,
     )
   }
 }

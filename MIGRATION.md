@@ -498,7 +498,8 @@ L'adresse primaire étant déjà sur `mig.onela.com`, le **dual delivery** vise 
 
 ### 14.4 Prérequis d'exploitation
 
-- **Scopes DwD** (Google Admin Console) : `admin.directory.user` (création du compte, alias), `gmail.settings.sharing` (délégations + send-as), `gmail.settings.basic`, `https://mail.google.com/` (import). Les trois derniers sont déjà en place pour la migration classique.
+- **Scopes DwD** (Google Admin Console) : `admin.directory.user` (création du compte, alias), `gmail.settings.sharing` (send-as), `gmail.settings.basic`, `https://mail.google.com/` (import). Les trois derniers sont déjà en place pour la migration classique.
+- **Délégations Gmail — repli de scope** : constaté le 02/09/2026, l'endpoint `settings/delegates` peut renvoyer `403 insufficient authentication scopes` avec `gmail.settings.sharing` **alors que le même scope fonctionne pour `settings/sendAs` sur la même boîte**. L'app essaie donc `gmail.settings.sharing` puis `https://mail.google.com/` (superset déjà autorisé) et mémorise celui qui passe. Si les deux sont refusés, le message d'erreur nomme les scopes à autoriser.
 - **Délégation Gmail** : nécessite une édition qui la supporte (Business Plus convient) et des comptes du **même domaine** — c'est le cas, tous les comptes sont primaires sur `mig.onela.com`. Si un délégué venait d'un autre domaine du Workspace, activer la délégation inter-domaines en console.
 - **App reg ONELA** : `Exchange.ManageAsApp` + rôle *Recipient Management* — déjà requis pour les transport rules ; sert aussi à `Get-MailboxPermission` (pré-remplissage des délégués).
 - La **suppression** d'une migration dans l'UI n'efface que le suivi : compte, licence et délégations restent en place.
