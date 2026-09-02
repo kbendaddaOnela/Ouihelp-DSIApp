@@ -303,15 +303,14 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
         >
           Rafraîchir l’état
         </button>
-        {migration.stepAliasSendAs !== 'success' && (
-          <button
-            onClick={() => fixAlias(migration.id, { onError: alertOnError('Poser l’alias / send-as') })}
-            disabled={fixingAlias}
-            className="rounded bg-teal-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
-          >
-            {fixingAlias ? 'Application…' : 'Poser alias + « Envoyer en tant que »'}
-          </button>
-        )}
+        <button
+          onClick={() => fixAlias(migration.id, { onError: alertOnError('Réappliquer nom / alias / send-as') })}
+          disabled={fixingAlias}
+          title="Réaligne le nom du compte, l’alias et l’identité d’envoi par défaut"
+          className="rounded bg-teal-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+        >
+          {fixingAlias ? 'Application…' : 'Réappliquer nom + alias + « Envoyer en tant que »'}
+        </button>
       </div>
 
       {!licenseDone && (

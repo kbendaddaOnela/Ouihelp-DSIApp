@@ -38,6 +38,7 @@ import { ensureSendAs, setSendAsAsDefault } from './gmailUserSetupService'
 import {
   ensureSharedGoogleAccount,
   ensureGmailDelegate,
+  ensureGoogleUserName,
   strongRandomPassword,
   waitForMailboxSetup,
 } from './googleUserService'
@@ -282,8 +283,12 @@ async function processAccountMailbox(job: SharedMigration) {
         .set({ stepAliasSendAs: 'running', aliasSendAsError: null })
         .where(eq(sharedMigrations.id, job.id))
       try {
-        await addGoogleAlias(job.targetUserEmail, job.targetUserAlias)
         const displayName = job.targetDisplayName ?? job.onelaDisplayName
+        // Le nom du compte est ce que voient les délégués dans leur sélecteur
+        // de compte : on le réaligne à chaque passage (idempotent).
+        const renamed = await ensureGoogleUserName(job.targetUserEmail, displayName)
+        if (renamed.updated) console.log(`[shared/account] nom du compte → « ${renamed.fullName} »`)
+        await addGoogleAlias(job.targetUserEmail, job.targetUserAlias)
         await ensureSendAs(job.targetUserEmail, job.targetUserAlias, displayName)
         // L'adresse visible en émission doit être l'adresse historique du service
         await setSendAsAsDefault(job.targetUserEmail, job.targetUserAlias)

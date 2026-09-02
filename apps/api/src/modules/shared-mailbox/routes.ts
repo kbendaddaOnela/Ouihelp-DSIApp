@@ -35,6 +35,7 @@ import {
   removeGmailDelegate,
   listGmailDelegates,
   getGoogleUser,
+  ensureGoogleUserName,
 } from './googleUserService'
 import { resolveOnelaUpnsToGoogle, normalizeDelegateEmail } from './delegateService'
 import type {
@@ -365,8 +366,9 @@ sharedMailboxRouter.post('/:id/alias-send-as', requirePermission('migration:writ
     return c.json({ error: 'Compte cible non défini' }, 400)
   }
   try {
-    await addGoogleAlias(row.targetUserEmail, row.targetUserAlias)
     const displayName = row.targetDisplayName ?? row.onelaDisplayName
+    await ensureGoogleUserName(row.targetUserEmail, displayName)
+    await addGoogleAlias(row.targetUserEmail, row.targetUserAlias)
     await ensureSendAs(row.targetUserEmail, row.targetUserAlias, displayName)
     await setSendAsAsDefault(row.targetUserEmail, row.targetUserAlias)
     await db

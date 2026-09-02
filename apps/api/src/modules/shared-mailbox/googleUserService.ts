@@ -104,13 +104,30 @@ export interface CreateSharedAccountParams {
 }
 
 /**
+ * Découpe un nom d'affichage en givenName / familyName.
+ *
+ * L'Admin SDK exige les DEUX champs et calcule `fullName` en les concaténant :
+ * ce qui s'affiche dans le sélecteur de compte du délégué, c'est donc
+ * « givenName familyName ». Un marqueur ajouté au nom de famille (« Boîte
+ * partagée ») ressortait tel quel dans l'interface — on découpe plutôt le nom
+ * saisi sur le dernier espace, ce qui rend « Service DSI » à l'identique.
+ *
+ * Nom d'un seul mot : on tente un nom de famille vide, avec repli sur « . » si
+ * Google le refuse (les deux champs sont documentés comme requis).
+ */
+export function splitDisplayName(displayName: string): { givenName: string; familyName: string } {
+  const clean = displayName.trim().replace(/\s+/g, ' ')
+  const cut = clean.lastIndexOf(' ')
+  if (cut === -1) return { givenName: clean, familyName: '' }
+  return { givenName: clean.slice(0, cut), familyName: clean.slice(cut + 1) }
+}
+
+/** Repli quand Google refuse un nom de famille vide. */
+const FALLBACK_FAMILY_NAME = '.'
+
+/**
  * Crée le compte Google de la boîte partagée (idempotent : si l'adresse existe
  * déjà, on renvoie le compte existant sans le modifier).
- *
- * Le nom est éclaté en givenName/familyName car l'Admin SDK les exige tous les
- * deux ; pour une BAL le « prénom » est le nom du service et le « nom » un
- * marqueur explicite (« Boîte partagée ») qui rend l'objet identifiable dans
- * l'annuaire Google.
  */
 export async function ensureSharedGoogleAccount(
   p: CreateSharedAccountParams,
@@ -119,18 +136,27 @@ export async function ensureSharedGoogleAccount(
   if (existing) return { user: existing, created: false }
 
   const token = await directoryToken()
-  const res = await fetchWithTimeout('https://admin.googleapis.com/admin/directory/v1/users', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      primaryEmail: p.primaryEmail,
-      name: { givenName: p.displayName, familyName: 'Boîte partagée' },
-      password: p.password,
-      changePasswordAtNextLogin: false,
-      orgUnitPath: p.orgUnitPath ?? sharedMailboxOuPath(),
-      includeInGlobalAddressList: true,
-    }),
-  })
+  const name = splitDisplayName(p.displayName)
+
+  const post = async (familyName: string) =>
+    fetchWithTimeout('https://admin.googleapis.com/admin/directory/v1/users', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        primaryEmail: p.primaryEmail,
+        name: { givenName: name.givenName, familyName },
+        password: p.password,
+        changePasswordAtNextLogin: false,
+        orgUnitPath: p.orgUnitPath ?? sharedMailboxOuPath(),
+        includeInGlobalAddressList: true,
+      }),
+    })
+
+  let res = await post(name.familyName)
+  if (res.status === 400 && name.familyName === '') {
+    // Nom d'un seul mot refusé sans nom de famille → repli minimal
+    res = await post(FALLBACK_FAMILY_NAME)
+  }
   if (!res.ok) {
     const err = (await res.text()).slice(0, 400)
     if (res.status === 409) {
@@ -141,6 +167,42 @@ export async function ensureSharedGoogleAccount(
     throw new Error(`Google create user error (${res.status}) sur ${p.primaryEmail}: ${err}`)
   }
   return { user: toGoogleUser((await res.json()) as DirectoryUserPayload), created: true }
+}
+
+/**
+ * Aligne le nom du compte Google sur le nom d'affichage voulu (idempotent).
+ *
+ * Sert à corriger après coup les comptes créés avec l'ancienne convention
+ * (« <service> Boîte partagée ») : le nom est visible par les délégués dans
+ * leur sélecteur de compte.
+ */
+export async function ensureGoogleUserName(
+  email: string,
+  displayName: string,
+): Promise<{ updated: boolean; fullName: string }> {
+  const user = await getGoogleUser(email)
+  if (!user) throw new Error(`Compte ${email} introuvable`)
+  const wanted = displayName.trim().replace(/\s+/g, ' ')
+  if (user.displayName.trim() === wanted) return { updated: false, fullName: user.displayName }
+
+  const token = await directoryToken()
+  const name = splitDisplayName(wanted)
+  const patch = async (familyName: string) =>
+    fetchWithTimeout(`https://admin.googleapis.com/admin/directory/v1/users/${encodeURIComponent(email)}`, {
+      // PATCH (et non PUT) : PUT remplace la ressource entière et effacerait les
+      // autres champs du compte.
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: { givenName: name.givenName, familyName } }),
+    })
+
+  let res = await patch(name.familyName)
+  if (res.status === 400 && name.familyName === '') res = await patch(FALLBACK_FAMILY_NAME)
+  if (!res.ok) {
+    throw new Error(`Google update name error (${res.status}) sur ${email}: ${(await res.text()).slice(0, 300)}`)
+  }
+  const updated = toGoogleUser((await res.json()) as DirectoryUserPayload)
+  return { updated: true, fullName: updated.displayName }
 }
 
 /**
