@@ -105,6 +105,11 @@ export const sharedMailboxDelegates = mysqlTable(
     googleEmail: varchar('google_email', { length: 255 }).notNull(),
     displayName: varchar('display_name', { length: 255 }),
     status: mysqlEnum('status', stepStatus).default('pending').notNull(),
+    /** État Google de la délégation : 'accepted' = utilisable, 'pending' = le
+     *  délégué doit valider le mail de confirmation, 'rejected' / 'expired'.
+     *  Une délégation posée sans erreur mais 'pending' n'apparaît PAS dans le
+     *  sélecteur de compte Gmail — d'où l'intérêt de l'exposer. */
+    verificationStatus: varchar('verification_status', { length: 20 }),
     errorDetails: text('error_details'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },

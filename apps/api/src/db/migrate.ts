@@ -129,6 +129,7 @@ async function ensureSchemaPatches() {
     { table: 'shared_migrations', column: 'alias_send_as_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`alias_send_as_error\` text` },
     { table: 'shared_migrations', column: 'step_delegates', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`step_delegates\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
     { table: 'shared_migrations', column: 'delegates_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`delegates_error\` text` },
+    { table: 'shared_mailbox_delegates', column: 'verification_status', ddl: `ALTER TABLE \`shared_mailbox_delegates\` ADD COLUMN \`verification_status\` varchar(20)` },
     // Id Gmail du message importé (mode account ; null en mode group)
     { table: 'shared_migrated_messages', column: 'gmail_message_id', ddl: `ALTER TABLE \`shared_migrated_messages\` ADD COLUMN \`gmail_message_id\` varchar(255)` },
   ]

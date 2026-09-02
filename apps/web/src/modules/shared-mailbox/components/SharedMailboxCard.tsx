@@ -370,11 +370,13 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
         </button>
       </div>
 
+      <p className="mb-2 text-[11px] text-gray-500">
+        Le délégué n’a <strong>rien à connecter</strong> : la boîte apparaît dans le sélecteur de compte
+        de son Gmail (menu avatar), sous son propre compte, avec lecture, réponse et envoi. « Ajouter un
+        compte » n’est pas la bonne porte — le compte partagé n’a pas d’identité SSO.
+      </p>
       {migration.delegates.length === 0 && (
-        <p className="text-xs text-gray-500">
-          Aucun délégué. Les personnes ajoutées ici verront la boîte partagée directement dans leur Gmail
-          (sélecteur de compte), avec droit de lecture, réponse et envoi.
-        </p>
+        <p className="text-xs text-gray-500">Aucun délégué pour l’instant.</p>
       )}
 
       {migration.delegates.length > 0 && (
@@ -389,6 +391,13 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
                 </div>
                 {d.status === 'error' && d.errorDetails && (
                   <div className="mt-0.5 text-[11px] text-red-600">{d.errorDetails}</div>
+                )}
+                {d.status === 'success' && d.verificationStatus && d.verificationStatus !== 'accepted' && (
+                  <div className="mt-0.5 text-[11px] text-orange-600">
+                    Google : <span className="font-mono">{d.verificationStatus}</span> — la boîte
+                    n’apparaîtra dans le Gmail du délégué qu’une fois la délégation acceptée
+                    (mail de confirmation envoyé par Google à {d.googleEmail}).
+                  </div>
                 )}
               </div>
               <div className="flex items-center gap-2">

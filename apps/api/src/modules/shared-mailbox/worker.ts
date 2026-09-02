@@ -153,10 +153,18 @@ export async function applyDelegates(
       const r = await ensureGmailDelegate(job.targetUserEmail, d.googleEmail)
       await db
         .update(sharedMailboxDelegates)
-        .set({ status: 'success', errorDetails: null })
+        .set({
+          status: 'success',
+          verificationStatus: r.verificationStatus ?? null,
+          errorDetails: null,
+        })
         .where(eq(sharedMailboxDelegates.id, d.id))
       applied++
-      if (r.created) console.log(`[shared] délégation ${d.googleEmail} → ${job.targetUserEmail} posée`)
+      if (r.created) {
+        console.log(
+          `[shared] délégation ${d.googleEmail} → ${job.targetUserEmail} posée (verification=${r.verificationStatus ?? 'inconnu'})`,
+        )
+      }
     } catch (err) {
       const msg = sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
       await db

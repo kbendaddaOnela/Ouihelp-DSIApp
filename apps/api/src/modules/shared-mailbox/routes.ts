@@ -58,6 +58,7 @@ function toDelegate(d: typeof sharedMailboxDelegates.$inferSelect): SharedMailbo
     googleEmail: d.googleEmail,
     displayName: d.displayName,
     status: d.status,
+    verificationStatus: d.verificationStatus,
     errorDetails: d.errorDetails,
     createdAt: d.createdAt.toISOString(),
   }

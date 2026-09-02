@@ -31,6 +31,8 @@ export interface SharedMailboxDelegate {
   googleEmail: string
   displayName: string | null
   status: StepStatus
+  /** État Google : 'accepted' (utilisable), 'pending' (à valider par le délégué), … */
+  verificationStatus: string | null
   errorDetails: string | null
   createdAt: string
 }
