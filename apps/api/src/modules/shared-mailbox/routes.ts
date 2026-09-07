@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, desc, inArray } from 'drizzle-orm'
+import { and, eq, desc, inArray } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -7,7 +7,7 @@ import type { RbacVariables } from '../../middleware/rbac'
 import { db } from '../../db/index'
 import { sharedMigrations, sharedMigratedMessages, sharedMailboxDelegates } from './schema'
 import { listSharedMailboxes, listMailboxFullAccessUsers } from './exchangeService'
-import { signalStopShared, applyDelegates } from './worker'
+import { signalStopShared, applyDelegates, retryFailedMessages } from './worker'
 import {
   allowExternalPostsOnGroup,
   enableCollaborativeInbox as enableCollabInboxOnGroup,
@@ -807,6 +807,44 @@ sharedMailboxRouter.post('/:id/group/allow-external', requirePermission('migrati
     console.error('[shared-mailbox/group/allow-external POST]', msg)
     return c.json({ error: msg }, 500)
   }
+})
+
+/**
+ * POST : reprise ciblée des seuls messages en erreur (202, traitement en fond).
+ *
+ * « Resynchroniser » rejoue aussi les erreurs, mais en reparcourant toute la
+ * boîte ; cette route ne touche qu'aux lignes en erreur. La progression est
+ * visible via l'historique (l'étape repasse en 'running' pendant la reprise).
+ */
+sharedMailboxRouter.post('/:id/retry-errors', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  if (row.archived === 1) {
+    return c.json({ error: 'Migration archivée — désarchive-la avant de relancer la reprise' }, 409)
+  }
+
+  const pending = await db
+    .select({ id: sharedMigratedMessages.id })
+    .from(sharedMigratedMessages)
+    .where(
+      and(
+        eq(sharedMigratedMessages.sharedMigrationId, id),
+        eq(sharedMigratedMessages.status, 'error'),
+      ),
+    )
+  if (pending.length === 0) return c.json({ message: 'Aucune erreur à réessayer', count: 0 })
+
+  void retryFailedMessages(id).catch(async (err) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[shared-mailbox/retry-errors]', msg)
+    await db
+      .update(sharedMigrations)
+      .set({ stepMailImport: 'error', mailError: `Reprise échouée : ${msg}` })
+      .where(eq(sharedMigrations.id, id))
+  })
+
+  return c.json({ message: `Reprise lancée sur ${pending.length} message(s)`, count: pending.length }, 202)
 })
 
 // ── Erreurs détaillées ───────────────────────────────────────────────────────

@@ -239,6 +239,28 @@ export function useRemoveDelegate() {
   })
 }
 
+/** Détail des messages en erreur — chargé quand le panneau est déplié. */
+export function useSharedMigrationErrors(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['shared-migration-errors', id],
+    queryFn: () => sharedMailboxApi.errors(id),
+    enabled,
+    staleTime: 15_000,
+  })
+}
+
+/** Reprise ciblée des seuls messages en erreur (202 : suivi via l'historique). */
+export function useRetrySharedErrors() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.retryErrors(id),
+    onSuccess: (_d, id) => {
+      void qc.invalidateQueries({ queryKey: ['shared-migration-history'] })
+      void qc.invalidateQueries({ queryKey: ['shared-migration-errors', id] })
+    },
+  })
+}
+
 export function useApplyDelegates() {
   const qc = useQueryClient()
   return useMutation({

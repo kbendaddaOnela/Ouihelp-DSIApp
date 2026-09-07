@@ -370,6 +370,30 @@ export async function* iterateOnelaMessages(
   }
 }
 
+/**
+ * Métadonnées d'UN message, pour une reprise ciblée sur un échec : on a son id
+ * Graph en base, mais pas son dossier ni ses catégories (nécessaires pour lui
+ * rendre ses libellés Gmail).
+ *
+ * Renvoie null si le message n'existe plus côté Exchange (supprimé depuis le
+ * run initial) — l'appelant le traite alors comme « à ignorer », pas comme un
+ * échec.
+ */
+export async function fetchOnelaMessageMeta(
+  userId: string,
+  messageId: string
+): Promise<GraphMessageMeta | null> {
+  const token = await onelaToken()
+  const select = 'id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime'
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}?$select=${select}`
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    throw new Error(`Graph message meta error (${res.status}): ${(await res.text()).slice(0, 300)}`)
+  }
+  return (await res.json()) as GraphMessageMeta
+}
+
 // Récupère le MIME brut RFC 822 d'un message sous forme de Buffer binaire
 // IMPORTANT : on utilise arrayBuffer() au lieu de text() pour préserver l'intégrité
 // des pièces jointes (images, PDF, etc.) qui peuvent contenir des octets non-UTF-8

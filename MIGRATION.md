@@ -523,5 +523,6 @@ L'adresse primaire étant déjà sur `mig.onela.com`, le **dual delivery** vise 
 | `GET /google-users/search?q=` | Recherche annuaire Google (ajout manuel d'un délégué) |
 | `POST /:id/delegates` · `DELETE /:id/delegates/:delegateId` · `POST /:id/delegates/apply` | Ajouter / retirer / réappliquer les délégations |
 | `GET /:id/delegates/live` | Délégations réellement posées côté Gmail |
+| `GET /:id/errors` · `POST /:id/retry-errors` | Détail des messages en échec / reprise ciblée (202) — ne rejoue que les lignes en erreur, là où « Resynchroniser » reparcourt toute la boîte |
 | `GET`/`POST`/`DELETE /:id/dual-delivery` | Transport rule BCC |
 | `POST /:id/group/*` · `/:id/members/*` | Réglages **legacy** (refusés si `mode = 'account'`) |

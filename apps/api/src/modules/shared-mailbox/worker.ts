@@ -12,7 +12,7 @@
 // Polling 5s sur step_mail_import='pending'. Une seule migration partagée à la
 // fois (les BAL partagées sont peu nombreuses, pas besoin de concurrence).
 
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '../../db/index'
 import {
   sharedMigrations,
@@ -28,6 +28,7 @@ import {
   buildLabelResolver,
   gmailImportMime,
   gmailFindByMessageId,
+  fetchOnelaMessageMeta,
   type GraphFolder,
   type GraphMessageMeta,
 } from '../migration/mailService'
@@ -188,6 +189,150 @@ export async function applyDelegates(
     .where(eq(sharedMigrations.id, migrationId))
 
   return { total: rows.length, applied, failed }
+}
+
+/**
+ * Reprise ciblée des seuls messages en erreur.
+ *
+ * Pourquoi une fonction dédiée plutôt que « Resynchroniser » : la resynchro
+ * repart en balayage complet de la boîte (le delta est désactivé dès qu'il
+ * reste des erreurs) — soit 17 000 messages parcourus pour en rejouer 5. Ici on
+ * ne touche qu'aux lignes en erreur.
+ *
+ * Contrairement à la reprise du module migration (qui verse tout dans INBOX),
+ * on relit les métadonnées Graph du message pour lui rendre ses libellés
+ * d'origine : sur quelques messages le coût est négligeable.
+ *
+ * S'inscrit dans RUNNING : le détecteur d'orphelins ne touche donc pas au job,
+ * et le worker ne démarre pas d'import concurrent pendant la reprise.
+ */
+export async function retryFailedMessages(
+  migrationId: string,
+): Promise<{ total: number; recovered: number; stillFailed: number; skipped: number }> {
+  const [job] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, migrationId))
+  if (!job) throw new Error('Migration introuvable')
+  if (job.mode !== 'account' || !job.targetUserEmail) {
+    throw new Error('Reprise disponible uniquement pour les migrations vers un compte Google')
+  }
+  if (RUNNING.has(migrationId)) throw new Error('Un traitement est déjà en cours sur cette migration')
+
+  const mailbox = job.targetUserEmail
+  const failed = await db
+    .select()
+    .from(sharedMigratedMessages)
+    .where(
+      and(
+        eq(sharedMigratedMessages.sharedMigrationId, migrationId),
+        eq(sharedMigratedMessages.status, 'error'),
+      ),
+    )
+  if (failed.length === 0) return { total: 0, recovered: 0, stillFailed: 0, skipped: 0 }
+
+  RUNNING.add(migrationId)
+  const stopHeartbeat = startHeartbeat(migrationId)
+  let recovered = 0
+  let stillFailed = 0
+  let skipped = 0
+  try {
+    await db
+      .update(sharedMigrations)
+      .set({ stepMailImport: 'running', mailError: `Reprise des erreurs : 0/${failed.length}…` })
+      .where(eq(sharedMigrations.id, migrationId))
+
+    const folders = await listOnelaFolders(job.onelaUserId)
+    const folderById = new Map<string, GraphFolder>(folders.map((f) => [f.id, f]))
+    const resolver = await buildLabelResolver(mailbox, folders)
+
+    for (const row of failed) {
+      try {
+        const meta = await fetchOnelaMessageMeta(job.onelaUserId, row.graphMessageId)
+        if (!meta) {
+          // Message supprimé côté Exchange depuis le run initial : ce n'est plus
+          // un échec, on le sort du décompte pour ne pas bloquer l'étape.
+          await db
+            .update(sharedMigratedMessages)
+            .set({ status: 'skipped', errorDetails: 'Message absent d’Exchange (supprimé depuis)' })
+            .where(eq(sharedMigratedMessages.id, row.id))
+          skipped++
+          continue
+        }
+
+        let gmailId: string | null = meta.internetMessageId
+          ? await gmailFindByMessageId(mailbox, meta.internetMessageId)
+          : null
+        if (!gmailId) {
+          const rawMime = await fetchOnelaMessageMime(job.onelaUserId, row.graphMessageId)
+          const folder = meta.parentFolderId ? folderById.get(meta.parentFolderId) : undefined
+          const folderLabels = folder ? await resolver.resolve(folder) : ['INBOX']
+          const categoryLabels = meta.categories?.length
+            ? await resolver.resolveCategories(meta.categories)
+            : []
+          const labels = meta.isDraft ? ['DRAFT'] : [...new Set([...folderLabels, ...categoryLabels])]
+          const res = await gmailImportMime({
+            userEmail: mailbox,
+            rawMime,
+            labelIds: labels,
+            isDraft: meta.isDraft,
+            isRead: meta.isRead,
+          })
+          gmailId = res.id
+        }
+
+        await db
+          .update(sharedMigratedMessages)
+          .set({ status: 'success', gmailMessageId: gmailId, errorDetails: null })
+          .where(eq(sharedMigratedMessages.id, row.id))
+        recovered++
+      } catch (err) {
+        const errorDetails =
+          sanitize(err instanceof Error ? err.message : String(err), 2000) ?? 'unknown'
+        await db
+          .update(sharedMigratedMessages)
+          .set({ errorDetails })
+          .where(eq(sharedMigratedMessages.id, row.id))
+        stillFailed++
+        console.warn(`[shared/retry] ${row.graphMessageId} échoue encore:`, errorDetails.slice(0, 200))
+      }
+
+      await db
+        .update(sharedMigrations)
+        .set({
+          mailError: `Reprise des erreurs : ${recovered + stillFailed + skipped}/${failed.length} (${recovered} OK, ${stillFailed} échec)…`,
+        })
+        .where(eq(sharedMigrations.id, migrationId))
+      await new Promise((r) => setTimeout(r, 300))
+    }
+
+    // Compteurs recalculés depuis la base : source de vérité unique
+    const all = await db
+      .select({ status: sharedMigratedMessages.status })
+      .from(sharedMigratedMessages)
+      .where(eq(sharedMigratedMessages.sharedMigrationId, migrationId))
+    const migrated = all.filter((r) => r.status === 'success').length
+    const remaining = all.filter((r) => r.status === 'error').length
+
+    await db
+      .update(sharedMigrations)
+      .set({
+        stepMailImport: remaining === 0 ? 'success' : 'error',
+        mailMigrated: migrated,
+        mailFailed: remaining,
+        mailFinishedAt: new Date(),
+        mailError:
+          remaining === 0
+            ? null
+            : `${remaining} message(s) encore en erreur après reprise (${recovered} récupérés)`,
+      })
+      .where(eq(sharedMigrations.id, migrationId))
+
+    console.log(
+      `[shared/retry] ${migrationId}: ${recovered} récupérés, ${stillFailed} en échec, ${skipped} ignorés`,
+    )
+    return { total: failed.length, recovered, stillFailed, skipped }
+  } finally {
+    stopHeartbeat()
+    RUNNING.delete(migrationId)
+  }
 }
 
 async function processAccountMailbox(job: SharedMigration) {

@@ -165,6 +165,11 @@ export const sharedMailboxApi = {
   remove: (id: string) =>
     apiClient.delete(`/shared-mailbox/${id}`).then((r) => r.data),
 
+  retryErrors: (id: string) =>
+    apiClient
+      .post<{ message: string; count: number }>(`/shared-mailbox/${id}/retry-errors`)
+      .then((r) => r.data),
+
   errors: (id: string) =>
     apiClient
       .get<{
