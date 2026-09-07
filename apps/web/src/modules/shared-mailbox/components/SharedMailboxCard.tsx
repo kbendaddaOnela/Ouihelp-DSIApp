@@ -101,6 +101,7 @@ export function SharedMailboxCard({ migration }: Props) {
   const canDelete = migration.stepMailImport !== 'running'
   // En mode compte, l'import n'a de sens qu'une fois la licence acquittée
   const runBlockedByLicense = isAccountMode && migration.stepLicense !== 'success'
+  const isDone = migration.stepMailImport === 'success'
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
@@ -228,16 +229,36 @@ export function SharedMailboxCard({ migration }: Props) {
         <div className="mt-3">
           <div className="flex justify-between text-xs text-gray-600">
             <span>
-              {migration.mailMigrated.toLocaleString()} / {migration.mailTotal.toLocaleString()} mails
+              {isDone ? (
+                <>{migration.mailMigrated.toLocaleString()} messages importés</>
+              ) : (
+                <>
+                  {migration.mailMigrated.toLocaleString()} / {migration.mailTotal.toLocaleString()} mails
+                </>
+              )}
               {migration.mailFailed > 0 && (
                 <span className="ml-2 text-red-600">({migration.mailFailed} erreurs)</span>
               )}
             </span>
-            <span>{pct}%</span>
+            {/* Une fois l'import terminé, un pourcentage n'a plus de sens : le
+                total vient du comptage Exchange, le migré du décompte réel en
+                base, et les deux ne se recouvrent jamais exactement. */}
+            <span>{isDone ? 'terminé' : `${pct}%`}</span>
           </div>
           <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
-            <div className="h-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+            <div
+              className={`h-full transition-all ${isDone ? 'bg-green-500' : 'bg-blue-500'}`}
+              style={{ width: `${isDone ? 100 : pct}%` }}
+            />
           </div>
+          {isDone && migration.mailMigrated < migration.mailTotal && (
+            <p className="mt-1 text-[10px] text-gray-500">
+              Exchange annonçait {migration.mailTotal.toLocaleString()} messages dans les dossiers
+              visibles. L’écart porte sur des éléments que l’import ne reprend pas (dossiers
+              masqués, éléments récupérables) — à recouper avec le nombre de conversations dans la
+              boîte Gmail si le chiffre te surprend.
+            </p>
+          )}
         </div>
       )}
 

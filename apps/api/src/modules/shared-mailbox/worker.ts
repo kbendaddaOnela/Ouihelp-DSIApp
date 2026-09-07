@@ -560,8 +560,18 @@ async function importMailToGmail(job: SharedMigration) {
     console.warn('[shared/account] pre-count failed:', err instanceof Error ? err.message : err)
   }
 
-  let migrated = alreadySuccess
-  let failed = 0
+  // Compteurs par ENSEMBLE d'identifiants, pas par incrément.
+  //
+  // Graph peut renvoyer deux fois le même message : le curseur de pagination
+  // porte sur receivedDateTime décroissant, et la boîte continue de recevoir
+  // (dual delivery) pendant les heures que dure un run. Avec un simple
+  // `migrated++`, chaque message re-servi était recompté — d'où un compteur
+  // affiché supérieur au nombre réel de lignes en base, écart révélé à la
+  // première reprise d'erreurs (qui, elle, recompte depuis la base).
+  const successIds = new Set<string>()
+  const failedIds = new Set<string>()
+  const migratedCount = () => alreadySuccess + successIds.size
+  const failedCount = () => failedIds.size
   let skipped = 0
   let dedupHits = 0
   const iter = iterateOnelaMessages(job.onelaUserId, since, syncStartedAt)
@@ -626,7 +636,8 @@ async function importMailToGmail(job: SharedMigration) {
           .onDuplicateKeyUpdate({
             set: { gmailMessageId: res.value.gmailId, status: 'success', errorDetails: null },
           })
-        migrated++
+        successIds.add(msg.id)
+        failedIds.delete(msg.id) // rattrapé à la seconde passe
         if (res.value.dedup) dedupHits++
       } else {
         const errorDetails =
@@ -635,7 +646,7 @@ async function importMailToGmail(job: SharedMigration) {
           .insert(sharedMigratedMessages)
           .values({ ...base, status: 'error', errorDetails })
           .onDuplicateKeyUpdate({ set: { status: 'error', errorDetails } })
-        failed++
+        if (!successIds.has(msg.id)) failedIds.add(msg.id)
         console.warn(`[shared/account] msg ${msg.id} error:`, errorDetails.slice(0, 200))
       }
     }
@@ -643,9 +654,9 @@ async function importMailToGmail(job: SharedMigration) {
     await db
       .update(sharedMigrations)
       .set({
-        mailMigrated: migrated,
-        mailFailed: failed,
-        mailTotal: Math.max(expectedTotal, migrated + failed),
+        mailMigrated: migratedCount(),
+        mailFailed: failedCount(),
+        mailTotal: Math.max(expectedTotal, migratedCount() + failedCount()),
       })
       .where(eq(sharedMigrations.id, job.id))
     return true
@@ -675,26 +686,37 @@ async function importMailToGmail(job: SharedMigration) {
       .set({
         stepMailImport: 'error',
         mailFinishedAt: new Date(),
-        mailError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+        mailError: `Arrêt forcé par l'utilisateur (${migratedCount()} migrés)`,
       })
       .where(eq(sharedMigrations.id, job.id))
-    console.log(`[shared/account] stopped ${job.id}: ${migrated} OK avant arrêt`)
+    console.log(`[shared/account] stopped ${job.id}: ${migratedCount()} OK avant arrêt`)
     return
   }
 
-  const success = failed === 0
+  // Décompte final recalculé depuis la base : c'est la seule source qui ne peut
+  // pas dériver, et elle doit coïncider avec ce que montrera une reprise.
+  const finalRows = await db
+    .select({ status: sharedMigratedMessages.status })
+    .from(sharedMigratedMessages)
+    .where(eq(sharedMigratedMessages.sharedMigrationId, job.id))
+  const finalMigrated = finalRows.filter((r) => r.status === 'success').length
+  const finalFailed = finalRows.filter((r) => r.status === 'error').length
+
   await db
     .update(sharedMigrations)
     .set({
-      stepMailImport: success ? 'success' : 'error',
+      stepMailImport: finalFailed === 0 ? 'success' : 'error',
+      mailMigrated: finalMigrated,
+      mailFailed: finalFailed,
       mailFinishedAt: new Date(),
       mailLastSyncAt: syncStartedAt,
-      mailError: failed > 0 ? `${failed} message(s) en erreur` : null,
+      mailError: finalFailed > 0 ? `${finalFailed} message(s) en erreur` : null,
     })
     .where(eq(sharedMigrations.id, job.id))
 
   console.log(
-    `[shared/account] done ${job.id}: ${migrated} OK, ${failed} fail, ${skipped} skip, ${dedupHits} dédup`,
+    `[shared/account] done ${job.id}: ${finalMigrated} OK, ${finalFailed} fail, ${skipped} skip, ` +
+      `${dedupHits} dédup (compteur live : ${migratedCount()})`,
   )
 }
 
