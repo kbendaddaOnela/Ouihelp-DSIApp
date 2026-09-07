@@ -24,8 +24,16 @@ export const sharedMailboxApi = {
       .get<SearchSharedMailboxesResponse>(`/shared-mailbox/search?q=${encodeURIComponent(q)}`)
       .then((r) => r.data),
 
-  history: () =>
-    apiClient.get<SharedMigrationHistoryResponse>('/shared-mailbox/history').then((r) => r.data),
+  history: ({ archived = false }: { archived?: boolean } = {}) =>
+    apiClient
+      .get<SharedMigrationHistoryResponse>(`/shared-mailbox/history?archived=${archived ? 1 : 0}`)
+      .then((r) => r.data),
+
+  archive: (id: string) =>
+    apiClient.post<SharedMigrationRecord>(`/shared-mailbox/${id}/archive`).then((r) => r.data),
+
+  unarchive: (id: string) =>
+    apiClient.post<SharedMigrationRecord>(`/shared-mailbox/${id}/unarchive`).then((r) => r.data),
 
   create: (req: CreateSharedMigrationRequest) =>
     apiClient.post<SharedMigrationRecord>('/shared-mailbox', req).then((r) => r.data),

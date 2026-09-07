@@ -29,6 +29,35 @@ export function useSharedMigrationHistory() {
   })
 }
 
+/** Migrations archivées — chargées seulement quand la section est dépliée. */
+export function useArchivedSharedMigrations(enabled: boolean) {
+  return useQuery({
+    queryKey: ['shared-migration-archived'],
+    queryFn: () => sharedMailboxApi.history({ archived: true }),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
+function useArchiveMutation(fn: (id: string) => Promise<unknown>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['shared-migration-history'] })
+      void qc.invalidateQueries({ queryKey: ['shared-migration-archived'] })
+    },
+  })
+}
+
+export function useArchiveSharedMigration() {
+  return useArchiveMutation((id) => sharedMailboxApi.archive(id))
+}
+
+export function useUnarchiveSharedMigration() {
+  return useArchiveMutation((id) => sharedMailboxApi.unarchive(id))
+}
+
 export function useCreateSharedMigration() {
   const qc = useQueryClient()
   return useMutation({
@@ -126,7 +155,10 @@ export function useDeleteSharedMigration() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => sharedMailboxApi.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['shared-migration-history'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['shared-migration-history'] })
+      void qc.invalidateQueries({ queryKey: ['shared-migration-archived'] })
+    },
   })
 }
 

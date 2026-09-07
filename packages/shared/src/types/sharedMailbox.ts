@@ -125,6 +125,8 @@ export interface SharedMigrationRecord {
   mailFinishedAt: string | null
   mailLastSyncAt: string | null
   dualDeliveryBccAddress: string | null
+  archived: boolean
+  archivedAt: string | null
   initiatedBy: string
   createdAt: string
   updatedAt: string

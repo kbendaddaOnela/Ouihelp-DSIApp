@@ -12,6 +12,8 @@ import {
   X,
   BadgeCheck,
   Users,
+  Archive,
+  ArchiveRestore,
 } from 'lucide-react'
 import type { SharedMigrationRecord, StepStatus } from '@dsi-app/shared'
 import {
@@ -36,6 +38,8 @@ import {
   useAddDelegate,
   useRemoveDelegate,
   useApplyDelegates,
+  useArchiveSharedMigration,
+  useUnarchiveSharedMigration,
 } from '../hooks/useSharedMailbox'
 
 interface Props {
@@ -78,6 +82,8 @@ export function SharedMailboxCard({ migration }: Props) {
   const { mutate: runMigration, isPending: isRunning } = useRunSharedMigration()
   const { mutate: stopMigration, isPending: isStopping } = useStopSharedMigration()
   const { mutate: deleteMigration, isPending: isDeleting } = useDeleteSharedMigration()
+  const { mutate: archiveMigration, isPending: isArchiving } = useArchiveSharedMigration()
+  const { mutate: unarchiveMigration, isPending: isUnarchiving } = useUnarchiveSharedMigration()
 
   const isAccountMode = migration.mode === 'account'
   const isInFlight = migration.stepMailImport === 'running' || migration.stepMailImport === 'pending'
@@ -120,7 +126,33 @@ export function SharedMailboxCard({ migration }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {canRun && (
+          {migration.archived ? (
+            <button
+              onClick={() =>
+                unarchiveMigration(migration.id, { onError: alertOnError('Désarchiver') })
+              }
+              disabled={isUnarchiving}
+              className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              <ArchiveRestore className="h-3.5 w-3.5" />
+              Désarchiver
+            </button>
+          ) : (
+            <button
+              onClick={() => archiveMigration(migration.id, { onError: alertOnError('Archiver') })}
+              disabled={isArchiving || isInFlight}
+              title={
+                isInFlight
+                  ? 'Arrête l’import avant d’archiver'
+                  : 'Ranger dans l’historique (le compte Google et les délégations sont conservés)'
+              }
+              className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              Archiver
+            </button>
+          )}
+          {canRun && !migration.archived && (
             <button
               onClick={() => runMigration(migration.id, { onError: alertOnError('Lancer la migration') })}
               disabled={isRunning || runBlockedByLicense}

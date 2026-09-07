@@ -105,6 +105,8 @@ function toRecord(
     mailFinishedAt: m.mailFinishedAt ? m.mailFinishedAt.toISOString() : null,
     mailLastSyncAt: m.mailLastSyncAt ? m.mailLastSyncAt.toISOString() : null,
     dualDeliveryBccAddress: m.dualDeliveryBccAddress ?? null,
+    archived: m.archived === 1,
+    archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null,
     initiatedBy: m.initiatedBy,
     createdAt: m.createdAt.toISOString(),
     updatedAt: m.updatedAt.toISOString(),
@@ -160,8 +162,14 @@ sharedMailboxRouter.get('/google-users/search', requirePermission('migration:rea
 })
 
 // ── Historique ───────────────────────────────────────────────────────────────
+// `archived=1` renvoie l'historique, sinon les migrations actives.
 sharedMailboxRouter.get('/history', requirePermission('migration:read'), async (c) => {
-  const rows = await db.select().from(sharedMigrations).orderBy(desc(sharedMigrations.createdAt))
+  const archivedFlag = ['1', 'true'].includes(c.req.query('archived') ?? '') ? 1 : 0
+  const rows = await db
+    .select()
+    .from(sharedMigrations)
+    .where(eq(sharedMigrations.archived, archivedFlag))
+    .orderBy(desc(sharedMigrations.createdAt))
   const ids = rows.map((r) => r.id)
   const delegateRows = ids.length
     ? await db
@@ -254,6 +262,9 @@ sharedMailboxRouter.post('/:id/run', requirePermission('migration:write'), async
   const id = c.req.param('id')
   const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  if (row.archived === 1) {
+    return c.json({ error: 'Migration archivée — désarchive-la avant de la relancer' }, 409)
+  }
   if (row.mode === 'account' && row.stepLicense !== 'success') {
     return c.json(
       {
@@ -276,6 +287,35 @@ sharedMailboxRouter.post('/:id/stop', requirePermission('migration:write'), asyn
   const id = c.req.param('id')
   signalStopShared(id)
   return c.json({ ok: true })
+})
+
+// ── Archiver / désarchiver ───────────────────────────────────────────────────
+// Une migration archivée sort de la liste active ET du polling du worker.
+// On refuse d'archiver un import en cours : il continuerait en arrière-plan sans
+// être visible nulle part.
+sharedMailboxRouter.post('/:id/archive', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  if (row.stepMailImport === 'running' || row.stepMailImport === 'pending') {
+    return c.json({ error: 'Import en cours — arrête-le avant d’archiver' }, 409)
+  }
+  await db
+    .update(sharedMigrations)
+    .set({ archived: 1, archivedAt: new Date() })
+    .where(eq(sharedMigrations.id, id))
+  return c.json<SharedMigrationRecord>((await loadRecord(id))!)
+})
+
+sharedMailboxRouter.post('/:id/unarchive', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  await db
+    .update(sharedMigrations)
+    .set({ archived: 0, archivedAt: null })
+    .where(eq(sharedMigrations.id, id))
+  return c.json<SharedMigrationRecord>((await loadRecord(id))!)
 })
 
 // ── Suppression ──────────────────────────────────────────────────────────────

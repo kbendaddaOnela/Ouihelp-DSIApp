@@ -515,6 +515,7 @@ L'adresse primaire étant déjà sur `mig.onela.com`, le **dual delivery** vise 
 | `GET /shared-mailbox/search?q=` | Lister les BAL partagées Exchange |
 | `POST /shared-mailbox` · `GET /history` | Créer (mode `account`) / lister |
 | `POST /:id/run` · `/:id/stop` · `DELETE /:id` | Lancer-reprendre / arrêter / supprimer le suivi |
+| `POST /:id/archive` · `/:id/unarchive` | Ranger dans l'historique / réactiver — une migration archivée sort de la liste active **et** du polling du worker, et `/run` la refuse |
 | `GET /:id/account` | État du compte Google (existence, OU, alias, boîte Gmail prête) |
 | `POST /:id/license-ack` | Acquitter la licence (vérifie `isMailboxSetup`) et lancer l'import |
 | `POST /:id/alias-send-as` | (Re)poser alias + « Envoyer en tant que » par défaut |

@@ -90,7 +90,9 @@ function startHeartbeat(id: string): () => void {
 }
 
 async function pollAndProcess() {
-  const all = await db.select().from(sharedMigrations)
+  // Les migrations archivées sortent du polling : sinon un import relancé
+  // tournerait en arrière-plan sans être visible dans la liste active.
+  const all = await db.select().from(sharedMigrations).where(eq(sharedMigrations.archived, 0))
 
   // Détection d'orphelins : si 'running' mais pas dans RUNNING et updatedAt > 15min → reset
   for (const job of all) {

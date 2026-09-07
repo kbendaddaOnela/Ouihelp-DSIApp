@@ -4,6 +4,7 @@ import type { SharedMailbox } from '@dsi-app/shared'
 import {
   useSharedMailboxSearch,
   useSharedMigrationHistory,
+  useArchivedSharedMigrations,
   useCreateSharedMigration,
 } from './hooks/useSharedMailbox'
 import { SharedMailboxCard } from './components/SharedMailboxCard'
@@ -25,16 +26,25 @@ export default function SharedMailboxPage() {
   const [targetUserAlias, setTargetUserAlias] = useState('')
   const [targetDisplayName, setTargetDisplayName] = useState('')
   const [historyExpanded, setHistoryExpanded] = useState(true)
+  const [archivedExpanded, setArchivedExpanded] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const { data: searchData, isFetching, error: searchError } = useSharedMailboxSearch(query)
   const { data: historyData } = useSharedMigrationHistory()
+  const { data: archivedData, isFetching: isFetchingArchived } =
+    useArchivedSharedMigrations(archivedExpanded)
   const { mutate: createMigration, isPending: isCreating } = useCreateSharedMigration()
 
   const migrations = historyData?.migrations ?? []
+  const archivedMigrations = archivedData?.migrations ?? []
+  // Une BAL déjà archivée ne doit pas être proposée à nouveau : on la compte
+  // aussi comme « déjà migrée » dès que la liste archivée a été chargée.
   const existingByEmail = useMemo(
-    () => new Set(migrations.map((m) => m.onelaEmail.toLowerCase())),
-    [migrations],
+    () =>
+      new Set(
+        [...migrations, ...archivedMigrations].map((m) => m.onelaEmail.toLowerCase()),
+      ),
+    [migrations, archivedMigrations],
   )
 
   const mailboxes = searchData?.mailboxes ?? []
@@ -240,14 +250,14 @@ export default function SharedMailboxPage() {
         </section>
       )}
 
-      {/* Historique */}
+      {/* Migrations actives */}
       <section>
         <button
           onClick={() => setHistoryExpanded((v) => !v)}
           className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-800 hover:text-gray-900"
         >
           {historyExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          Historique ({migrations.length})
+          Migrations ({migrations.length})
         </button>
         {historyExpanded && (
           <div className="space-y-3">
@@ -257,6 +267,29 @@ export default function SharedMailboxPage() {
             {migrations.map((m) => (
               <SharedMailboxCard key={m.id} migration={m} />
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* Archivées — chargées à la demande */}
+      <section>
+        <button
+          onClick={() => setArchivedExpanded((v) => !v)}
+          aria-expanded={archivedExpanded}
+          className="mb-3 flex items-center gap-2 text-xs font-medium text-gray-500 hover:text-gray-700"
+        >
+          {archivedExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          Historique{archivedData ? ` (${archivedMigrations.length})` : ''}
+        </button>
+        {archivedExpanded && (
+          <div className="space-y-3">
+            {isFetchingArchived && !archivedData ? (
+              <p className="text-sm text-gray-500">Chargement…</p>
+            ) : archivedMigrations.length === 0 ? (
+              <p className="text-sm text-gray-500">Aucune migration archivée.</p>
+            ) : (
+              archivedMigrations.map((m) => <SharedMailboxCard key={m.id} migration={m} />)
+            )}
           </div>
         )}
       </section>

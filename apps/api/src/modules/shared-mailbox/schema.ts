@@ -78,6 +78,10 @@ export const sharedMigrations = mysqlTable('shared_migrations', {
   // l'adresse primaire du compte (déjà sur mig.<domaine>), en mode `group` l'alias
   // mig.<domaine> posé sur le groupe.
   dualDeliveryBccAddress: varchar('dual_delivery_bcc_address', { length: 320 }),
+  // Archivage : sort la migration de la liste active ET du polling du worker
+  // (même convention que les modules migration et sharepoint-migration).
+  archived: int('archived').default(0).notNull(), // 0 = actif, 1 = archivé
+  archivedAt: timestamp('archived_at'),
   // Métadonnées
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
