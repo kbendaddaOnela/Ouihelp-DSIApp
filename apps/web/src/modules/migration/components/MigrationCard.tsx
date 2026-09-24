@@ -580,7 +580,7 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
             <div className="space-y-3">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Étapes de migration</h4>
 
-              {/* Ligne 1 : 1 Mail · 2 Alias Google · 3 Nouveau format */}
+              {/* Ligne 1 : 1 Mail · 2 Licence Google · 3 Alias Google */}
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <StepBlock
                   number={1}
@@ -592,25 +592,33 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
 
                 <StepBlock
                   number={2}
+                  label="Licence Google"
+                  completed={m.stepLicense === 'success'}
+                >
+                  <LicenseStep m={m} />
+                </StepBlock>
+
+                <StepBlock
+                  number={3}
                   label="Alias Google"
                   completed={m.stepGoogleAlias === 'success'}
                 >
                   {aliasStepContent}
                 </StepBlock>
+              </div>
 
+              {/* Ligne 2 : 4 Nouveau format · 5 OU onela.com · 6 Redirection Exchange */}
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <StepBlock
-                  number={3}
+                  number={4}
                   label="Nouveau format prenom.nom@onela.com"
                   completed={m.stepNewFormat === 'success'}
                 >
                   {newFormatStepContent}
                 </StepBlock>
-              </div>
 
-              {/* Ligne 2 : 4 OU onela.com · 5 Redirection Exchange · 6 Calendrier */}
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <StepBlock
-                  number={4}
+                  number={5}
                   label="OU onela.com"
                   completed={m.stepOuMove === 'success'}
                 >
@@ -618,26 +626,26 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
                 </StepBlock>
 
                 <StepBlock
-                  number={5}
+                  number={6}
                   label="Redirection Exchange"
                   completed={!!fwdStatus?.active}
                 >
                   {forwardingStepContent}
                 </StepBlock>
+              </div>
 
+              {/* Ligne 3 : 7 Calendrier · 8 Contacts · 9 Intégration contacts ONELA */}
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <StepBlock
-                  number={6}
+                  number={7}
                   label="Migration calendrier"
                   completed={m.stepCalendarMigration === 'success' && m.calTotal > 0 && m.calMigrated >= m.calTotal}
                 >
                   {calendarStepContent}
                 </StepBlock>
-              </div>
 
-              {/* Ligne 3 : 7 Contacts · 8 Intégration contacts ONELA */}
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <StepBlock
-                  number={7}
+                  number={8}
                   label="Migration contacts"
                   completed={m.stepContactsMigration === 'success' && m.contactsTotal > 0 && m.contactsMigrated >= m.contactsTotal}
                 >
@@ -645,19 +653,11 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
                 </StepBlock>
 
                 <StepBlock
-                  number={8}
+                  number={9}
                   label="Intégration contacts ONELA"
                   completed={false}
                 >
                   {onelaContactsStepContent}
-                </StepBlock>
-
-                <StepBlock
-                  number={9}
-                  label="Licence Google"
-                  completed={m.stepLicense === 'success'}
-                >
-                  <LicenseStep m={m} />
                 </StepBlock>
               </div>
             </div>

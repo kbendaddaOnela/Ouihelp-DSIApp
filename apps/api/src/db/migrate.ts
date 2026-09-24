@@ -422,6 +422,16 @@ async function ensureSchemaPatches() {
       )`,
     },
     {
+      table: 'license_quotas',
+      ddl: `CREATE TABLE \`license_quotas\` (
+        \`sku_id\` varchar(64) NOT NULL,
+        \`total_seats\` int NOT NULL,
+        \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+        \`updated_by\` varchar(255),
+        PRIMARY KEY (\`sku_id\`)
+      )`,
+    },
+    {
       table: 'sharepoint_migrations',
       ddl: `CREATE TABLE \`sharepoint_migrations\` (
         \`id\` varchar(36) NOT NULL,

@@ -5,16 +5,18 @@ import type { MigrationRecord } from '@dsi-app/shared'
 import { migrationApi } from '../api'
 
 /**
- * Étape « Licence Google » : découvre les types de licence en usage (+ nombre
- * assigné à chacun) et permet d'en attribuer un au compte Google migré.
- * Remplace l'auto-attribution de licence sur l'OU (désactivée).
+ * Étape « Licence Google » : liste les licences en usage et permet d'en attribuer
+ * une au compte migré. Affiche « restantes = total − utilisées » ; le total de
+ * sièges achetés se saisit à la main (Google ne l'expose pas par API pour un
+ * client direct) et est persisté (table license_quotas), partagé entre toutes
+ * les cartes.
  */
 export function LicenseStep({ m }: { m: MigrationRecord }) {
   const queryClient = useQueryClient()
-  const [selected, setSelected] = useState('') // "productId|skuId"
+  const [edits, setEdits] = useState<Record<string, string>>({})
 
   const enabled = !!m.gohUpn
-  const { data: skus, isLoading, isError, error, refetch, isFetching } = useQuery({
+  const { data: skus, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['license-skus'],
     queryFn: migrationApi.licenseSkus,
     enabled,
@@ -27,14 +29,28 @@ export function LicenseStep({ m }: { m: MigrationRecord }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['migration-history'] }),
   })
 
+  const saveQuota = useMutation({
+    mutationFn: ({ skuId, total }: { skuId: string; total: number | null }) =>
+      migrationApi.setLicenseQuota(skuId, total),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['license-skus'] }),
+  })
+
   if (!m.gohUpn) {
     return <p className="text-xs text-gray-500">Compte Google requis avant d'attribuer une licence.</p>
   }
 
-  const handleAssign = () => {
-    const [productId, skuId] = selected.split('|')
-    if (!productId || !skuId) return
-    assign.mutate({ productId, skuId })
+  const commitQuota = (skuId: string) => {
+    const raw = edits[skuId]
+    if (raw === undefined) return
+    const trimmed = raw.trim()
+    const total = trimmed === '' ? null : Number(trimmed)
+    if (total !== null && (!Number.isFinite(total) || total < 0)) return
+    saveQuota.mutate({ skuId, total })
+    setEdits((e) => {
+      const next = { ...e }
+      delete next[skuId]
+      return next
+    })
   }
 
   return (
@@ -64,27 +80,50 @@ export function LicenseStep({ m }: { m: MigrationRecord }) {
       )}
 
       {skus && skus.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <select
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-2 py-1.5 text-xs text-gray-700"
-          >
-            <option value="">Choisir une licence…</option>
-            {skus.map((s) => (
-              <option key={`${s.productId}|${s.skuId}`} value={`${s.productId}|${s.skuId}`}>
-                {s.name} — {s.used} assignée{s.used > 1 ? 's' : ''}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={handleAssign}
-            disabled={!selected || assign.isPending}
-            className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
-          >
-            {assign.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <BadgeCheck className="h-3 w-3" />}
-            {m.stepLicense === 'success' ? 'Changer' : 'Assigner'}
-          </button>
+        <div className="space-y-1.5">
+          {skus.map((s) => {
+            const isAssigned = m.stepLicense === 'success' && m.licenseSkuId === s.skuId
+            const noneLeft = s.remaining != null && s.remaining <= 0
+            return (
+              <div key={`${s.productId}|${s.skuId}`} className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-2 py-1.5">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-gray-800">{s.name}</div>
+                  <div className="text-[11px] text-gray-500">
+                    {s.total != null ? (
+                      <>
+                        <span className={noneLeft ? 'font-medium text-red-600' : 'font-medium text-emerald-600'}>
+                          {s.remaining} restante{Math.abs(s.remaining ?? 0) > 1 ? 's' : ''}
+                        </span>
+                        {' · '}{s.used}/{s.total} utilisées
+                      </>
+                    ) : (
+                      <>{s.used} utilisées · total non défini</>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="total"
+                  value={edits[s.skuId] ?? (s.total != null ? String(s.total) : '')}
+                  onChange={(e) => setEdits((prev) => ({ ...prev, [s.skuId]: e.target.value }))}
+                  onBlur={() => commitQuota(s.skuId)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                  title="Nombre de sièges achetés pour cette licence"
+                  className="w-16 shrink-0 rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-700"
+                />
+                <button
+                  onClick={() => assign.mutate({ productId: s.productId, skuId: s.skuId })}
+                  disabled={assign.isPending || isAssigned}
+                  title={isAssigned ? 'Déjà assignée à ce compte' : undefined}
+                  className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                >
+                  {isAssigned ? '✓' : 'Assigner'}
+                </button>
+              </div>
+            )
+          })}
+          <p className="text-[11px] text-gray-400">Saisis le nombre de sièges achetés dans le champ « total » pour voir les restantes.</p>
         </div>
       )}
 
@@ -96,10 +135,6 @@ export function LicenseStep({ m }: { m: MigrationRecord }) {
 
       {m.stepLicense === 'error' && m.licenseError && (
         <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{m.licenseError}</p>
-      )}
-
-      {isFetching && !isLoading && (
-        <p className="text-[11px] text-gray-400">Actualisation…</p>
       )}
     </div>
   )

@@ -162,3 +162,14 @@ export const migrationTargets = mysqlTable(
 )
 
 export type MigrationTarget = typeof migrationTargets.$inferSelect
+
+// Total de sièges achetés par licence (saisi manuellement — Google n'expose pas les
+// sièges achetés par API pour un client direct). Sert à calculer "restantes = total − utilisées".
+export const licenseQuotas = mysqlTable('license_quotas', {
+  skuId: varchar('sku_id', { length: 64 }).primaryKey(),
+  totalSeats: int('total_seats').notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
+  updatedBy: varchar('updated_by', { length: 255 }),
+})
+
+export type LicenseQuota = typeof licenseQuotas.$inferSelect

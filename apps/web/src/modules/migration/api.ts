@@ -59,8 +59,12 @@ export const migrationApi = {
   // ── Licences Google Workspace ──
   licenseSkus: () =>
     apiClient
-      .get<{ skus: Array<{ productId: string; skuId: string; name: string; used: number }> }>('/migration/license-skus')
+      .get<{ skus: Array<{ productId: string; skuId: string; name: string; used: number; total: number | null; remaining: number | null }> }>('/migration/license-skus')
       .then((r) => r.data.skus),
+
+  // Définit (total = nombre) ou efface (total = null) le total de sièges d'une licence.
+  setLicenseQuota: (skuId: string, total: number | null) =>
+    apiClient.put<{ ok: boolean }>('/migration/license-quotas', { skuId, total }).then((r) => r.data),
 
   assignLicense: (id: string, productId: string, skuId: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/assign-license`, { productId, skuId }).then((r) => r.data),

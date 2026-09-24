@@ -5,7 +5,7 @@ import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
 import type { RbacVariables } from '../../middleware/rbac'
 import { getDb } from '../../db/index'
-import { migrations, migratedMessages, migratedEvents, migratedContacts, migrationTargets } from './schema'
+import { migrations, migratedMessages, migratedEvents, migratedContacts, migrationTargets, licenseQuotas } from './schema'
 import {
   searchOnelaUsers,
   createGohUser,
@@ -569,15 +569,49 @@ migrationRouter.post('/:id/migrate-mail', requirePermission('migration:write'), 
 })
 
 // ── Licences Google Workspace ────────────────────────────────────────────────
-// Découvre les licences en usage + le nombre assigné à chacune (utilisé seulement).
+// Découvre les licences en usage + le nombre assigné à chacune. On y ajoute le total
+// de sièges (saisi manuellement dans license_quotas — Google n'expose pas les sièges
+// achetés par API) pour afficher « restantes = total − utilisées ».
 migrationRouter.get('/license-skus', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
   try {
-    const skus = await listLicenseSkusWithUsage()
-    return c.json({ skus })
+    const [skus, quotas] = await Promise.all([
+      listLicenseSkusWithUsage(),
+      db.select().from(licenseQuotas),
+    ])
+    const totalBySku = new Map(quotas.map((q) => [q.skuId, q.totalSeats]))
+    const enriched = skus.map((s) => {
+      const total = totalBySku.get(s.skuId) ?? null
+      return { ...s, total, remaining: total != null ? total - s.used : null }
+    })
+    // SKU avec un total saisi mais aucune assignation (absents de listForProduct)
+    for (const q of quotas) {
+      if (!enriched.some((e) => e.skuId === q.skuId)) {
+        enriched.push({ productId: 'Google-Apps', skuId: q.skuId, name: skuDisplayName(q.skuId), used: 0, total: q.totalSeats, remaining: q.totalSeats })
+      }
+    }
+    return c.json({ skus: enriched })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return c.json({ error: 'Google Licensing error', message }, 502)
   }
+})
+
+// Définit (ou efface) le total de sièges achetés pour une licence.
+migrationRouter.put('/license-quotas', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const body = await c.req.json<{ skuId?: string; total?: number | null }>().catch(() => ({} as { skuId?: string; total?: number | null }))
+  if (!body.skuId) return c.json({ error: 'skuId requis' }, 400)
+  const updatedBy = c.get('dbUser').email
+  // total absent / invalide → on efface le quota (revient à « utilisé seulement »)
+  if (body.total == null || !Number.isFinite(body.total) || body.total < 0) {
+    await db.delete(licenseQuotas).where(eq(licenseQuotas.skuId, body.skuId))
+    return c.json({ ok: true, cleared: true })
+  }
+  const total = Math.floor(body.total)
+  await db.insert(licenseQuotas).values({ skuId: body.skuId, totalSeats: total, updatedBy })
+    .onDuplicateKeyUpdate({ set: { totalSeats: total, updatedBy } })
+  return c.json({ ok: true })
 })
 
 // Assigne une licence (productId + skuId) au compte Google migré.
