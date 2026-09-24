@@ -102,4 +102,6 @@ export type {
   AddOffboardingDelegateResponse,
   OffboardingActionRecord,
   OffboardingHistoryResponse,
+  OffboardingDelegatedMailbox,
+  OffboardingDelegationsResponse,
 } from './types/offboarding'

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { UserMinus, Info, X, Loader2, KeyRound, Users, CheckCircle2, AlertTriangle, History } from 'lucide-react'
+import { UserMinus, Info, X, Loader2, KeyRound, Users, CheckCircle2, AlertTriangle, History, Inbox } from 'lucide-react'
 import type { OffboardingGoogleUser, OffboardingUserDetail, ResetPasswordResponse } from '@dsi-app/shared'
 import { usePermission } from '@/hooks/usePermission'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import {
   useOffboardingSearch,
   useOffboardingUser,
   useOffboardingHistory,
+  useOffboardingDelegations,
   useResetPassword,
   useAddOffboardingDelegate,
   useRemoveOffboardingDelegate,
@@ -311,6 +312,74 @@ function DelegationPanel({ detail, canWrite }: { detail: OffboardingUserDetail; 
   )
 }
 
+// ── Délégations actives (toutes boîtes déléguées via le module) ─────────────
+function ActiveDelegations({ canWrite, onOpen }: { canWrite: boolean; onOpen: (email: string) => void }) {
+  const { data, isLoading } = useOffboardingDelegations()
+  const remove = useRemoveOffboardingDelegate()
+
+  return (
+    <div className="space-y-2">
+      <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+        <Inbox className="h-4 w-4" /> Délégations actives
+      </h2>
+      {isLoading ? (
+        <div className="flex justify-center py-6"><Spinner /></div>
+      ) : !data || data.mailboxes.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-gray-200 py-8 text-center text-sm text-gray-400">
+          Aucune délégation active.
+        </p>
+      ) : (
+        <div className="divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white">
+          {data.mailboxes.map((mb) => (
+            <div key={mb.email} className="p-3">
+              <div className="flex items-center justify-between gap-2">
+                <button onClick={() => onOpen(mb.email)} className="min-w-0 text-left hover:underline" title="Ouvrir la fiche">
+                  <div className="truncate text-sm font-medium text-gray-800">{mb.displayName ?? mb.email}</div>
+                  <div className="truncate font-mono text-[11px] text-gray-400">{mb.email}</div>
+                </button>
+              </div>
+              {mb.error && <p className="mt-1 text-[11px] text-orange-600">{mb.error}</p>}
+              {mb.delegates.length === 0 ? (
+                <p className="mt-1 text-xs text-gray-400">Aucun délégué.</p>
+              ) : (
+                <ul className="mt-2 space-y-1">
+                  {mb.delegates.map((d) => (
+                    <li
+                      key={d.delegateEmail}
+                      className="flex items-center justify-between gap-2 rounded bg-gray-50 px-2.5 py-1.5 text-xs"
+                    >
+                      <span className="min-w-0 truncate">
+                        <span className="text-gray-400">→ </span>
+                        <span className="font-mono text-gray-800">{d.delegateEmail}</span>
+                        {d.verificationStatus && d.verificationStatus !== 'accepted' && (
+                          <span className="ml-2 text-orange-600">({d.verificationStatus})</span>
+                        )}
+                      </span>
+                      {canWrite && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Retirer l’accès de ${d.delegateEmail} à la boîte ${mb.email} ?`))
+                              remove.mutate({ email: mb.email, delegate: d.delegateEmail })
+                          }}
+                          disabled={remove.isPending}
+                          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                        >
+                          <X className="h-3.5 w-3.5" /> Retirer
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {remove.error && <p className="text-xs text-red-600">{(remove.error as Error).message}</p>}
+    </div>
+  )
+}
+
 // ── Journal ──────────────────────────────────────────────────────────────────
 const ACTION_LABELS = {
   reset_password: 'Mot de passe',
@@ -423,6 +492,8 @@ export default function OffboardingPage() {
           </div>
         </div>
       )}
+
+      <ActiveDelegations canWrite={canWrite} onOpen={setSelected} />
 
       <HistoryList />
     </div>

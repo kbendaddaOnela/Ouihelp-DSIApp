@@ -7,6 +7,7 @@ import type {
   AddOffboardingDelegateRequest,
   AddOffboardingDelegateResponse,
   OffboardingHistoryResponse,
+  OffboardingDelegationsResponse,
 } from '@dsi-app/shared'
 
 export const offboardingApi = {
@@ -32,6 +33,9 @@ export const offboardingApi = {
         `/offboarding/delegates?email=${encodeURIComponent(email)}&delegate=${encodeURIComponent(delegate)}`,
       )
       .then((r) => r.data),
+
+  delegations: () =>
+    apiClient.get<OffboardingDelegationsResponse>('/offboarding/delegations').then((r) => r.data),
 
   history: () => apiClient.get<OffboardingHistoryResponse>('/offboarding/history').then((r) => r.data),
 }

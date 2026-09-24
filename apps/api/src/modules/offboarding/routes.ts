@@ -12,7 +12,7 @@
 // d'une boîte dont le propriétaire est suspendu.
 
 import { Hono } from 'hono'
-import { desc } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray } from 'drizzle-orm'
 import { randomUUID, randomInt } from 'crypto'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -39,6 +39,7 @@ import type {
   AddOffboardingDelegateRequest,
   AddOffboardingDelegateResponse,
   OffboardingHistoryResponse,
+  OffboardingDelegationsResponse,
 } from '@dsi-app/shared'
 
 export const offboardingRouter = new Hono<{ Variables: RbacVariables }>()
@@ -322,6 +323,57 @@ offboardingRouter.delete('/delegates', requirePermission('offboarding:write'), a
     })
     return c.json({ error: 'Removal failed', message: errMsg(err) }, 502)
   }
+})
+
+// ── Délégations actives ──────────────────────────────────────────────────────
+// Boîtes concernées = celles sur lesquelles le journal montre au moins une
+// délégation ajoutée. Pour chacune, l'état est relu EN DIRECT dans Gmail (la
+// vérité est côté Google : une délégation a pu être retirée en console) ; si la
+// lecture échoue, on retombe sur ce que dit le journal.
+offboardingRouter.get('/delegations', requirePermission('offboarding:read'), async (c) => {
+  const rows = await getDb()
+    .select()
+    .from(offboardingActions)
+    .where(and(eq(offboardingActions.status, 'success'), inArray(offboardingActions.action, ['add_delegate', 'remove_delegate'])))
+    .orderBy(asc(offboardingActions.createdAt))
+
+  // Dernière action par couple (boîte, délégué) → état selon le journal
+  const mailboxes = new Map<string, { displayName: string | null; journal: Map<string, boolean> }>()
+  for (const r of rows) {
+    if (!r.detail) continue
+    const key = r.targetEmail.toLowerCase()
+    const mb = mailboxes.get(key) ?? { displayName: null, journal: new Map<string, boolean>() }
+    if (r.targetDisplayName) mb.displayName = r.targetDisplayName
+    mb.journal.set(r.detail.toLowerCase(), r.action === 'add_delegate')
+    mailboxes.set(key, mb)
+  }
+
+  const result: OffboardingDelegationsResponse['mailboxes'] = await Promise.all(
+    [...mailboxes.entries()].map(async ([email, mb]) => {
+      try {
+        const live = await listGmailDelegates(email)
+        return {
+          email,
+          displayName: mb.displayName,
+          delegates: live.map((d) => ({ delegateEmail: d.delegateEmail, verificationStatus: d.verificationStatus ?? null })),
+          error: null,
+        }
+      } catch (err) {
+        return {
+          email,
+          displayName: mb.displayName,
+          delegates: [...mb.journal.entries()]
+            .filter(([, active]) => active)
+            .map(([delegateEmail]) => ({ delegateEmail, verificationStatus: null })),
+          error: `Lecture Gmail impossible, état issu du journal : ${errMsg(err)}`,
+        }
+      }
+    }),
+  )
+
+  return c.json<OffboardingDelegationsResponse>({
+    mailboxes: result.filter((m) => m.delegates.length > 0 || m.error),
+  })
 })
 
 // ── Journal ──────────────────────────────────────────────────────────────────

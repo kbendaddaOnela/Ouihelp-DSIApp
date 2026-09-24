@@ -26,6 +26,13 @@ export function useOffboardingHistory() {
   })
 }
 
+export function useOffboardingDelegations() {
+  return useQuery({
+    queryKey: ['offboarding-delegations'],
+    queryFn: offboardingApi.delegations,
+  })
+}
+
 export function useResetPassword() {
   const qc = useQueryClient()
   return useMutation({
@@ -41,6 +48,7 @@ export function useAddOffboardingDelegate() {
     onSettled: (_d, _e, vars) => {
       qc.invalidateQueries({ queryKey: ['offboarding-user', vars.email] })
       qc.invalidateQueries({ queryKey: ['offboarding-history'] })
+      qc.invalidateQueries({ queryKey: ['offboarding-delegations'] })
     },
   })
 }
@@ -53,6 +61,7 @@ export function useRemoveOffboardingDelegate() {
     onSettled: (_d, _e, vars) => {
       qc.invalidateQueries({ queryKey: ['offboarding-user', vars.email] })
       qc.invalidateQueries({ queryKey: ['offboarding-history'] })
+      qc.invalidateQueries({ queryKey: ['offboarding-delegations'] })
     },
   })
 }

@@ -84,3 +84,16 @@ export interface OffboardingActionRecord {
 export interface OffboardingHistoryResponse {
   actions: OffboardingActionRecord[]
 }
+
+/** Boîte déléguée via le module, avec ses délégations actuelles (lues dans Gmail). */
+export interface OffboardingDelegatedMailbox {
+  email: string
+  displayName: string | null
+  delegates: OffboardingDelegate[]
+  /** Renseigné si la lecture Gmail a échoué (délégués alors déduits du journal) */
+  error: string | null
+}
+
+export interface OffboardingDelegationsResponse {
+  mailboxes: OffboardingDelegatedMailbox[]
+}
