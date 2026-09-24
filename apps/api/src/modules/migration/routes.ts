@@ -16,6 +16,7 @@ import {
   checkOnelaMailForwarding,
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
+import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
 import { gmailDedupeMailbox, fetchOnelaMessageMime, gmailImportMime } from './mailService'
@@ -565,6 +566,48 @@ migrationRouter.post('/:id/migrate-mail', requirePermission('migration:write'), 
   const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
   if (!updated) return c.json({ error: 'Not Found' }, 404)
   return c.json(serializeMigration(updated), 202)
+})
+
+// ── Licences Google Workspace ────────────────────────────────────────────────
+// Découvre les licences en usage + le nombre assigné à chacune (utilisé seulement).
+migrationRouter.get('/license-skus', requirePermission('migration:read'), async (c) => {
+  try {
+    const skus = await listLicenseSkusWithUsage()
+    return c.json({ skus })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return c.json({ error: 'Google Licensing error', message }, 502)
+  }
+})
+
+// Assigne une licence (productId + skuId) au compte Google migré.
+migrationRouter.post('/:id/assign-license', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Pas de compte Google associé à cette migration' }, 400)
+
+  const body = await c.req.json<{ productId?: string; skuId?: string }>().catch(() => ({} as { productId?: string; skuId?: string }))
+  if (!body.productId || !body.skuId) return c.json({ error: 'productId et skuId requis' }, 400)
+  const { productId, skuId } = body
+
+  await db.update(migrations).set({ stepLicense: 'running', licenseError: null }).where(eq(migrations.id, id))
+  try {
+    await assignLicense(row.gohUpn, productId, skuId)
+    await db.update(migrations).set({
+      stepLicense: 'success',
+      licenseSkuId: skuId,
+      licenseSkuName: skuDisplayName(skuId),
+    }).where(eq(migrations.id, id))
+    const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+    if (!updated) return c.json({ error: 'Not Found' }, 404)
+    return c.json(serializeMigration(updated))
+  } catch (err) {
+    const errorDetails = err instanceof Error ? err.message : String(err)
+    await db.update(migrations).set({ stepLicense: 'error', licenseError: errorDetails }).where(eq(migrations.id, id))
+    return c.json({ error: 'Google license assign error', message: errorDetails }, 502)
+  }
 })
 
 // ── Lancer migration calendrier ──────────────────────────────────────────────

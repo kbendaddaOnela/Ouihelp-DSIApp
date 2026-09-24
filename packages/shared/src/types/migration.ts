@@ -33,6 +33,10 @@ export interface MigrationRecord {
   ouMoveError: string | null
   stepNewFormat: StepStatus
   newFormatError: string | null
+  stepLicense: StepStatus
+  licenseSkuId: string | null
+  licenseSkuName: string | null
+  licenseError: string | null
   mailTotal: number
   mailMigrated: number
   mailFailed: number

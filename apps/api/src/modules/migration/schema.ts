@@ -28,6 +28,11 @@ export const migrations = mysqlTable('migrations', {
   // Activation du nouveau format prenom.nom@onela.com (alias + send-as + default)
   stepNewFormat: mysqlEnum('step_new_format', stepStatus).default('pending').notNull(),
   newFormatError: text('new_format_error'),
+  // Attribution de licence Google Workspace (auto-attribution OU désactivée)
+  stepLicense: mysqlEnum('step_license', stepStatus).default('pending').notNull(),
+  licenseSkuId: varchar('license_sku_id', { length: 64 }),
+  licenseSkuName: varchar('license_sku_name', { length: 128 }),
+  licenseError: text('license_error'),
   // Mail migration progress (Phase B)
   mailTotal: int('mail_total').default(0).notNull(),
   mailMigrated: int('mail_migrated').default(0).notNull(),

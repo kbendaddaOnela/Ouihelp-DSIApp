@@ -134,6 +134,11 @@ async function ensureSchemaPatches() {
     { table: 'shared_mailbox_delegates', column: 'verification_status', ddl: `ALTER TABLE \`shared_mailbox_delegates\` ADD COLUMN \`verification_status\` varchar(20)` },
     // Id Gmail du message importé (mode account ; null en mode group)
     { table: 'shared_migrated_messages', column: 'gmail_message_id', ddl: `ALTER TABLE \`shared_migrated_messages\` ADD COLUMN \`gmail_message_id\` varchar(255)` },
+    // Attribution de licence Google Workspace
+    { table: 'migrations', column: 'step_license', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_license\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'migrations', column: 'license_sku_id', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_sku_id\` varchar(64)` },
+    { table: 'migrations', column: 'license_sku_name', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_sku_name\` varchar(128)` },
+    { table: 'migrations', column: 'license_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_error\` text` },
   ]
   for (const p of columnPatches) {
     try {

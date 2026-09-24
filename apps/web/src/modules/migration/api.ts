@@ -56,6 +56,15 @@ export const migrationApi = {
   checkGoogle: (id: string) =>
     apiClient.get<{ exists: boolean; email: string | null }>(`/migration/${id}/check-google`).then((r) => r.data),
 
+  // ── Licences Google Workspace ──
+  licenseSkus: () =>
+    apiClient
+      .get<{ skus: Array<{ productId: string; skuId: string; name: string; used: number }> }>('/migration/license-skus')
+      .then((r) => r.data.skus),
+
+  assignLicense: (id: string, productId: string, skuId: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/assign-license`, { productId, skuId }).then((r) => r.data),
+
   fetchErrors: (id: string, phase: 'mail' | 'calendar' | 'contacts') =>
     apiClient.get<{
       phase: string
