@@ -1,19 +1,15 @@
-import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { BadgeCheck, Loader2, RefreshCw } from 'lucide-react'
 import type { MigrationRecord } from '@dsi-app/shared'
 import { migrationApi } from '../api'
 
 /**
- * Étape « Licence Google » : liste les licences en usage et permet d'en attribuer
- * une au compte migré. Affiche « restantes = total − utilisées » ; le total de
- * sièges achetés se saisit à la main (Google ne l'expose pas par API pour un
- * client direct) et est persisté (table license_quotas), partagé entre toutes
- * les cartes.
+ * Étape « Licence Google » d'une carte : attribue une licence au compte migré.
+ * Les restantes sont en lecture seule ici — le nombre de sièges achetés se gère
+ * une seule fois dans le panneau « Licences Google disponibles » du dashboard.
  */
 export function LicenseStep({ m }: { m: MigrationRecord }) {
   const queryClient = useQueryClient()
-  const [edits, setEdits] = useState<Record<string, string>>({})
 
   const enabled = !!m.gohUpn
   const { data: skus, isLoading, isError, error, refetch } = useQuery({
@@ -26,31 +22,15 @@ export function LicenseStep({ m }: { m: MigrationRecord }) {
   const assign = useMutation({
     mutationFn: ({ productId, skuId }: { productId: string; skuId: string }) =>
       migrationApi.assignLicense(m.id, productId, skuId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['migration-history'] }),
-  })
-
-  const saveQuota = useMutation({
-    mutationFn: ({ skuId, total }: { skuId: string; total: number | null }) =>
-      migrationApi.setLicenseQuota(skuId, total),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['license-skus'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+      queryClient.invalidateQueries({ queryKey: ['license-skus'] })
+      queryClient.invalidateQueries({ queryKey: ['live-stats'] })
+    },
   })
 
   if (!m.gohUpn) {
     return <p className="text-xs text-gray-500">Compte Google requis avant d'attribuer une licence.</p>
-  }
-
-  const commitQuota = (skuId: string) => {
-    const raw = edits[skuId]
-    if (raw === undefined) return
-    const trimmed = raw.trim()
-    const total = trimmed === '' ? null : Number(trimmed)
-    if (total !== null && (!Number.isFinite(total) || total < 0)) return
-    saveQuota.mutate({ skuId, total })
-    setEdits((e) => {
-      const next = { ...e }
-      delete next[skuId]
-      return next
-    })
   }
 
   return (
@@ -97,21 +77,10 @@ export function LicenseStep({ m }: { m: MigrationRecord }) {
                         {' · '}{s.used}/{s.total} utilisées
                       </>
                     ) : (
-                      <>{s.used} utilisées · total non défini</>
+                      <>{s.used} utilisées</>
                     )}
                   </div>
                 </div>
-                <input
-                  type="number"
-                  min={0}
-                  placeholder="total"
-                  value={edits[s.skuId] ?? (s.total != null ? String(s.total) : '')}
-                  onChange={(e) => setEdits((prev) => ({ ...prev, [s.skuId]: e.target.value }))}
-                  onBlur={() => commitQuota(s.skuId)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-                  title="Nombre de sièges achetés pour cette licence"
-                  className="w-16 shrink-0 rounded border border-gray-200 px-1.5 py-1 text-xs text-gray-700"
-                />
                 <button
                   onClick={() => assign.mutate({ productId: s.productId, skuId: s.skuId })}
                   disabled={assign.isPending || isAssigned}
@@ -123,7 +92,6 @@ export function LicenseStep({ m }: { m: MigrationRecord }) {
               </div>
             )
           })}
-          <p className="text-[11px] text-gray-400">Saisis le nombre de sièges achetés dans le champ « total » pour voir les restantes.</p>
         </div>
       )}
 

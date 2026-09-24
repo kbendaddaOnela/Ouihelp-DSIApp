@@ -119,8 +119,38 @@ export async function assignLicense(userEmail: string, productId: string, skuId:
     body: JSON.stringify({ userId: userEmail }),
   })
   if (res.ok) return
-  // 409 Conflict = déjà assignée à ce SKU → OK (idempotent)
+  // 409 Conflict = déjà assignée à ce SKU exact → OK (idempotent)
   if (res.status === 409) return
+  // 412 = l'utilisateur a déjà une licence de CE produit mais sur un autre SKU
+  // (ex. attribution auto historique) → il faut réassigner (opération update),
+  // pas insérer. On retrouve le SKU actuel puis on bascule vers le SKU demandé.
+  if (res.status === 412) {
+    const currentSkuId = await findUserSkuForProduct(userEmail, productId, token)
+    if (!currentSkuId) {
+      const err = await res.text()
+      throw new Error(`License reassign impossible (412, SKU actuel introuvable): ${err.slice(0, 300)}`)
+    }
+    if (currentSkuId === skuId) return // déjà sur le bon SKU
+    const updUrl = `${LICENSING_BASE}/product/${encodeURIComponent(productId)}/sku/${encodeURIComponent(currentSkuId)}/user/${encodeURIComponent(userEmail)}`
+    const upd = await fetchWithTimeout(updUrl, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productId, skuId, userId: userEmail }),
+    })
+    if (upd.ok) return
+    const uerr = await upd.text()
+    throw new Error(`License reassign error (${upd.status}): ${uerr.slice(0, 400)}`)
+  }
   const err = await res.text()
   throw new Error(`License assign error (${res.status}): ${err.slice(0, 400)}`)
+}
+
+// Retrouve le SKU actuellement assigné à un utilisateur pour un produit donné,
+// en parcourant les assignments du produit. Renvoie null s'il n'en a aucun.
+async function findUserSkuForProduct(userEmail: string, productId: string, token: string): Promise<string | null> {
+  const target = userEmail.toLowerCase()
+  for await (const a of iterateAssignments(productId, token)) {
+    if (a.userId.toLowerCase() === target) return a.skuId
+  }
+  return null
 }

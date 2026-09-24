@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Upload, CheckCircle2, Clock, Users, RefreshCw, RotateCcw, ArrowUp, ArrowDown, BookUser, KeyRound, Cloud } from 'lucide-react'
+import { Upload, CheckCircle2, Clock, Users, RefreshCw, RotateCcw, ArrowUp, ArrowDown, BookUser, Cloud } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useMigration'
 import { onelaContactsApi, migrationApi } from '../api'
@@ -314,29 +314,6 @@ export function MigrationDashboard() {
         </div>
       ) : (
         <>
-          {/* Résumé licences Google disponibles */}
-          {live?.licenses && (
-            <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs">
-              <span className="flex items-center gap-1 font-medium text-indigo-700">
-                <KeyRound className="h-3.5 w-3.5" /> Licences dispo :
-              </span>
-              <span className={cn('font-semibold', live.licenses.totalRemaining <= 0 ? 'text-red-600' : 'text-indigo-700')}>
-                {live.licenses.totalRemaining} restantes
-              </span>
-              <span className="text-indigo-400">·</span>
-              <span className="text-gray-500">{live.licenses.totalUsed}/{live.licenses.totalSeats} utilisées</span>
-              {live.licenses.perSku.length > 0 && (
-                <span className="ml-auto flex flex-wrap gap-x-3 gap-y-0.5 text-gray-500">
-                  {live.licenses.perSku.map((s) => (
-                    <span key={s.skuId} title={`${s.used}/${s.total} utilisées`}>
-                      {s.name} : <span className={cn('font-medium', s.remaining <= 0 ? 'text-red-600' : 'text-indigo-600')}>{s.remaining}</span>
-                    </span>
-                  ))}
-                </span>
-              )}
-            </div>
-          )}
-
           {/* Chiffres globaux */}
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-lg bg-gray-50 p-3 text-center">
