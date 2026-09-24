@@ -30,6 +30,22 @@ import type {
   MigratedUpnsResponse,
 } from '@dsi-app/shared'
 
+// Normalise une partie de nom (prénom / nom) pour la partie locale d'email.
+// Conserve les tirets des prénoms/noms composés (ex. « Anne-Marie » →
+// « anne-marie »), comme le module de création de compte. Les espaces et « _ »
+// deviennent des tirets, on ne garde que lettres et tiret, tirets multiples
+// réduits à un seul, pas de tiret en début/fin.
+function normalizeNamePart(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^a-z-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
 export const migrationRouter = new Hono<{ Variables: RbacVariables }>()
 
 migrationRouter.use('*', authMiddleware, loadUserRole)
@@ -94,9 +110,9 @@ migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
 
     const migrationId = randomUUID()
 
-    // Générer UPN GOH : prenom.nom@mig.onela.com
-    const firstName = u.givenName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '')
-    const lastName = u.surname.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '')
+    // Générer UPN GOH : prenom.nom@mig.onela.com (tirets des noms composés conservés)
+    const firstName = normalizeNamePart(u.givenName)
+    const lastName = normalizeNamePart(u.surname)
     const gohUpn = `${firstName}.${lastName}@mig.onela.com`
     const onelaDomain = u.onelaEmail.split('@')[1] ?? 'onela.com'
     const ext10 = `${firstName}.${lastName}@onela.fr`
