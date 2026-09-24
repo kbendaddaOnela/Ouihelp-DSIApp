@@ -1,8 +1,9 @@
 import { useRef, useState, useMemo } from 'react'
-import { Upload, CheckCircle2, Clock, Users, RefreshCw, RotateCcw, ArrowUp, ArrowDown, BookUser } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { Upload, CheckCircle2, Clock, Users, RefreshCw, RotateCcw, ArrowUp, ArrowDown, BookUser, KeyRound, Cloud } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useMigration'
-import { onelaContactsApi } from '../api'
+import { onelaContactsApi, migrationApi } from '../api'
 import type { MigrationStats } from '../api'
 
 // ── Override local (groupes terminés non encore reflétés dans la base) ────────
@@ -157,6 +158,12 @@ function GroupTable({ rows }: { rows: MigrationStats['byDept'] | MigrationStats[
 // ── Composant principal ───────────────────────────────────────────────────────
 export function MigrationDashboard() {
   const { data: stats, isFetching, refetch } = useMigrationStats()
+  const { data: live, isFetching: liveFetching, refetch: refetchLive } = useQuery({
+    queryKey: ['live-stats'],
+    queryFn: migrationApi.liveStats,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  })
   const { mutate: importCSV, isPending: isImporting, data: importResult, reset: resetImport } = useImportTargets()
   const { mutate: resetDone, isPending: isResetting } = useResetDone()
   const fileRef = useRef<HTMLInputElement>(null)
@@ -218,10 +225,24 @@ export function MigrationDashboard() {
   }, [stats])
 
   const t = stats?.totals
-  const adjustedDone = t ? Math.min(t.total, t.done + overrideDelta) : 0
-  const adjustedInProgress = t ? t.in_progress : 0
-  const donePct = t && t.total > 0 ? Math.round((adjustedDone / t.total) * 100) : 0
-  const remaining = t ? Math.max(0, t.total - adjustedDone - adjustedInProgress) : 0
+  const csvDone = t ? Math.min(t.total, t.done + overrideDelta) : 0
+  const csvInProgress = t ? t.in_progress : 0
+
+  // Source de vérité : les tenants (live) quand disponibles, sinon repli sur le CSV.
+  const total = live?.onelaTotal ?? (t?.total ?? 0)
+  const done = live?.googleMigrated ?? csvDone
+  const inProgress = live?.activeMigrations ?? csvInProgress
+  const donePct = total > 0 ? Math.round((done / total) * 100) : 0
+  const remaining = Math.max(0, total - done)
+
+  // Cartes affichées (compatibilité avec le rendu existant)
+  const adjustedDone = done
+  const adjustedInProgress = inProgress
+  const totalLabel = total
+
+  const totalIsLive = live?.onelaTotal != null
+  const doneIsLive = live?.googleMigrated != null
+  const activeIsLive = live?.activeMigrations != null
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5">
@@ -233,11 +254,11 @@ export function MigrationDashboard() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => refetch()}
-            disabled={isFetching}
+            onClick={() => { refetch(); refetchLive() }}
+            disabled={isFetching || liveFetching}
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50"
           >
-            <RefreshCw className={cn('h-3 w-3', isFetching && 'animate-spin')} />
+            <RefreshCw className={cn('h-3 w-3', (isFetching || liveFetching) && 'animate-spin')} />
             Actualiser
           </button>
           <button
@@ -293,25 +314,60 @@ export function MigrationDashboard() {
         </div>
       ) : (
         <>
+          {/* Résumé licences Google disponibles */}
+          {live?.licenses && (
+            <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs">
+              <span className="flex items-center gap-1 font-medium text-indigo-700">
+                <KeyRound className="h-3.5 w-3.5" /> Licences dispo :
+              </span>
+              <span className={cn('font-semibold', live.licenses.totalRemaining <= 0 ? 'text-red-600' : 'text-indigo-700')}>
+                {live.licenses.totalRemaining} restantes
+              </span>
+              <span className="text-indigo-400">·</span>
+              <span className="text-gray-500">{live.licenses.totalUsed}/{live.licenses.totalSeats} utilisées</span>
+              {live.licenses.perSku.length > 0 && (
+                <span className="ml-auto flex flex-wrap gap-x-3 gap-y-0.5 text-gray-500">
+                  {live.licenses.perSku.map((s) => (
+                    <span key={s.skuId} title={`${s.used}/${s.total} utilisées`}>
+                      {s.name} : <span className={cn('font-medium', s.remaining <= 0 ? 'text-red-600' : 'text-indigo-600')}>{s.remaining}</span>
+                    </span>
+                  ))}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Chiffres globaux */}
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-lg bg-gray-50 p-3 text-center">
-              <p className="text-2xl font-bold text-gray-900">{t!.total}</p>
-              <p className="mt-0.5 text-xs text-gray-500">Total cibles</p>
+              <p className="text-2xl font-bold text-gray-900">{totalLabel}</p>
+              <p className="mt-0.5 flex items-center justify-center gap-1 text-xs text-gray-500">
+                Total cibles {totalIsLive && <Cloud className="h-3 w-3 text-sky-500" aria-label="live ONELA" />}
+              </p>
             </div>
             <div className="rounded-lg bg-emerald-50 p-3 text-center">
               <p className="text-2xl font-bold text-emerald-600">{adjustedDone}</p>
-              <p className="mt-0.5 text-xs text-gray-500">Terminés</p>
+              <p className="mt-0.5 flex items-center justify-center gap-1 text-xs text-gray-500">
+                {doneIsLive ? 'Déjà migrés' : 'Terminés'} {doneIsLive && <Cloud className="h-3 w-3 text-sky-500" aria-label="live Google" />}
+              </p>
             </div>
             <div className="rounded-lg bg-blue-50 p-3 text-center">
               <p className="text-2xl font-bold text-blue-600">{adjustedInProgress}</p>
-              <p className="mt-0.5 text-xs text-gray-500">En cours</p>
+              <p className="mt-0.5 flex items-center justify-center gap-1 text-xs text-gray-500">
+                En cours {activeIsLive && <Cloud className="h-3 w-3 text-sky-500" aria-label="migrations actives réelles" />}
+              </p>
             </div>
             <div className="rounded-lg bg-amber-50 p-3 text-center">
               <p className="text-2xl font-bold text-amber-600">{remaining}</p>
               <p className="mt-0.5 text-xs text-gray-500">Restants</p>
             </div>
           </div>
+
+          {live && live.errors.length > 0 && (
+            <p className="mt-2 text-[11px] text-amber-600">
+              Certaines valeurs viennent du CSV (live indisponible) — {live.errors.join(' · ')}
+            </p>
+          )}
 
           {/* Barre globale */}
           <div className="mt-3">
@@ -325,7 +381,7 @@ export function MigrationDashboard() {
                 {remaining} restants
               </span>
             </div>
-            <ProgressBar done={adjustedDone} in_progress={adjustedInProgress} total={t!.total} />
+            <ProgressBar done={adjustedDone} in_progress={adjustedInProgress} total={totalLabel} />
             <div className="mt-1 flex gap-3 text-[10px] text-gray-400">
               <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />Terminés</span>
               <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-blue-400" />En cours</span>

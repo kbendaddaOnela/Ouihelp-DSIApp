@@ -14,8 +14,9 @@ import {
   setOnelaMailForwarding,
   removeOnelaMailForwarding,
   checkOnelaMailForwarding,
+  countOnelaMailboxes,
 } from './service'
-import { googleUserExists, addGoogleAlias, moveUserToOu } from './googleService'
+import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu } from './googleService'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
@@ -595,6 +596,57 @@ migrationRouter.get('/license-skus', requirePermission('migration:read'), async 
     const message = err instanceof Error ? err.message : String(err)
     return c.json({ error: 'Google Licensing error', message }, 502)
   }
+})
+
+// ── Stats LIVE (source de vérité : les tenants, pas le CSV importé) ───────────
+// - onelaTotal   : population à migrer, comptée en direct dans le tenant ONELA
+// - googleMigrated : comptes déjà présents dans l'OU /onela.com côté Ouihelp
+// - activeMigrations : migrations réellement actives (table migrations, non archivées)
+// - licenses     : total de sièges dispo (somme des « restantes » saisies)
+// Chaque source est isolée : si un appel tenant échoue, son champ vaut null et
+// le front retombe sur le CSV — rien ne casse.
+migrationRouter.get('/live-stats', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const ouPath = process.env['GOOGLE_ONELA_OU_PATH'] ?? '/onela.com'
+
+  const [onelaRes, googleRes, activeRes, licRes] = await Promise.allSettled([
+    countOnelaMailboxes(),
+    countUsersInOu(ouPath),
+    db.select({ n: sql<number>`COUNT(*)` }).from(migrations).where(eq(migrations.archived, 0)),
+    (async () => {
+      const [skus, quotas] = await Promise.all([listLicenseSkusWithUsage(), db.select().from(licenseQuotas)])
+      const usedBySku = new Map(skus.map((s) => [s.skuId, s.used]))
+      let totalSeats = 0
+      let totalUsed = 0
+      let hasQuota = false
+      const perSku = quotas.map((q) => {
+        hasQuota = true
+        const used = usedBySku.get(q.skuId) ?? 0
+        totalSeats += q.totalSeats
+        totalUsed += used
+        return { skuId: q.skuId, name: skuDisplayName(q.skuId), total: q.totalSeats, used, remaining: q.totalSeats - used }
+      })
+      return { hasQuota, totalSeats, totalUsed, totalRemaining: totalSeats - totalUsed, perSku }
+    })(),
+  ])
+
+  const errors: string[] = []
+  const pick = <T,>(r: PromiseSettledResult<T>, label: string): T | null => {
+    if (r.status === 'fulfilled') return r.value
+    errors.push(`${label}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`)
+    return null
+  }
+
+  const activeRows = pick(activeRes, 'migrations')
+  const licenses = pick(licRes, 'licences')
+
+  return c.json({
+    onelaTotal: pick(onelaRes, 'ONELA'),
+    googleMigrated: pick(googleRes, 'Google'),
+    activeMigrations: activeRows ? Number(activeRows[0]?.n ?? 0) : null,
+    licenses: licenses && licenses.hasQuota ? licenses : null,
+    errors,
+  })
 })
 
 // Définit (ou efface) le total de sièges achetés pour une licence.

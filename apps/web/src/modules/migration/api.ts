@@ -62,6 +62,23 @@ export const migrationApi = {
       .get<{ skus: Array<{ productId: string; skuId: string; name: string; used: number; total: number | null; remaining: number | null }> }>('/migration/license-skus')
       .then((r) => r.data.skus),
 
+  // Stats LIVE depuis les tenants (ONELA Graph + Google Directory) + licences dispo.
+  liveStats: () =>
+    apiClient
+      .get<{
+        onelaTotal: number | null
+        googleMigrated: number | null
+        activeMigrations: number | null
+        licenses: {
+          totalSeats: number
+          totalUsed: number
+          totalRemaining: number
+          perSku: Array<{ skuId: string; name: string; total: number; used: number; remaining: number }>
+        } | null
+        errors: string[]
+      }>('/migration/live-stats')
+      .then((r) => r.data),
+
   // Définit (total = nombre) ou efface (total = null) le total de sièges d'une licence.
   setLicenseQuota: (skuId: string, total: number | null) =>
     apiClient.put<{ ok: boolean }>('/migration/license-quotas', { skuId, total }).then((r) => r.data),

@@ -109,3 +109,36 @@ export async function addGoogleAlias(userEmail: string, alias: string): Promise<
     throw new Error(`Google alias error (${res.status}): ${err}`)
   }
 }
+
+/**
+ * Compte, en direct dans l'annuaire Google Workspace, les comptes présents dans
+ * une OU donnée (par défaut /onela.com) — c'est la population « déjà migrée »
+ * côté Ouihelp. Pagine via nextPageToken (500/page).
+ */
+export async function countUsersInOu(ouPath: string): Promise<number> {
+  const token = await getGoogleAccessToken()
+  let count = 0
+  let pageToken: string | undefined
+  do {
+    const params = new URLSearchParams({
+      customer: process.env['GOOGLE_CUSTOMER_ID'] || 'my_customer',
+      query: `orgUnitPath='${ouPath}'`,
+      maxResults: '500',
+      projection: 'basic',
+      fields: 'nextPageToken,users/primaryEmail',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
+    const res = await fetchWithTimeout(
+      `https://admin.googleapis.com/admin/directory/v1/users?${params.toString()}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Google list OU error (${res.status}): ${err.slice(0, 300)}`)
+    }
+    const data = (await res.json()) as { users?: unknown[]; nextPageToken?: string }
+    count += data.users?.length ?? 0
+    pageToken = data.nextPageToken
+  } while (pageToken)
+  return count
+}

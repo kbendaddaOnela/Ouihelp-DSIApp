@@ -86,6 +86,33 @@ export async function searchOnelaUsers(query: string): Promise<GraphUser[]> {
   return res.value
 }
 
+/**
+ * Compte, en direct dans le tenant ONELA, la population « à migrer » :
+ * comptes de type Member, activés, dont le mail est @onela.com (exclut donc les
+ * contacts, boîtes partagées non-Member et comptes techniques hors domaine).
+ * Utilise $count (requête avancée → header ConsistencyLevel: eventual requis).
+ * Le domaine peut être surchargé via ONELA_MAILBOX_DOMAIN.
+ */
+export async function countOnelaMailboxes(): Promise<number> {
+  const token = await getOnelaToken()
+  const domain = process.env['ONELA_MAILBOX_DOMAIN'] || 'onela.com'
+  const filter = `userType eq 'Member' and accountEnabled eq true and endsWith(mail,'@${domain}')`
+  const url =
+    `https://graph.microsoft.com/v1.0/users?$filter=${encodeURIComponent(filter)}&$count=true&$top=1`
+  const res = await fetchWithTimeout(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ConsistencyLevel: 'eventual',
+    },
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Graph count ONELA ${res.status}: ${err.slice(0, 300)}`)
+  }
+  const data = (await res.json()) as { '@odata.count'?: number }
+  return data['@odata.count'] ?? 0
+}
+
 // ── Exchange Admin REST API (ForwardingSMTPAddress) ──────────────────────────
 // Uses the same API as Exchange Admin Center to set the real transport-level forwarding
 
