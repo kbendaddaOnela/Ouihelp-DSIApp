@@ -5,6 +5,7 @@ import type { MigrationRecord } from '@dsi-app/shared'
 import { migrationApi } from '../api'
 import { cn } from '@/lib/utils'
 import { StepBadge } from './StepBadge'
+import { LicenseStep } from './LicenseStep'
 import { CopyButton } from './CopyButton'
 import { DataMigrationSection } from './DataMigrationSection'
 import {
@@ -509,6 +510,7 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
             <StepBadge status={m.stepMailMigration} label="Mail" />
             <StepBadge status={m.stepCalendarMigration} label="Calendrier" />
             <StepBadge status={m.stepContactsMigration} label="Contacts" />
+            <StepBadge status={m.stepLicense} label="Licence" />
           </div>
 
           {/* Actions de gestion */}
@@ -648,6 +650,14 @@ export function MigrationCard({ m, defaultExpanded = false }: { m: MigrationReco
                   completed={false}
                 >
                   {onelaContactsStepContent}
+                </StepBlock>
+
+                <StepBlock
+                  number={9}
+                  label="Licence Google"
+                  completed={m.stepLicense === 'success'}
+                >
+                  <LicenseStep m={m} />
                 </StepBlock>
               </div>
             </div>

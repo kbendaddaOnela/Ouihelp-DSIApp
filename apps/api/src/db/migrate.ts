@@ -76,6 +76,11 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'mail_order', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_order\` varchar(4) NOT NULL DEFAULT 'desc'` },
     // Plafond du run en jours (passe « anciens » bornée à J-N ; null = pas de plafond)
     { table: 'migrations', column: 'mail_before_days', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`mail_before_days\` int` },
+    // Attribution de licence Google Workspace
+    { table: 'migrations', column: 'step_license', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`step_license\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'migrations', column: 'license_sku_id', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_sku_id\` varchar(64)` },
+    { table: 'migrations', column: 'license_sku_name', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_sku_name\` varchar(128)` },
+    { table: 'migrations', column: 'license_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_error\` text` },
   ]
   for (const p of columnPatches) {
     try {
