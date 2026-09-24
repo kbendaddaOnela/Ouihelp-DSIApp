@@ -13,6 +13,7 @@ import { apiLoginRequest } from '@/lib/auth'
 // Chargement différé des pages pour optimiser le bundle initial
 const TicketingPage = lazy(() => import('@/modules/ticketing/TicketingPage'))
 const AccountsPage = lazy(() => import('@/modules/accounts/AccountsPage'))
+const OffboardingPage = lazy(() => import('@/modules/offboarding/OffboardingPage'))
 const InventoryPage = lazy(() => import('@/modules/inventory/InventoryPage'))
 const AppsInventoryPage = lazy(() => import('@/modules/apps-inventory/AppsInventoryPage'))
 const LicensesPage = lazy(() => import('@/modules/licenses/LicensesPage'))
@@ -65,6 +66,14 @@ export function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <AccountsPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="offboarding"
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <OffboardingPage />
                   </Suspense>
                 }
               />

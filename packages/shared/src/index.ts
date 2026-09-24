@@ -88,3 +88,18 @@ export type {
   XimiChangedItem,
   XimiMigrationChangesResponse,
 } from './types/ximiMigration'
+
+export type {
+  OffboardingActionType,
+  OffboardingGoogleUser,
+  OffboardingSearchResponse,
+  OffboardingEntraUser,
+  OffboardingDelegate,
+  OffboardingUserDetail,
+  ResetPasswordRequest,
+  ResetPasswordResponse,
+  AddOffboardingDelegateRequest,
+  AddOffboardingDelegateResponse,
+  OffboardingActionRecord,
+  OffboardingHistoryResponse,
+} from './types/offboarding'

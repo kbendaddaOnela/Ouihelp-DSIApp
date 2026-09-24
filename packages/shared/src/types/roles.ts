@@ -10,6 +10,8 @@ export type Permission =
   | 'tickets:assign'
   | 'accounts:read'
   | 'accounts:write'
+  | 'offboarding:read'
+  | 'offboarding:write'
   | 'migration:read'
   | 'migration:write'
   | 'inventory:read'
@@ -33,6 +35,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'tickets:assign',
     'accounts:read',
     'accounts:write',
+    'offboarding:read',
+    'offboarding:write',
     'migration:read',
     'migration:write',
     'inventory:read',
@@ -50,6 +54,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'tickets:assign',
     'accounts:read',
     'accounts:write',
+    'offboarding:read',
+    'offboarding:write',
     'migration:read',
     'migration:write',
     'inventory:read',

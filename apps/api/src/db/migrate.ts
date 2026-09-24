@@ -620,6 +620,23 @@ async function ensureSchemaPatches() {
         KEY \`ximi_migrated_items_migration_idx\` (\`migration_id\`)
       )`,
     },
+    {
+      table: 'offboarding_actions',
+      ddl: `CREATE TABLE \`offboarding_actions\` (
+        \`id\` varchar(36) NOT NULL,
+        \`target_email\` varchar(255) NOT NULL,
+        \`target_display_name\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`action\` enum('reset_password','add_delegate','remove_delegate') NOT NULL,
+        \`detail\` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`status\` enum('success','error') NOT NULL,
+        \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`initiated_by\` varchar(255) NOT NULL,
+        \`created_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_offboarding_target\` (\`target_email\`),
+        KEY \`idx_offboarding_created\` (\`created_at\`)
+      )`,
+    },
   ]
   for (const p of tablePatches) {
     try {

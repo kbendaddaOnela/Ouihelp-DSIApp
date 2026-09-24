@@ -263,3 +263,65 @@ export async function setGohUserAttributes(userId: string, ext10: string, ext11:
     onPremisesExtensionAttributes: { extensionAttribute10: ext10, extensionAttribute11: ext11 },
   })
 }
+
+// ── GOH : offboarding (mot de passe / sessions) ───────────────────────────────
+
+export interface GohAccount {
+  id: string
+  userPrincipalName: string
+  displayName: string
+  accountEnabled: boolean
+}
+
+/**
+ * Retrouve le compte Entra GOH d'un utilisateur Google.
+ *
+ * Cas nominal : le compte Google a été provisionné par SCIM → son adresse
+ * primaire (prenom.nom@mig.onela.com) EST l'UPN GOH. Repli sur `mail` puis
+ * `proxyAddresses` pour les alias (prenom.nom@onela.com est posé en `mail` par
+ * setGohUserAttributes). null si rien ne correspond.
+ */
+export async function findGohUserByEmails(emails: string[]): Promise<GohAccount | null> {
+  const token = await gohToken()
+  const select = 'id,userPrincipalName,displayName,accountEnabled'
+  for (const email of emails) {
+    try {
+      return await graphRequest<GohAccount>(token, 'GET', `/users/${encodeURIComponent(email)}?$select=${select}`)
+    } catch (err) {
+      if (!(err instanceof Error && err.message.startsWith('Graph 404'))) throw err
+    }
+  }
+  for (const email of emails) {
+    const e = email.replace(/'/g, "''")
+    const filter = `mail eq '${e}' or proxyAddresses/any(p:p eq 'smtp:${e}')`
+    const res = await graphRequest<{ value: GohAccount[] }>(
+      token, 'GET',
+      `/users?$filter=${encodeURIComponent(filter)}&$select=${select}&$top=2`,
+    )
+    if (res.value.length === 1) return res.value[0]!
+  }
+  return null
+}
+
+/**
+ * Réinitialise le mot de passe d'un compte GOH (app-only).
+ * Permission Graph applicative requise : User-PasswordProfile.ReadWrite.All
+ * (ou User.ReadWrite.All + rôle d'annuaire « Administrateur de l'authentification
+ * privilégiée » pour les comptes admin — Entra refuse sinon avec un 403).
+ */
+export async function resetGohUserPassword(
+  userId: string,
+  password: string,
+  forceChangePasswordNextSignIn = false,
+): Promise<void> {
+  const token = await gohToken()
+  await graphRequest<void>(token, 'PATCH', `/users/${userId}`, {
+    passwordProfile: { password, forceChangePasswordNextSignIn },
+  })
+}
+
+/** Invalide les refresh tokens / cookies de session du compte GOH (User.RevokeSessions.All). */
+export async function revokeGohUserSessions(userId: string): Promise<void> {
+  const token = await gohToken()
+  await graphRequest<unknown>(token, 'POST', `/users/${userId}/revokeSignInSessions`)
+}
