@@ -13,6 +13,7 @@ import { MigrationCard } from './components/MigrationCard'
 import { UserRow } from './components/UserRow'
 import { MigrationDashboard } from './components/MigrationDashboard'
 import { LicensePanel } from './components/LicensePanel'
+import { AgenciesPanel } from './components/AgenciesPanel'
 
 export default function MigrationPage() {
   const [query, setQuery] = useState('')
@@ -145,6 +146,7 @@ export default function MigrationPage() {
       {/* ── Colonne principale ─────────────────────────────────────────── */}
       <div className="flex flex-col gap-6">
         <MigrationDashboard />
+        <AgenciesPanel />
         <LicensePanel />
         <header>
           <h1 className="text-2xl font-semibold text-gray-900">Migration ONELA → Ouihelp</h1>

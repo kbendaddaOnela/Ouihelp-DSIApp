@@ -80,6 +80,40 @@ export const migrationApi = {
       }>('/migration/live-stats')
       .then((r) => r.data),
 
+  // Arbre agences par région (effectifs + statut), pour la migration des agences.
+  agenciesTree: (fresh = false) =>
+    apiClient
+      .get<{
+        regions: Array<{
+          label: string
+          total: number
+          done: number
+          in_progress: number
+          agencies: Array<{ code: string; groupId: string; total: number; done: number; in_progress: number }>
+        }>
+        errors: string[]
+        cachedAt: number
+      }>(`/migration/agencies-tree${fresh ? '?fresh=1' : ''}`)
+      .then((r) => r.data),
+
+  // Membres détaillés d'un groupe ONELA (pour sélection avant lancement).
+  groupMembers: (groupId: string) =>
+    apiClient
+      .get<{
+        users: Array<{
+          id: string
+          displayName: string
+          givenName: string
+          surname: string
+          upn: string
+          email: string
+          department: string | null
+          jobTitle: string | null
+          migrationStatus: 'active' | 'none'
+        }>
+      }>(`/migration/group-members/${encodeURIComponent(groupId)}`)
+      .then((r) => r.data.users),
+
   // Effectifs par service, recomptés en direct depuis les groupes de sécurité ONELA.
   serviceGroupCounts: () =>
     apiClient

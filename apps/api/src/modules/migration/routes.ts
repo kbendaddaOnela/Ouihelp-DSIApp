@@ -16,8 +16,10 @@ import {
   checkOnelaMailForwarding,
   countOnelaUsersByDepartment,
   getOnelaGroupMembers,
+  getOnelaGroupUsers,
 } from './service'
 import { getServiceGroups } from './onelaServiceGroups'
+import { getRegionGroups, getAgencyGroups } from './onelaAgencyGroups'
 import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu } from './googleService'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
@@ -46,6 +48,73 @@ function normalizeNamePart(s: string): string {
     .replace(/[^a-z-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
+}
+
+// Exécute `fn` sur `items` avec au plus `limit` appels en parallèle (évite de
+// saturer / faire throttler Graph quand on interroge des dizaines de groupes).
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let i = 0
+  async function worker(): Promise<void> {
+    while (i < items.length) {
+      const idx = i++
+      out[idx] = await fn(items[idx]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
+// Cache mémoire de l'appartenance agence → région (calculée en direct via Graph :
+// les membres d'une agence appartiennent tous à une seule Direction Régionale).
+// Coûteux (≈70 appels) → mis en cache ; les compteurs de statut sont recalculés
+// à chaque requête depuis la BDD (donc toujours frais).
+interface AgencyMembership { code: string; groupId: string; regionLabel: string; upns: string[]; mails: string[] }
+let membershipCache: { at: number; agencies: AgencyMembership[]; errors: string[] } | null = null
+const MEMBERSHIP_TTL = 5 * 60_000
+const NO_REGION = 'Sans région'
+
+async function buildAgencyMembership(): Promise<{ agencies: AgencyMembership[]; errors: string[] }> {
+  const regions = getRegionGroups()
+  const agencies = getAgencyGroups()
+  const errors: string[] = []
+
+  // upn → région (via les 6 groupes Direction Régionale)
+  const regionByUpn = new Map<string, string>()
+  const regionResults = await mapLimit(regions, 4, async (g) => {
+    try { return { label: g.label, members: await getOnelaGroupMembers(g.groupId) } }
+    catch (e) { errors.push(`Région ${g.label}: ${e instanceof Error ? e.message : String(e)}`); return null }
+  })
+  for (const r of regionResults) {
+    if (!r) continue
+    for (const m of r.members) regionByUpn.set(m.upn, r.label)
+  }
+
+  // membres par agence + région majoritaire de l'agence
+  const agencyResults = await mapLimit(agencies, 6, async (a) => {
+    try { return { code: a.code, groupId: a.groupId, members: await getOnelaGroupMembers(a.groupId) } }
+    catch (e) { errors.push(`Agence ${a.code}: ${e instanceof Error ? e.message : String(e)}`); return null }
+  })
+  const built: AgencyMembership[] = []
+  for (const ar of agencyResults) {
+    if (!ar) continue
+    const counts = new Map<string, number>()
+    for (const m of ar.members) {
+      const r = regionByUpn.get(m.upn)
+      if (r) counts.set(r, (counts.get(r) ?? 0) + 1)
+    }
+    let regionLabel = NO_REGION
+    let best = 0
+    for (const [r, n] of counts) if (n > best) { best = n; regionLabel = r }
+    built.push({
+      code: ar.code,
+      groupId: ar.groupId,
+      regionLabel,
+      upns: ar.members.map((m) => m.upn),
+      mails: ar.members.map((m) => m.mail ?? ''),
+    })
+  }
+  return { agencies: built, errors }
 }
 
 export const migrationRouter = new Hono<{ Variables: RbacVariables }>()
@@ -704,6 +773,91 @@ migrationRouter.get('/service-group-counts', requirePermission('migration:read')
   }).filter((r): r is { label: string; total: number; done: number; in_progress: number } => r !== null)
 
   return c.json({ rows, errors })
+})
+
+// ── Arbre agences par région (pour la migration des agences) ──────────────────
+// Régions → agences avec effectifs (membres actifs du groupe) et statut de suivi.
+// L'appartenance agence→région (Graph) est mise en cache ; les compteurs de
+// statut sont recalculés à chaque requête. `?fresh=1` force le recalcul Graph.
+migrationRouter.get('/agencies-tree', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const fresh = ['1', 'true'].includes(c.req.query('fresh') ?? '')
+  if (fresh || !membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
+    try {
+      const built = await buildAgencyMembership()
+      membershipCache = { at: Date.now(), ...built }
+    } catch (err) {
+      return c.json({ error: 'ONELA groups', message: err instanceof Error ? err.message : String(err) }, 502)
+    }
+  }
+  const cache = membershipCache
+
+  const targets = await db
+    .select({ upn: migrationTargets.onelaUpn, status: migrationTargets.status })
+    .from(migrationTargets)
+  const statusByUpn = new Map(targets.map((t) => [t.upn.toLowerCase(), t.status]))
+
+  interface RegionAcc { label: string; total: number; done: number; in_progress: number; agencies: Array<{ code: string; groupId: string; total: number; done: number; in_progress: number }> }
+  const byRegion = new Map<string, RegionAcc>()
+  const region = (label: string): RegionAcc => {
+    let r = byRegion.get(label)
+    if (!r) { r = { label, total: 0, done: 0, in_progress: 0, agencies: [] }; byRegion.set(label, r) }
+    return r
+  }
+
+  for (const a of cache.agencies) {
+    let done = 0
+    let inProgress = 0
+    for (let k = 0; k < a.upns.length; k++) {
+      const status = statusByUpn.get(a.upns[k]!) ?? (a.mails[k] ? statusByUpn.get(a.mails[k]!) : undefined)
+      if (status === 'done') done++
+      else if (status === 'in_progress') inProgress++
+    }
+    const r = region(a.regionLabel)
+    r.agencies.push({ code: a.code, groupId: a.groupId, total: a.upns.length, done, in_progress: inProgress })
+    r.total += a.upns.length; r.done += done; r.in_progress += inProgress
+  }
+
+  const regions = [...byRegion.values()]
+    .map((r) => ({ ...r, agencies: r.agencies.sort((x, y) => x.code.localeCompare(y.code)) }))
+    .sort((x, y) => (x.label === NO_REGION ? 1 : y.label === NO_REGION ? -1 : x.label.localeCompare(y.label, 'fr')))
+
+  return c.json({ regions, errors: cache.errors, cachedAt: cache.at })
+})
+
+// Membres (détaillés) d'un groupe ONELA, avec statut migration, pour sélection
+// avant lancement. Utilisé par le drill-down d'agence.
+migrationRouter.get('/group-members/:groupId', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const groupId = c.req.param('groupId')
+  let graphUsers
+  try {
+    graphUsers = await getOnelaGroupUsers(groupId)
+  } catch (err) {
+    return c.json({ error: 'ONELA group', message: err instanceof Error ? err.message : String(err) }, 502)
+  }
+  const ids = graphUsers.map((u) => u.id)
+  const active = ids.length
+    ? await db.select({ onelaUserId: migrations.onelaUserId }).from(migrations)
+        .where(and(inArray(migrations.onelaUserId, ids), eq(migrations.archived, 0)))
+    : []
+  const activeSet = new Set(active.map((a) => a.onelaUserId))
+
+  const users = graphUsers
+    .map((u) => ({
+      id: u.id,
+      displayName: u.displayName,
+      givenName: u.givenName ?? '',
+      surname: u.surname ?? '',
+      upn: u.userPrincipalName,
+      email: u.mail ?? u.userPrincipalName,
+      department: u.department ?? null,
+      jobTitle: u.jobTitle ?? null,
+      migrationStatus: activeSet.has(u.id) ? ('active' as const) : ('none' as const),
+    }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'fr'))
+
+  return c.json({ users })
 })
 
 // Définit (ou efface) le total de sièges achetés pour une licence.

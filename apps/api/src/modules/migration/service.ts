@@ -165,6 +165,38 @@ export async function getOnelaGroupMembers(groupId: string): Promise<OnelaGroupM
   return members
 }
 
+/**
+ * Liste complète des utilisateurs (détails) d'un groupe ONELA — pour la
+ * sélection des membres avant lancement de migration. Mêmes champs que la
+ * recherche, ne garde que les comptes activés @onela.com.
+ */
+export async function getOnelaGroupUsers(groupId: string): Promise<GraphUser[]> {
+  const token = await getOnelaToken()
+  const domain = process.env['ONELA_MAILBOX_DOMAIN'] || 'onela.com'
+  let url: string | null =
+    `https://graph.microsoft.com/v1.0/groups/${encodeURIComponent(groupId)}/transitiveMembers/microsoft.graph.user` +
+    `?$select=${USER_SELECT},accountEnabled&$count=true&$top=999`
+  const users: GraphUser[] = []
+  while (url) {
+    const res: Response = await fetchWithTimeout(url, {
+      headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Graph group users ${res.status} (${groupId}): ${err.slice(0, 300)}`)
+    }
+    const data = (await res.json()) as { value?: Array<GraphUser & { accountEnabled?: boolean | null }>; '@odata.nextLink'?: string }
+    for (const u of data.value ?? []) {
+      if (u.accountEnabled === false) continue
+      const mail = u.mail ?? null
+      if (!mail || !mail.toLowerCase().endsWith(`@${domain}`)) continue
+      users.push(u)
+    }
+    url = data['@odata.nextLink'] ?? null
+  }
+  return users
+}
+
 // ── Exchange Admin REST API (ForwardingSMTPAddress) ──────────────────────────
 // Uses the same API as Exchange Admin Center to set the real transport-level forwarding
 
