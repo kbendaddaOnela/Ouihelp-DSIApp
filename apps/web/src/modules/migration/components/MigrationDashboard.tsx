@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useMigration'
 import { onelaContactsApi, migrationApi } from '../api'
 import type { MigrationStats } from '../api'
-import { ServiceList } from './ServiceList'
+import { SuiviTree, type TreeNode } from './SuiviTree'
 
 // ── Override local (groupes terminés non encore reflétés dans la base) ────────
 const DONE_OVERRIDES: Record<string, number> = {
@@ -168,6 +168,13 @@ export function MigrationDashboard() {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   })
+  // Partage le cache avec le panneau agences (même queryKey → pas de double appel).
+  const { data: agenciesData, refetch: refetchAgencies } = useQuery({
+    queryKey: ['agencies-tree'],
+    queryFn: () => migrationApi.agenciesTree(),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  })
   const { mutate: importCSV, isPending: isImporting, data: importResult, reset: resetImport } = useImportTargets()
   const { mutate: resetDone, isPending: isResetting } = useResetDone()
   const fileRef = useRef<HTMLInputElement>(null)
@@ -279,6 +286,39 @@ export function MigrationDashboard() {
   const usingGroups = groupRows.length > 0
   const deptTabRows = usingGroups ? groupRows : deptRows
 
+  // Arbre de suivi : Siège → services, Agences → région → agence (lecture seule).
+  const suiviRoots: TreeNode[] | null = useMemo(() => {
+    const rows = serviceCounts?.rows
+    if (!rows || rows.length === 0) return null
+    const isSiege = (l: string) => l.trim().toLowerCase() === 'siège' || l.trim().toLowerCase() === 'siege'
+    const siege = rows.find((r) => isSiege(r.label))
+    const others = rows.filter((r) => !isSiege(r.label))
+    const sum = (arr: { total: number; done: number; in_progress: number }[]) =>
+      arr.reduce((a, r) => ({ total: a.total + r.total, done: a.done + r.done, in_progress: a.in_progress + r.in_progress }), { total: 0, done: 0, in_progress: 0 })
+
+    const siegeCounts = siege ?? sum(others)
+    const siegeNode: TreeNode = {
+      key: 'siege', label: 'Siège',
+      total: siegeCounts.total, done: siegeCounts.done, in_progress: siegeCounts.in_progress,
+      children: others.map((r) => ({ key: `svc-${r.groupId}`, label: r.label, total: r.total, done: r.done, in_progress: r.in_progress })),
+    }
+
+    const roots: TreeNode[] = [siegeNode]
+    const regions = agenciesData?.regions ?? []
+    if (regions.length > 0) {
+      const agg = sum(regions)
+      roots.push({
+        key: 'agences', label: 'Agences',
+        total: agg.total, done: agg.done, in_progress: agg.in_progress,
+        children: regions.map((rg) => ({
+          key: `reg-${rg.label}`, label: rg.label, total: rg.total, done: rg.done, in_progress: rg.in_progress,
+          children: rg.agencies.map((a) => ({ key: `ag-${a.groupId}`, label: a.name, total: a.total, done: a.done, in_progress: a.in_progress })),
+        })),
+      })
+    }
+    return roots
+  }, [serviceCounts, agenciesData])
+
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5">
       {/* En-tête */}
@@ -289,7 +329,7 @@ export function MigrationDashboard() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { refetch(); refetchLive(); refetchSvc() }}
+            onClick={() => { refetch(); refetchLive(); refetchSvc(); refetchAgencies() }}
             disabled={isFetching || liveFetching || svcFetching}
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50"
           >
@@ -428,8 +468,8 @@ export function MigrationDashboard() {
               </p>
             )}
             {tab === 'dept'
-              ? (usingGroups && serviceCounts?.rows
-                  ? <ServiceList rows={serviceCounts.rows} />
+              ? (suiviRoots
+                  ? <SuiviTree roots={suiviRoots} />
                   : <GroupTable rows={deptTabRows} applyDoneOverrides={!usingGroups} />)
               : <GroupTable rows={stats.byOffice} />
             }
