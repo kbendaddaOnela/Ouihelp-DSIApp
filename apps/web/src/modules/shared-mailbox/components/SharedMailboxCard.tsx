@@ -656,12 +656,12 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
         </button>
       </div>
 
-      {liveData && liveData.delegates.length >= 20 && (
+      {migration.delegates.some((d) => d.errorDetails?.includes('refuse une délégation de plus')) && (
         <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-          Cette boîte porte déjà {liveData.delegates.length} délégations. Le plafond de Google
-          s’applique à la <strong>boîte déléguée</strong> (pas aux délégués)&nbsp;: au-delà, l’ajout
-          échoue avec « Delegator user cannot have any more delegates », quel que soit le compte
-          ajouté. Retire les délégations devenues inutiles avant d’en ajouter.
+          Le refus porte sur la <strong>boîte</strong>, pas sur les comptes ajoutés. Sur une boîte
+          créée récemment, Google bloque souvent bien avant les 25 délégations documentées et le
+          quota se libère de lui-même&nbsp;: réessaie « Réappliquer » dans quelques heures, seules
+          les manquantes seront reposées.
         </p>
       )}
 
