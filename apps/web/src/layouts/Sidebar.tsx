@@ -1,6 +1,7 @@
 import { NavLink, Link } from 'react-router-dom'
 import {
   UserPlus,
+  UserMinus,
   Monitor,
   AppWindow,
   KeyRound,
@@ -55,6 +56,12 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Création de comptes',
     icon: UserPlus,
     requiredPermissions: ['accounts:read'],
+  },
+  {
+    path: '/offboarding',
+    label: 'Offboarding',
+    icon: UserMinus,
+    requiredPermissions: ['offboarding:read'],
   },
   {
     path: '/inventory',

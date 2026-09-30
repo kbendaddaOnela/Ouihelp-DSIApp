@@ -12,6 +12,14 @@ import type { StepStatus } from './migration'
  */
 export type SharedMigrationMode = 'group' | 'account'
 
+/**
+ * État de l'import mail. Superset de `StepStatus` : un import peut être mis en
+ * pause puis repris là où il s'est arrêté. On ne l'ajoute pas à `StepStatus`
+ * lui-même, qui décrit des étapes atomiques (création de compte, alias…) qui,
+ * elles, ne se mettent pas en pause.
+ */
+export type MailImportStatus = StepStatus | 'paused'
+
 /** Boîte aux lettres partagée Exchange (RecipientTypeDetails = SharedMailbox) */
 export interface SharedMailbox {
   id: string
@@ -104,6 +112,10 @@ export interface SharedMigrationRecord {
   stepLicense: StepStatus
   licenseAckAt: string | null
   licenseAckBy: string | null
+  /** SKU assigné depuis l'app. null quand la licence a été posée via l'OU ou la console. */
+  licenseSkuId: string | null
+  licenseSkuName: string | null
+  licenseError: string | null
   stepAliasSendAs: StepStatus
   aliasSendAsError: string | null
   stepDelegates: StepStatus
@@ -116,7 +128,7 @@ export interface SharedMigrationRecord {
   stepCreateGroup: StepStatus
   createGroupError: string | null
   // ── Import mail (commun) ──
-  stepMailImport: StepStatus
+  stepMailImport: MailImportStatus
   mailTotal: number
   mailMigrated: number
   mailFailed: number

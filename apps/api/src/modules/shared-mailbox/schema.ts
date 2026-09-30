@@ -1,6 +1,13 @@
 import { mysqlTable, varchar, mysqlEnum, timestamp, text, int, uniqueIndex } from 'drizzle-orm/mysql-core'
 
 const stepStatus = ['pending', 'running', 'success', 'error', 'skipped'] as const
+/**
+ * L'import mail connaît un état de plus : `paused`. Un import mis en pause n'est
+ * ni en erreur (le marquer 'error' donnait un badge rouge trompeur) ni terminé —
+ * il attend une reprise explicite et reste hors du polling du worker, qui ne
+ * ramasse que les lignes 'pending'.
+ */
+const mailImportStatus = [...stepStatus, 'paused'] as const
 const messageStatus = ['success', 'error', 'skipped'] as const
 const migrationMode = ['group', 'account'] as const
 
@@ -44,12 +51,20 @@ export const sharedMigrations = mysqlTable('shared_migrations', {
   targetPassword: varchar('target_password', { length: 255 }),
   stepCreateAccount: mysqlEnum('step_create_account', stepStatus).default('pending').notNull(),
   createAccountError: text('create_account_error'),
-  /** Licence Business Plus : attribuée HORS application (OU ou console admin).
-   *  L'étape est simplement acquittée depuis l'UI — l'import mail en dépend
-   *  (sans licence Gmail, l'API d'import renvoie une erreur). */
+  /** Licence Business Plus. Deux voies : attribution directe depuis l'app via
+   *  License Manager (POST /:id/assign-license), ou attribution hors app (OU,
+   *  console admin) simplement acquittée depuis l'UI. Dans les deux cas l'import
+   *  mail en dépend : sans licence, Gmail n'est pas provisionné et l'API d'import
+   *  renvoie une erreur. */
   stepLicense: mysqlEnum('step_license', stepStatus).default('pending').notNull(),
   licenseAckAt: timestamp('license_ack_at'),
   licenseAckBy: varchar('license_ack_by', { length: 255 }),
+  /** SKU réellement assigné quand l'attribution se fait depuis l'app (License
+   *  Manager API). Reste null si la licence a été posée via l'OU ou la console :
+   *  l'étape est alors seulement acquittée. */
+  licenseSkuId: varchar('license_sku_id', { length: 64 }),
+  licenseSkuName: varchar('license_sku_name', { length: 128 }),
+  licenseError: text('license_error'),
   /** Alias onela.com + identité « Envoyer en tant que » par défaut */
   stepAliasSendAs: mysqlEnum('step_alias_send_as', stepStatus).default('pending').notNull(),
   aliasSendAsError: text('alias_send_as_error'),
@@ -65,7 +80,7 @@ export const sharedMigrations = mysqlTable('shared_migrations', {
   createGroupError: text('create_group_error'),
 
   // ── Import mail (commun aux deux modes) ───────────────────────────────────
-  stepMailImport: mysqlEnum('step_mail_import', stepStatus).default('pending').notNull(),
+  stepMailImport: mysqlEnum('step_mail_import', mailImportStatus).default('pending').notNull(),
   mailTotal: int('mail_total').default(0).notNull(),
   mailMigrated: int('mail_migrated').default(0).notNull(),
   mailFailed: int('mail_failed').default(0).notNull(),

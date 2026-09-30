@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   Play,
-  Square,
+  Pause,
   Trash2,
   AlertCircle,
   CheckCircle2,
@@ -17,10 +17,11 @@ import {
   RefreshCw,
   FileWarning,
 } from 'lucide-react'
-import type { SharedMigrationRecord, StepStatus } from '@dsi-app/shared'
+import type { MailImportStatus, SharedMigrationRecord } from '@dsi-app/shared'
 import {
   useRunSharedMigration,
-  useStopSharedMigration,
+  usePauseSharedMigration,
+  useResumeSharedMigration,
   useDeleteSharedMigration,
   useSharedDualDeliveryStatus,
   useEnableSharedDualDelivery,
@@ -34,11 +35,14 @@ import {
   useSetupSendAs,
   useSharedAccountStatus,
   useLicenseAck,
+  useSharedLicenseSkus,
+  useAssignSharedLicense,
   useAliasSendAs,
   useDelegateCandidates,
   useGoogleUserSearch,
   useAddDelegate,
   useRemoveDelegate,
+  useLiveDelegates,
   useApplyDelegates,
   useArchiveSharedMigration,
   useUnarchiveSharedMigration,
@@ -65,13 +69,14 @@ function errorMessage(err: unknown): string {
 const alertOnError = (action: string) => (err: unknown) =>
   window.alert(`${action} a échoué :\n\n${errorMessage(err)}`)
 
-function StepBadge({ status, label }: { status: StepStatus; label: string }) {
-  const map: Record<StepStatus, { cls: string; icon: React.ReactNode }> = {
+function StepBadge({ status, label }: { status: MailImportStatus; label: string }) {
+  const map: Record<MailImportStatus, { cls: string; icon: React.ReactNode }> = {
     pending: { cls: 'bg-gray-100 text-gray-700', icon: <Loader2 className="h-3.5 w-3.5 animate-pulse" /> },
     running: { cls: 'bg-blue-100 text-blue-700', icon: <Loader2 className="h-3.5 w-3.5 animate-spin" /> },
     success: { cls: 'bg-green-100 text-green-700', icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
     error: { cls: 'bg-red-100 text-red-700', icon: <AlertCircle className="h-3.5 w-3.5" /> },
     skipped: { cls: 'bg-gray-100 text-gray-500', icon: null },
+    paused: { cls: 'bg-amber-100 text-amber-800', icon: <Pause className="h-3.5 w-3.5" /> },
   }
   const m = map[status]
   return (
@@ -84,22 +89,25 @@ function StepBadge({ status, label }: { status: StepStatus; label: string }) {
 
 export function SharedMailboxCard({ migration }: Props) {
   const { mutate: runMigration, isPending: isRunning } = useRunSharedMigration()
-  const { mutate: stopMigration, isPending: isStopping } = useStopSharedMigration()
+  const { mutate: pauseMigration, isPending: isPausing } = usePauseSharedMigration()
+  const { mutate: resumeMigration, isPending: isResuming } = useResumeSharedMigration()
   const { mutate: deleteMigration, isPending: isDeleting } = useDeleteSharedMigration()
   const { mutate: archiveMigration, isPending: isArchiving } = useArchiveSharedMigration()
   const { mutate: unarchiveMigration, isPending: isUnarchiving } = useUnarchiveSharedMigration()
 
   const isAccountMode = migration.mode === 'account'
   const isInFlight = migration.stepMailImport === 'running' || migration.stepMailImport === 'pending'
+  const isPaused = migration.stepMailImport === 'paused'
 
   const pct = migration.mailTotal > 0
     ? Math.min(100, Math.round((migration.mailMigrated / migration.mailTotal) * 100))
     : 0
 
-  const canRun =
-    migration.stepMailImport !== 'running' && migration.stepMailImport !== 'pending'
+  // Un import en pause se reprend avec « Reprendre », pas avec « Lancer » :
+  // le bouton dédié évite de confondre reprise et resynchronisation.
+  const canRun = !isInFlight && !isPaused
   const canDelete = migration.stepMailImport !== 'running'
-  // En mode compte, l'import n'a de sens qu'une fois la licence acquittée
+  // En mode compte, l'import n'a de sens qu'une fois la licence attribuée
   const runBlockedByLicense = isAccountMode && migration.stepLicense !== 'success'
   const isDone = migration.stepMailImport === 'success'
 
@@ -172,18 +180,26 @@ export function SharedMailboxCard({ migration }: Props) {
               {migration.stepMailImport === 'success' ? 'Resynchroniser' : 'Lancer'}
             </button>
           )}
+          {isPaused && !migration.archived && (
+            <button
+              onClick={() => resumeMigration(migration.id, { onError: alertOnError('Reprendre l’import') })}
+              disabled={isResuming || runBlockedByLicense}
+              title="Repart au point d’arrêt : les messages déjà importés sont sautés, pas retéléchargés"
+              className="inline-flex items-center gap-1 rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              <Play className="h-3.5 w-3.5" />
+              {isResuming ? 'Reprise…' : 'Reprendre'}
+            </button>
+          )}
           {isInFlight && (
             <button
-              onClick={() => {
-                if (window.confirm("Arrêter la migration en cours ? Les messages déjà importés sont conservés ; tu pourras la relancer (reprise idempotente).")) {
-                  stopMigration(migration.id)
-                }
-              }}
-              disabled={isStopping}
+              onClick={() => pauseMigration(migration.id, { onError: alertOnError('Mettre en pause') })}
+              disabled={isPausing}
+              title="S’arrête à la fin du lot en cours. Reprise possible au point d’arrêt."
               className="inline-flex items-center gap-1 rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50"
             >
-              <Square className="h-3.5 w-3.5" />
-              {isStopping ? 'Arrêt…' : 'Arrêter'}
+              <Pause className="h-3.5 w-3.5" />
+              {isPausing ? 'Pause…' : 'Mettre en pause'}
             </button>
           )}
           {canDelete && (
@@ -243,11 +259,13 @@ export function SharedMailboxCard({ migration }: Props) {
             {/* Une fois l'import terminé, un pourcentage n'a plus de sens : le
                 total vient du comptage Exchange, le migré du décompte réel en
                 base, et les deux ne se recouvrent jamais exactement. */}
-            <span>{isDone ? 'terminé' : `${pct}%`}</span>
+            <span>{isDone ? 'terminé' : isPaused ? `en pause — ${pct}%` : `${pct}%`}</span>
           </div>
           <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
             <div
-              className={`h-full transition-all ${isDone ? 'bg-green-500' : 'bg-blue-500'}`}
+              className={`h-full transition-all ${
+                isDone ? 'bg-green-500' : isPaused ? 'bg-amber-500' : 'bg-blue-500'
+              }`}
               style={{ width: `${isDone ? 100 : pct}%` }}
             />
           </div>
@@ -262,16 +280,26 @@ export function SharedMailboxCard({ migration }: Props) {
         </div>
       )}
 
+      {/* Un import en pause n'est pas une erreur : son message passe en ambre. */}
+      {isPaused && migration.mailError && (
+        <div className="mt-3 flex items-start gap-1.5 rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <Pause className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{migration.mailError}</span>
+        </div>
+      )}
+
       {(migration.createGroupError ||
         migration.createAccountError ||
+        migration.licenseError ||
         migration.aliasSendAsError ||
         migration.delegatesError ||
-        migration.mailError) && (
+        (!isPaused && migration.mailError)) && (
         <div className="mt-3 space-y-0.5 rounded bg-red-50 px-3 py-2 text-xs text-red-700">
           {migration.createAccountError && <div>Compte : {migration.createAccountError}</div>}
+          {migration.licenseError && <div>Licence : {migration.licenseError}</div>}
           {migration.aliasSendAsError && <div>Alias / send-as : {migration.aliasSendAsError}</div>}
           {migration.createGroupError && <div>Groupe : {migration.createGroupError}</div>}
-          {migration.mailError && <div>Mail : {migration.mailError}</div>}
+          {!isPaused && migration.mailError && <div>Mail : {migration.mailError}</div>}
           {migration.delegatesError && <div>Délégations : {migration.delegatesError}</div>}
         </div>
       )}
@@ -294,6 +322,11 @@ function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
   const { mutate: retry, isPending: retrying } = useRetrySharedErrors()
 
   const isInFlight = migration.stepMailImport === 'running' || migration.stepMailImport === 'pending'
+  // En pause, la reprise ciblée est bloquée : elle recalculerait l'état final de
+  // l'étape et effacerait la pause alors que le balayage n'est pas terminé. De
+  // toute façon « Reprendre » rejoue les erreurs (le delta est désactivé dès
+  // qu'il en reste).
+  const isPaused = migration.stepMailImport === 'paused'
   const errors = data?.errors ?? []
 
   return (
@@ -317,11 +350,13 @@ function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
                 onSuccess: (d) => window.alert(d.message),
               })
             }
-            disabled={retrying || isInFlight || migration.archived}
+            disabled={retrying || isInFlight || isPaused || migration.archived}
             title={
               isInFlight
                 ? 'Un traitement est déjà en cours sur cette migration'
-                : 'Rejoue uniquement les messages en erreur, sans reparcourir toute la boîte'
+                : isPaused
+                  ? 'Import en pause — clique « Reprendre » : la reprise rejoue aussi les erreurs'
+                  : 'Rejoue uniquement les messages en erreur, sans reparcourir toute la boîte'
             }
             className="inline-flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-red-700 disabled:opacity-50"
           >
@@ -359,6 +394,107 @@ function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
 }
 
 // ── Compte Google + licence ─────────────────────────────────────────────────
+
+/**
+ * Attribution d'une licence Workspace au compte partagé, directement depuis l'app.
+ *
+ * Les sièges affichés viennent du même endpoint que le module migration : une BAL
+ * partagée consomme un siège comme un utilisateur nominatif, le compteur est donc
+ * le même. Les totaux de sièges achetés restent en lecture seule ici — ils se
+ * saisissent une seule fois dans le panneau licences du dashboard.
+ */
+function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord }) {
+  const { data: skus, isLoading, isError, error, refetch } = useSharedLicenseSkus(true)
+  const { mutate: assign, isPending: assigning } = useAssignSharedLicense()
+
+  return (
+    <div className="mt-3 rounded border border-gray-200 bg-gray-50/70 p-2.5">
+      <div className="mb-1.5 text-[11px] font-semibold text-gray-700">
+        Attribuer une licence à <span className="font-mono">{migration.targetUserEmail}</span>
+      </div>
+
+      {isLoading && (
+        <p className="flex items-center gap-1.5 text-[11px] text-gray-500">
+          <Loader2 className="h-3 w-3 animate-spin" /> Chargement des licences…
+        </p>
+      )}
+
+      {isError && (
+        <div className="space-y-1">
+          <p className="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700">
+            {error instanceof Error ? error.message : 'Erreur de récupération des licences'}
+          </p>
+          <button
+            onClick={() => refetch()}
+            className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-700"
+          >
+            <RefreshCw className="h-3 w-3" /> Réessayer
+          </button>
+        </div>
+      )}
+
+      {skus && skus.length > 0 && (
+        <div className="space-y-1.5">
+          {skus.map((sku) => {
+            const isAssigned = migration.licenseSkuId === sku.skuId
+            const noneLeft = sku.remaining != null && sku.remaining <= 0
+            return (
+              <div
+                key={`${sku.productId}|${sku.skuId}`}
+                className="flex items-center gap-2 rounded-lg border border-gray-100 bg-white px-2 py-1.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-gray-800">{sku.name}</div>
+                  <div className="text-[11px] text-gray-500">
+                    {sku.total != null ? (
+                      <>
+                        <span className={noneLeft ? 'font-medium text-red-600' : 'font-medium text-emerald-600'}>
+                          {sku.remaining} restante{Math.abs(sku.remaining ?? 0) > 1 ? 's' : ''}
+                        </span>
+                        {' · '}
+                        {sku.used}/{sku.total} utilisées
+                      </>
+                    ) : (
+                      <>{sku.used} utilisées</>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() =>
+                    assign(
+                      { id: migration.id, productId: sku.productId, skuId: sku.skuId },
+                      {
+                        onError: alertOnError(`Attribuer « ${sku.name} »`),
+                        onSuccess: (d) =>
+                          window.alert(
+                            d.mailboxReady
+                              ? `Licence « ${sku.name} » attribuée. La boîte Gmail est prête : l’import démarre.`
+                              : `Licence « ${sku.name} » attribuée.\n\nGmail met quelques minutes à se provisionner : ` +
+                                `rafraîchis l’état, puis clique « Lancer » quand la boîte est prête.`,
+                          ),
+                      },
+                    )
+                  }
+                  disabled={assigning || isAssigned}
+                  title={isAssigned ? 'Déjà attribuée à ce compte' : undefined}
+                  className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                >
+                  {isAssigned ? '✓' : assigning ? '…' : 'Attribuer'}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {skus && skus.length === 0 && !isError && (
+        <p className="text-[11px] text-amber-600">
+          Aucune licence détectée. Vérifie le scope DwD « apps.licensing » côté console Google.
+        </p>
+      )}
+    </div>
+  )
+}
 
 function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
   const accountCreated = migration.stepCreateAccount === 'success'
@@ -404,9 +540,17 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
             {data?.mailboxReady ? 'oui' : 'non — licence Business Plus à attribuer'}
           </span>
         </div>
+        {migration.licenseSkuName && (
+          <div className="flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+            Licence&nbsp;: <span className="font-medium text-gray-800">{migration.licenseSkuName}</span>
+            <span className="text-gray-400">(attribuée depuis l’app)</span>
+          </div>
+        )}
         {migration.licenseAckAt && (
           <div className="text-gray-500">
-            Licence acquittée le {new Date(migration.licenseAckAt).toLocaleString('fr-FR')}
+            Licence {migration.licenseSkuName ? 'attribuée' : 'acquittée'} le{' '}
+            {new Date(migration.licenseAckAt).toLocaleString('fr-FR')}
             {migration.licenseAckBy ? ` par ${migration.licenseAckBy}` : ''}
           </div>
         )}
@@ -425,7 +569,7 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
             title="À cliquer une fois la licence Business Plus attribuée dans la console Google"
           >
             <BadgeCheck className="h-3 w-3" />
-            {acking ? 'Vérification…' : 'Licence attribuée → lancer l’import'}
+            {acking ? 'Vérification…' : 'Licence déjà attribuée → lancer l’import'}
           </button>
         )}
         <button
@@ -444,10 +588,14 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
         </button>
       </div>
 
+      {!licenseDone && <LicenseAssignBlock migration={migration} />}
+
       {!licenseDone && (
         <p className="mt-2 text-[11px] text-gray-500">
-          La licence est attribuée <strong>hors application</strong> (OU ou console Google Admin). Le bouton
-          ci-dessus vérifie que la boîte Gmail est bien provisionnée avant de lancer l’import.
+          Deux voies&nbsp;: <strong>attribuer</strong> une licence ci-dessus (elle est posée
+          immédiatement via l’API Google), ou la poser hors app (OU / console Admin) puis cliquer
+          « Licence déjà attribuée » — ce bouton-là vérifie d’abord que la boîte Gmail est
+          provisionnée avant de lancer l’import.
         </p>
       )}
     </div>
@@ -465,6 +613,9 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
     showCandidates,
   )
   const { data: searchData, isFetching: searching } = useGoogleUserSearch(search)
+  // Compté côté Google et non depuis notre table : le plafond de délégations
+  // s'applique à la boîte, et une délégation posée hors app compte aussi.
+  const { data: liveData } = useLiveDelegates(migration.id, migration.stepCreateAccount === 'success')
   const { mutate: addDelegate, isPending: adding } = useAddDelegate()
   const { mutate: removeDelegate, isPending: removing } = useRemoveDelegate()
   const { mutate: applyDelegates, isPending: applying } = useApplyDelegates()
@@ -484,6 +635,11 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
         <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
           <Users className="h-3.5 w-3.5" />
           Délégations Gmail ({migration.delegates.length})
+          {liveData && (
+            <span className="font-normal text-gray-400">
+              — {liveData.delegates.length} posée{liveData.delegates.length > 1 ? 's' : ''} côté Gmail
+            </span>
+          )}
         </div>
         <button
           onClick={() =>
@@ -499,6 +655,15 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
           {applying ? 'Application…' : 'Réappliquer'}
         </button>
       </div>
+
+      {migration.delegates.some((d) => d.errorDetails?.includes('refuse une délégation de plus')) && (
+        <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+          Le refus porte sur la <strong>boîte</strong>, pas sur les comptes ajoutés. Sur une boîte
+          créée récemment, Google bloque souvent bien avant les 25 délégations documentées et le
+          quota se libère de lui-même&nbsp;: réessaie « Réappliquer » dans quelques heures, seules
+          les manquantes seront reposées.
+        </p>
+      )}
 
       <p className="mb-2 text-[11px] text-gray-500">
         Le délégué n’a <strong>rien à connecter</strong> : la boîte apparaît dans le sélecteur de compte

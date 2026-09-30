@@ -490,34 +490,49 @@ L'adresse primaire étant déjà sur `mig.onela.com`, le **dual delivery** vise 
 ### 14.3 Séquence
 
 1. **Compte Google** — création directe via Admin SDK Directory (`users.insert`), mot de passe aléatoire jamais communiqué (personne ne s'y connecte), OU `GOOGLE_SHARED_MAILBOX_OU_PATH` (défaut : celle des users ONELA). Idempotent.
-2. **Licence Business Plus** — **hors application** (OU ou console admin). Le worker s'arrête ici (`step_mail_import = 'skipped'`) et attend le bouton **« Licence attribuée »**, qui vérifie `isMailboxSetup` avant de relancer : sans Gmail provisionné, l'import échouerait avec des erreurs illisibles.
+2. **Licence Business Plus** — deux voies. **Depuis l'app** (`POST /:id/assign-license`, License Manager API) : le SKU choisi est posé immédiatement sur le compte, et l'import n'est enchaîné que si Gmail répond déjà `isMailboxSetup` (le provisionnement prend quelques minutes). Ou **hors application** (OU à licence automatique, console admin), auquel cas le bouton **« Licence déjà attribuée »** vérifie `isMailboxSetup` avant de relancer. Dans les deux cas le worker s'arrête ici (`step_mail_import = 'skipped'`) tant que l'étape n'est pas validée : sans Gmail provisionné, l'import échouerait avec des erreurs illisibles.
 3. **Alias + « Envoyer en tant que »** — alias `@onela.com` posé sur le compte, identité send-as créée et marquée **par défaut** (les réponses partent avec l'adresse historique du service). Non bloquant : rejouable via un bouton.
 4. **Dual delivery** — transport rule Exchange `BlindCopyTo` → adresse primaire du compte (posée automatiquement, rejouable).
-5. **Import mail** — Exchange → Gmail, **dossiers convertis en libellés**, dédup par `Message-ID`, reprise idempotente (`shared_migrated_messages`), delta via `mail_last_sync_at`. Exactement le traitement d'un utilisateur nominatif (mêmes helpers `mailService`).
+5. **Import mail** — Exchange → Gmail, **dossiers convertis en libellés**, dédup par `Message-ID`, reprise idempotente (`shared_migrated_messages`), delta via `mail_last_sync_at`. Exactement le traitement d'un utilisateur nominatif (mêmes helpers `mailService`). **Interruptible** : voir 14.4.
 6. **Délégations Gmail** — posées sur chaque délégué de `shared_mailbox_delegates`. Rejouable ; ajout/retrait possible à tout moment depuis la carte.
 
-### 14.4 Prérequis d'exploitation
+### 14.4 Pause et reprise de l'import
 
-- **Scopes DwD** (Google Admin Console) : `admin.directory.user` (création du compte, alias), `gmail.settings.sharing` (send-as), `gmail.settings.basic`, `https://mail.google.com/` (import). Les trois derniers sont déjà en place pour la migration classique.
+`POST /:id/pause` pose un signal en mémoire que le worker relit **entre deux lots** : l'import s'arrête sur une frontière propre, écrit `step_mail_import = 'paused'` et **laisse `mail_last_sync_at` inchangé**. C'est le point clé — avancer ce repère transformerait la reprise en delta qui sauterait tout l'historique non encore importé.
+
+`POST /:id/resume` repasse simplement la ligne en `pending`. La reprise **reparcourt** les métadonnées Graph, mais le `skipSet` (construit depuis `shared_migrated_messages`) écarte tout ce qui est déjà importé : aucun MIME n'est retéléchargé, aucun appel Gmail n'est refait, la reprise attaque donc réellement au point d'arrêt. Le re-parcours de métadonnées est volontairement sans tempo (pas de `sleep` sur un lot entièrement sauté), sinon rebalayer une boîte déjà migrée prendrait des heures.
+
+Trois détails qui comptent :
+
+- Une migration en pause **sort du polling** (le worker ne ramasse que `pending`) et reste **archivable** — contrairement à un import en cours.
+- `'paused'` n'est **pas** dans `StepStatus` mais dans `MailImportStatus` (`StepStatus | 'paused'`), et seule la colonne `step_mail_import` porte la valeur. Les étapes atomiques (compte, alias, délégations) ne se mettent pas en pause, et l'union restreinte évite de propager le cas à tous les badges de l'app. En base, la valeur est ajoutée par un patch d'enum vérifié dans `ensureSchemaPatches()` (additif : aucune valeur existante n'est retirée).
+- La **reprise ciblée des erreurs** est bloquée pendant une pause : elle recalculerait l'état final de l'étape depuis la base et effacerait la pause alors que le balayage n'est pas terminé. Ce n'est pas une perte — « Reprendre » rejoue les erreurs, le delta étant désactivé dès qu'il en reste une.
+
+### 14.5 Prérequis d'exploitation
+
+- **Scopes DwD** (Google Admin Console) : `admin.directory.user` (création du compte, alias), `apps.licensing` (attribution de licence depuis l'app), `gmail.settings.sharing` (send-as), `gmail.settings.basic`, `https://mail.google.com/` (import). Tous sauf le premier sont déjà en place pour la migration classique.
 - **Délégations Gmail — les deux scopes sont nécessaires** (constaté en prod le 02/09/2026, non documenté par Google) : sur `settings/delegates`, le **`list` n'accepte que `https://mail.google.com/`** (403 `insufficient authentication scopes` avec `gmail.settings.sharing`) et le **`create` fait l'inverse** — `mail.google.com` refusé, `gmail.settings.sharing` accepté. Aucun des deux seul ne suffit ; l'app essaie les deux dans l'ordre et mémorise celui qui passe pour chaque appel. Les deux doivent donc être autorisés en DwD. Si aucun ne passe, l'erreur nomme les scopes à ajouter.
 - **⚠️ Réglage console indispensable — sinon les délégations sont invisibles** : Admin → Apps → Google Workspace → Gmail → Paramètres utilisateur → **Délégation de messagerie** → « Autoriser les utilisateurs à déléguer l'accès à leur boîte aux lettres ». Il s'applique à l'OU du compte qui **délègue** (donc celle des BAL partagées, `onela.com`), pas à celle du délégué. Désactivé, l'API répond `verification=accepted`, l'app affiche « success »… et **Gmail masque purement et simplement la délégation** (« Les délégations existantes sont masquées lorsque cette fonctionnalité est désactivée ») : rien dans le sélecteur de compte, et `mail.google.com/mail/b/<bal>/` retombe sur la boîte du délégué. Symptôme trompeur : tout est vert côté app.
   - Contrepartie : l'activer sur l'OU `onela.com` autorise aussi les collaborateurs ONELA à déléguer leur propre boîte. Pour l'éviter, créer une sous-OU dédiée aux BAL et pointer `GOOGLE_SHARED_MAILBOX_OU_PATH` dessus.
   - Sur le même écran, préférer « **Afficher le titulaire du compte uniquement** » : sinon les réponses envoyées depuis la BAL exposent l'adresse nominative de l'agent au destinataire.
 - **Accès délégué** : aucune connexion. La boîte apparaît dans le menu avatar du délégué, ou via `https://mail.google.com/mail/b/<adresse-primaire-de-la-bal>/`. « Ajouter un compte » **échoue nécessairement** (`accounts.google.com/a/<domaine>/acs` → « Adresse e-mail incorrecte ») : le compte étant créé nativement dans Google, il n'a pas d'identité SSO côté Entra.
+- **Plafond de délégations — il porte sur la boîte, pas sur le délégué, et il ment sur les comptes neufs** : un ajout refusé avec `400 Delegator user cannot have any more delegates` désigne la **boîte déléguée**, jamais le compte ajouté (qui passe sans problème sur une autre boîte). Google documente **25 délégués** par compte ; observé en prod le 30/09/2026 sur `tierspayeurs`, le refus est tombé **dès 10 délégations posées**, sur une boîte créée le jour même — comportement connu sur les comptes fraîchement provisionnés, rapporté jusque sur des tenants Enterprise Plus, et qui **se débloque seul après quelques heures**. Donc : en dessous de 25, ne pas élaguer, attendre et cliquer « Réappliquer » (idempotent, ne repose que les manquantes). Le panneau affiche le nombre réellement posé côté Google (`GET /:id/delegates/live`), qui inclut les délégations ajoutées hors app.
 - **Délégation Gmail** : nécessite une édition qui la supporte (Business Plus convient) et des comptes du **même domaine** — c'est le cas, tous les comptes sont primaires sur `mig.onela.com`. Si un délégué venait d'un autre domaine du Workspace, activer la délégation inter-domaines en console.
 - **App reg ONELA** : `Exchange.ManageAsApp` + rôle *Recipient Management* — déjà requis pour les transport rules ; sert aussi à `Get-MailboxPermission` (pré-remplissage des délégués).
 - La **suppression** d'une migration dans l'UI n'efface que le suivi : compte, licence et délégations restent en place.
 
-### 14.5 Endpoints
+### 14.6 Endpoints
 
 | Endpoint | Usage |
 |---|---|
 | `GET /shared-mailbox/search?q=` | Lister les BAL partagées Exchange |
 | `POST /shared-mailbox` · `GET /history` | Créer (mode `account`) / lister |
-| `POST /:id/run` · `/:id/stop` · `DELETE /:id` | Lancer-reprendre / arrêter / supprimer le suivi |
+| `POST /:id/run` · `DELETE /:id` | Lancer / resynchroniser · supprimer le suivi |
+| `POST /:id/pause` (`/:id/stop`) · `POST /:id/resume` | Mettre en pause (arrêt à la fin du lot, `step_mail_import = 'paused'`) / reprendre au point d'arrêt — voir 14.4 |
 | `POST /:id/archive` · `/:id/unarchive` | Ranger dans l'historique / réactiver — une migration archivée sort de la liste active **et** du polling du worker, et `/run` la refuse |
 | `GET /:id/account` | État du compte Google (existence, OU, alias, boîte Gmail prête) |
-| `POST /:id/license-ack` | Acquitter la licence (vérifie `isMailboxSetup`) et lancer l'import |
+| `POST /:id/assign-license` | Attribuer une licence au compte (`productId` + `skuId`, License Manager) ; enchaîne l'import si Gmail est prêt |
+| `POST /:id/license-ack` | Acquitter une licence posée hors app (vérifie `isMailboxSetup`) et lancer l'import |
 | `POST /:id/alias-send-as` | (Re)poser alias + « Envoyer en tant que » par défaut |
 | `GET /:id/delegate-candidates` | Candidats issus du FullAccess Exchange, résolus en comptes Google |
 | `GET /google-users/search?q=` | Recherche annuaire Google (ajout manuel d'un délégué) |

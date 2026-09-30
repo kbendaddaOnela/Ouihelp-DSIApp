@@ -372,6 +372,29 @@ export async function ensureGmailDelegate(
     body: JSON.stringify({ delegateEmail }),
   })
   if (!res.ok) {
+    // « Delegator user cannot have any more delegates » : la limite porte sur la
+    // boîte qui DÉLÈGUE, pas sur le délégué — le message brut laissait croire à un
+    // problème du compte ajouté, alors que le même compte passe sur une autre boîte.
+    //
+    // Constaté en prod le 30/09/2026 : le refus est tombé à 10 délégations posées,
+    // très en deçà des 25 documentées, sur une boîte créée le jour même. C'est un
+    // comportement connu sur les comptes fraîchement provisionnés (rapporté aussi
+    // sur des tenants Enterprise Plus) : le quota se débloque de lui-même après
+    // quelques heures. On distingue donc les deux cas au lieu d'envoyer l'admin
+    // élaguer des délégations légitimes.
+    if (/cannot have any more delegates/i.test(res.body)) {
+      const hint =
+        existing.length >= 25
+          ? `Le plafond documenté (25) est atteint : retire une délégation devenue inutile sur cette boîte.`
+          : `C'est en deçà des 25 délégations documentées : sur une boîte récemment créée, Google ` +
+            `refuse souvent plus tôt et le quota se débloque tout seul après quelques heures. ` +
+            `Réessaie plus tard avec « Réappliquer » — l'opération est idempotente, seules les ` +
+            `délégations manquantes seront reposées.`
+      throw new Error(
+        `La boîte ${mailboxEmail} refuse une délégation de plus (${existing.length} déjà posée(s)). ` +
+          `Le plafond porte sur la boîte déléguée, pas sur ${delegateEmail}. ${hint}`,
+      )
+    }
     const mailboxDomain = mailboxEmail.split('@')[1] ?? ''
     const delegateDomain = delegateEmail.split('@')[1] ?? ''
     const crossDomainHint =

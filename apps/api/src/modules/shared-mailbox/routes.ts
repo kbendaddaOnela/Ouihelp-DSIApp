@@ -7,7 +7,13 @@ import type { RbacVariables } from '../../middleware/rbac'
 import { db } from '../../db/index'
 import { sharedMigrations, sharedMigratedMessages, sharedMailboxDelegates } from './schema'
 import { listSharedMailboxes, listMailboxFullAccessUsers } from './exchangeService'
-import { signalStopShared, applyDelegates, retryFailedMessages } from './worker'
+import {
+  signalStopShared,
+  applyDelegates,
+  retryFailedMessages,
+  isSharedMigrationBusy,
+} from './worker'
+import { assignLicense, skuDisplayName } from '../migration/googleLicenseService'
 import {
   allowExternalPostsOnGroup,
   enableCollaborativeInbox as enableCollabInboxOnGroup,
@@ -86,6 +92,9 @@ function toRecord(
     stepLicense: m.stepLicense,
     licenseAckAt: m.licenseAckAt ? m.licenseAckAt.toISOString() : null,
     licenseAckBy: m.licenseAckBy,
+    licenseSkuId: m.licenseSkuId,
+    licenseSkuName: m.licenseSkuName,
+    licenseError: m.licenseError,
     stepAliasSendAs: m.stepAliasSendAs,
     aliasSendAsError: m.aliasSendAsError,
     stepDelegates: m.stepDelegates,
@@ -282,11 +291,77 @@ sharedMailboxRouter.post('/:id/run', requirePermission('migration:write'), async
   return c.json<SharedMigrationRecord>((await loadRecord(id))!)
 })
 
-// ── Arrêt forcé (l'utilisateur clique "Arrêter") ────────────────────────────
-sharedMailboxRouter.post('/:id/stop', requirePermission('migration:write'), async (c) => {
-  const id = c.req.param('id')
+// ── Pause / reprise ─────────────────────────────────────────────────────────
+//
+// Pause : le worker vérifie le signal entre deux batches, écrit l'état 'paused'
+// et laisse `mail_last_sync_at` inchangé. La migration sort alors du polling
+// (seules les lignes 'pending' sont ramassées) sans être marquée en erreur.
+//
+// Reprise : on repasse simplement en 'pending'. Comme `mail_last_sync_at` n'a
+// pas bougé, l'import reprend le balayage et le skipSet (construit depuis
+// shared_migrated_messages) écarte tout ce qui est déjà importé — la reprise
+// redémarre donc bien au point d'arrêt, sans re-télécharger l'existant.
+async function pauseMigration(id: string) {
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return { status: 404 as const, body: { error: 'Migration introuvable' } }
+
+  if (row.stepMailImport === 'paused') {
+    return { status: 200 as const, body: { ok: true, alreadyPaused: true } }
+  }
+
+  // Job en file d'attente mais pas encore démarré (ou worker redémarré entre-temps) :
+  // rien à interrompre, on bascule directement l'état.
+  if (row.stepMailImport === 'pending' && !isSharedMigrationBusy(id)) {
+    await db
+      .update(sharedMigrations)
+      .set({ stepMailImport: 'paused', mailError: 'Import en pause avant démarrage.' })
+      .where(eq(sharedMigrations.id, id))
+    return { status: 200 as const, body: { ok: true, alreadyPaused: false } }
+  }
+
+  if (row.stepMailImport !== 'running' && row.stepMailImport !== 'pending') {
+    return { status: 409 as const, body: { error: 'Aucun import en cours sur cette migration' } }
+  }
+
   signalStopShared(id)
-  return c.json({ ok: true })
+  // Retour immédiat au front : l'état définitif ('paused') est écrit par le
+  // worker à la fin du batch en cours.
+  await db
+    .update(sharedMigrations)
+    .set({ mailError: 'Mise en pause en cours (fin du lot en cours)…' })
+    .where(eq(sharedMigrations.id, id))
+  return { status: 200 as const, body: { ok: true, alreadyPaused: false } }
+}
+
+sharedMailboxRouter.post('/:id/pause', requirePermission('migration:write'), async (c) => {
+  const r = await pauseMigration(c.req.param('id'))
+  return c.json(r.body, r.status)
+})
+
+/** Alias historique : le bouton « Arrêter » de l'UI précédente. */
+sharedMailboxRouter.post('/:id/stop', requirePermission('migration:write'), async (c) => {
+  const r = await pauseMigration(c.req.param('id'))
+  return c.json(r.body, r.status)
+})
+
+sharedMailboxRouter.post('/:id/resume', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  if (row.archived === 1) {
+    return c.json({ error: 'Migration archivée — désarchive-la avant de la reprendre' }, 409)
+  }
+  if (row.stepMailImport === 'running' || row.stepMailImport === 'pending') {
+    return c.json({ error: 'L’import tourne déjà' }, 409)
+  }
+  if (row.mode === 'account' && row.stepLicense !== 'success') {
+    return c.json({ error: 'La licence Business Plus doit d’abord être attribuée au compte cible.' }, 409)
+  }
+  await db
+    .update(sharedMigrations)
+    .set({ stepMailImport: 'pending', mailError: null })
+    .where(eq(sharedMigrations.id, id))
+  return c.json<SharedMigrationRecord>((await loadRecord(id))!)
 })
 
 // ── Archiver / désarchiver ───────────────────────────────────────────────────
@@ -353,6 +428,72 @@ sharedMailboxRouter.get('/:id/account', requirePermission('migration:read'), asy
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
   }
+})
+
+/**
+ * POST : attribue une licence Google Workspace au compte partagé, depuis l'app.
+ *
+ * Voie recommandée quand le compte n'est pas dans une OU à licence automatique.
+ * Le provisionnement de Gmail n'est pas instantané après l'attribution : on ne
+ * lance l'import que si la boîte répond déjà `isMailboxSetup`. Sinon l'étape
+ * licence est quand même validée et le worker attendra le provisionnement
+ * (waitForMailboxSetup) au prochain lancement.
+ */
+sharedMailboxRouter.post('/:id/assign-license', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  if (!row.targetUserEmail) {
+    return c.json({ error: 'Compte Google cible non défini — lance d’abord la migration' }, 400)
+  }
+
+  const body = await c.req
+    .json<{ productId?: string; skuId?: string }>()
+    .catch(() => ({}) as { productId?: string; skuId?: string })
+  if (!body.productId || !body.skuId) return c.json({ error: 'productId et skuId requis' }, 400)
+
+  await db
+    .update(sharedMigrations)
+    .set({ stepLicense: 'running', licenseError: null })
+    .where(eq(sharedMigrations.id, id))
+
+  try {
+    await assignLicense(row.targetUserEmail, body.productId, body.skuId)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await db
+      .update(sharedMigrations)
+      .set({ stepLicense: 'error', licenseError: message })
+      .where(eq(sharedMigrations.id, id))
+    return c.json({ error: 'Attribution de licence échouée', message }, 502)
+  }
+
+  // Gmail met quelques minutes à se provisionner après l'attribution.
+  let mailboxReady = false
+  try {
+    const user = await getGoogleUser(row.targetUserEmail)
+    mailboxReady = user?.isMailboxSetup ?? false
+  } catch {
+    // Lecture d'état non bloquante : la licence est posée, c'est l'essentiel.
+  }
+
+  await db
+    .update(sharedMigrations)
+    .set({
+      stepLicense: 'success',
+      licenseSkuId: body.skuId,
+      licenseSkuName: skuDisplayName(body.skuId),
+      licenseError: null,
+      licenseAckAt: new Date(),
+      licenseAckBy: c.get('dbUser').email,
+      // Import enchaîné seulement si la boîte est prête ; sinon on laisse la main
+      // à l'opérateur pour éviter un aller-retour en erreur.
+      ...(mailboxReady ? { stepMailImport: 'pending' as const, mailError: null } : {}),
+    })
+    .where(eq(sharedMigrations.id, id))
+
+  const record = (await loadRecord(id))!
+  return c.json({ ...record, mailboxReady })
 })
 
 /** POST : acquitte l'attribution de la licence et lance l'import mail. */

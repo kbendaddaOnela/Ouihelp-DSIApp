@@ -20,6 +20,7 @@ export type {
 export type {
   SharedMailbox,
   SharedMigrationMode,
+  MailImportStatus,
   SharedMailboxDelegate,
   DelegateCandidate,
   DelegateCandidatesResponse,
@@ -88,3 +89,20 @@ export type {
   XimiChangedItem,
   XimiMigrationChangesResponse,
 } from './types/ximiMigration'
+
+export type {
+  OffboardingActionType,
+  OffboardingGoogleUser,
+  OffboardingSearchResponse,
+  OffboardingEntraUser,
+  OffboardingDelegate,
+  OffboardingUserDetail,
+  ResetPasswordRequest,
+  ResetPasswordResponse,
+  AddOffboardingDelegateRequest,
+  AddOffboardingDelegateResponse,
+  OffboardingActionRecord,
+  OffboardingHistoryResponse,
+  OffboardingDelegatedMailbox,
+  OffboardingDelegationsResponse,
+} from './types/offboarding'
