@@ -118,7 +118,7 @@ export const migrationApi = {
   serviceGroupCounts: () =>
     apiClient
       .get<{
-        rows: Array<{ label: string; total: number; done: number; in_progress: number }>
+        rows: Array<{ label: string; groupId: string; total: number; done: number; in_progress: number }>
         errors: string[]
       }>('/migration/service-group-counts')
       .then((r) => r.data),

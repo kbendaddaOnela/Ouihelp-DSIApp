@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useMigration'
 import { onelaContactsApi, migrationApi } from '../api'
 import type { MigrationStats } from '../api'
+import { ServiceList } from './ServiceList'
 
 // ── Override local (groupes terminés non encore reflétés dans la base) ────────
 const DONE_OVERRIDES: Record<string, number> = {
@@ -427,7 +428,9 @@ export function MigrationDashboard() {
               </p>
             )}
             {tab === 'dept'
-              ? <GroupTable rows={deptTabRows} applyDoneOverrides={!usingGroups} />
+              ? (usingGroups && serviceCounts?.rows
+                  ? <ServiceList rows={serviceCounts.rows} />
+                  : <GroupTable rows={deptTabRows} applyDoneOverrides={!usingGroups} />)
               : <GroupTable rows={stats.byOffice} />
             }
           </div>

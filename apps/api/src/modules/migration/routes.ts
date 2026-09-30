@@ -751,8 +751,8 @@ migrationRouter.get('/service-group-counts', requirePermission('migration:read')
       if (status === 'done') done++
       else if (status === 'in_progress') inProgress++
     }
-    return { label: g.label, total: r.value.length, done, in_progress: inProgress }
-  }).filter((r): r is { label: string; total: number; done: number; in_progress: number } => r !== null)
+    return { label: g.label, groupId: g.groupId, total: r.value.length, done, in_progress: inProgress }
+  }).filter((r): r is { label: string; groupId: string; total: number; done: number; in_progress: number } => r !== null)
 
   return c.json({ rows, errors })
 })
