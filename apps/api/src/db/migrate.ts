@@ -24,6 +24,15 @@ async function columnIsNullable(table: string, column: string): Promise<boolean>
   return rows[0]?.IS_NULLABLE === 'YES'
 }
 
+/** Type SQL complet d'une colonne, ex. "enum('pending','running')". */
+async function columnType(table: string, column: string): Promise<string | null> {
+  const [rows] = (await pool.query(
+    `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+    [table, column]
+  )) as [Array<{ COLUMN_TYPE: string }>, unknown]
+  return rows[0]?.COLUMN_TYPE ?? null
+}
+
 async function tableExists(table: string): Promise<boolean> {
   const [rows] = (await pool.query(
     `SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
@@ -139,6 +148,10 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'license_sku_id', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_sku_id\` varchar(64)` },
     { table: 'migrations', column: 'license_sku_name', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_sku_name\` varchar(128)` },
     { table: 'migrations', column: 'license_error', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`license_error\` text` },
+    // Attribution de licence depuis l'app pour une BAL partagée (License Manager)
+    { table: 'shared_migrations', column: 'license_sku_id', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_sku_id\` varchar(64)` },
+    { table: 'shared_migrations', column: 'license_sku_name', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_sku_name\` varchar(128)` },
+    { table: 'shared_migrations', column: 'license_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_error\` text` },
   ]
   for (const p of columnPatches) {
     try {
@@ -168,6 +181,30 @@ async function ensureSchemaPatches() {
       console.log(`[migrate] Patch OK (nullable): ${p.table}.${p.column}`)
     } catch (err) {
       console.error(`[migrate] Patch failed (nullable): ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Ajout de valeurs d'enum : additif (aucune valeur existante n'est retirée), donc
+  // l'ancien code continue de fonctionner sur la colonne élargie.
+  const enumValuePatches: Array<{ table: string; column: string; value: string; ddl: string }> = [
+    {
+      table: 'shared_migrations',
+      column: 'step_mail_import',
+      value: 'paused',
+      ddl:
+        `ALTER TABLE \`shared_migrations\` MODIFY COLUMN \`step_mail_import\` ` +
+        `enum('pending','running','success','error','skipped','paused') NOT NULL DEFAULT 'pending'`,
+    },
+  ]
+  for (const p of enumValuePatches) {
+    try {
+      const type = await columnType(p.table, p.column)
+      if (!type) continue
+      if (type.includes(`'${p.value}'`)) continue
+      await db.execute(sql.raw(p.ddl))
+      console.log(`[migrate] Patch OK (enum +${p.value}): ${p.table}.${p.column}`)
+    } catch (err) {
+      console.error(`[migrate] Patch failed (enum +${p.value}): ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -330,7 +367,7 @@ async function ensureSchemaPatches() {
         \`target_group_id\` varchar(255),
         \`step_create_group\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`create_group_error\` text,
-        \`step_mail_import\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+        \`step_mail_import\` enum('pending','running','success','error','skipped','paused') NOT NULL DEFAULT 'pending',
         \`mail_total\` int NOT NULL DEFAULT 0,
         \`mail_migrated\` int NOT NULL DEFAULT 0,
         \`mail_failed\` int NOT NULL DEFAULT 0,

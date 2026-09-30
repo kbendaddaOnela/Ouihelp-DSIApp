@@ -41,8 +41,15 @@ export const sharedMailboxApi = {
   run: (id: string) =>
     apiClient.post<SharedMigrationRecord>(`/shared-mailbox/${id}/run`).then((r) => r.data),
 
-  stop: (id: string) =>
-    apiClient.post<{ ok: boolean }>(`/shared-mailbox/${id}/stop`).then((r) => r.data),
+  /** Met l'import en pause : le worker s'arrête à la fin du lot en cours. */
+  pause: (id: string) =>
+    apiClient
+      .post<{ ok: boolean; alreadyPaused: boolean }>(`/shared-mailbox/${id}/pause`)
+      .then((r) => r.data),
+
+  /** Reprend un import en pause au point d'arrêt (les messages déjà importés sont sautés). */
+  resume: (id: string) =>
+    apiClient.post<SharedMigrationRecord>(`/shared-mailbox/${id}/resume`).then((r) => r.data),
 
   // ── Compte Google cible (mode account) ────────────────────────────────────
   accountStatus: (id: string) =>
@@ -50,6 +57,15 @@ export const sharedMailboxApi = {
 
   licenseAck: (id: string) =>
     apiClient.post<SharedMigrationRecord>(`/shared-mailbox/${id}/license-ack`).then((r) => r.data),
+
+  /** Attribue une licence Workspace au compte partagé (License Manager API). */
+  assignLicense: (id: string, productId: string, skuId: string) =>
+    apiClient
+      .post<SharedMigrationRecord & { mailboxReady: boolean }>(
+        `/shared-mailbox/${id}/assign-license`,
+        { productId, skuId },
+      )
+      .then((r) => r.data),
 
   aliasSendAs: (id: string) =>
     apiClient.post<SharedMigrationRecord>(`/shared-mailbox/${id}/alias-send-as`).then((r) => r.data),

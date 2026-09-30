@@ -59,9 +59,28 @@ const ORPHAN_STALE_MS = 15 * 60 * 1000
 const RUNNING = new Set<string>()
 const STOP_SIGNALS = new Set<string>()
 
-/** Demande l'arrêt propre d'une migration en cours (vérifié entre deux batches). */
+/**
+ * Demande la mise en pause d'une migration en cours. Le signal est vérifié entre
+ * deux batches : l'import s'arrête sur une frontière propre, tout ce qui est déjà
+ * importé est en base, et `mailLastSyncAt` n'avance pas — la reprise repart donc
+ * en balayage complet et le skipSet évite de réimporter l'existant.
+ */
 export function signalStopShared(id: string) {
   STOP_SIGNALS.add(id)
+}
+
+/** true si l'opérateur a demandé la pause de cette migration. */
+function isPauseRequested(id: string): boolean {
+  return STOP_SIGNALS.has(id)
+}
+
+function clearPauseSignal(id: string) {
+  STOP_SIGNALS.delete(id)
+}
+
+/** true si la migration est actuellement traitée dans ce process. */
+export function isSharedMigrationBusy(id: string): boolean {
+  return RUNNING.has(id)
 }
 
 let workerStarted = false
@@ -118,6 +137,11 @@ async function pollAndProcess() {
   if (!next) return
 
   RUNNING.add(next.id)
+  // Un signal de pause encore présent ici est forcément périmé : une pause
+  // demandée sur un job non démarré bascule directement l'état en base sans
+  // poser de signal. Le purger évite qu'un job reparte et se remette en pause
+  // aussitôt (cas d'un signal posé puis d'un job interrompu avant l'import).
+  clearPauseSignal(next.id)
   const run = next.mode === 'account' ? processAccountMailbox(next) : processGroupMailbox(next)
   run
     .catch((err) => console.error(`[shared-mailbox-worker] ${next.id} fatal:`, err))
@@ -233,6 +257,8 @@ export async function retryFailedMessages(
   let recovered = 0
   let stillFailed = 0
   let skipped = 0
+  /** Rang auquel l'opérateur a coupé la reprise, null si elle est allée au bout. */
+  let pausedAt: number | null = null
   try {
     await db
       .update(sharedMigrations)
@@ -244,6 +270,12 @@ export async function retryFailedMessages(
     const resolver = await buildLabelResolver(mailbox, folders)
 
     for (const row of failed) {
+      // Une reprise portant sur des milliers de messages doit pouvoir être mise
+      // en pause comme un import : les lignes déjà rejouées restent en base.
+      if (isPauseRequested(migrationId)) {
+        pausedAt = recovered + stillFailed + skipped
+        break
+      }
       try {
         const meta = await fetchOnelaMessageMeta(job.onelaUserId, row.graphMessageId)
         if (!meta) {
@@ -311,17 +343,22 @@ export async function retryFailedMessages(
     const migrated = all.filter((r) => r.status === 'success').length
     const remaining = all.filter((r) => r.status === 'error').length
 
+    if (pausedAt !== null) clearPauseSignal(migrationId)
+
     await db
       .update(sharedMigrations)
       .set({
-        stepMailImport: remaining === 0 ? 'success' : 'error',
+        stepMailImport: pausedAt !== null ? 'paused' : remaining === 0 ? 'success' : 'error',
         mailMigrated: migrated,
         mailFailed: remaining,
         mailFinishedAt: new Date(),
         mailError:
-          remaining === 0
-            ? null
-            : `${remaining} message(s) encore en erreur après reprise (${recovered} récupérés)`,
+          pausedAt !== null
+            ? `Reprise des erreurs mise en pause après ${pausedAt}/${failed.length} message(s) ` +
+              `(${recovered} récupérés) — « Retenter » reprend sur les erreurs restantes.`
+            : remaining === 0
+              ? null
+              : `${remaining} message(s) encore en erreur après reprise (${recovered} récupérés)`,
       })
       .where(eq(sharedMigrations.id, migrationId))
 
@@ -662,34 +699,48 @@ async function importMailToGmail(job: SharedMigration) {
     return true
   }
 
-  let stoppedByUser = false
-  for await (const msg of iter) {
-    buffer.push(msg)
-    if (buffer.length >= ACCOUNT_BATCH_SIZE) {
-      const didWork = await flush(buffer)
-      buffer = []
-      if (STOP_SIGNALS.has(job.id)) {
-        stoppedByUser = true
-        break
-      }
-      if (didWork) await new Promise((r) => setTimeout(r, 300))
-    }
-  }
-  if (!stoppedByUser && buffer.length > 0) await flush(buffer)
-
-  if (stoppedByUser) {
-    STOP_SIGNALS.delete(job.id)
+  /** Persiste l'état de pause. Appelé depuis les deux points d'interruption. */
+  const persistPause = async () => {
+    clearPauseSignal(job.id)
     // On n'avance PAS mailLastSyncAt : la reprise repart en balayage complet et
     // le skipSet évite de réimporter ce qui est déjà passé.
     await db
       .update(sharedMigrations)
       .set({
-        stepMailImport: 'error',
+        stepMailImport: 'paused',
         mailFinishedAt: new Date(),
-        mailError: `Arrêt forcé par l'utilisateur (${migratedCount()} migrés)`,
+        mailError:
+          `Import en pause à ${migratedCount().toLocaleString('fr-FR')} message(s) importé(s) — ` +
+          `clique « Reprendre » pour continuer là où ça s'est arrêté.`,
       })
       .where(eq(sharedMigrations.id, job.id))
-    console.log(`[shared/account] stopped ${job.id}: ${migratedCount()} OK avant arrêt`)
+    console.log(`[shared/account] paused ${job.id}: ${migratedCount()} OK avant pause`)
+  }
+
+  // Une pause demandée pendant le pré-comptage (qui peut durer sur une grosse
+  // boîte) doit être honorée avant d'attaquer le premier téléchargement.
+  if (isPauseRequested(job.id)) {
+    await persistPause()
+    return
+  }
+
+  let pausedByUser = false
+  for await (const msg of iter) {
+    buffer.push(msg)
+    if (buffer.length >= ACCOUNT_BATCH_SIZE) {
+      const didWork = await flush(buffer)
+      buffer = []
+      if (isPauseRequested(job.id)) {
+        pausedByUser = true
+        break
+      }
+      if (didWork) await new Promise((r) => setTimeout(r, 300))
+    }
+  }
+  if (!pausedByUser && buffer.length > 0) await flush(buffer)
+
+  if (pausedByUser) {
+    await persistPause()
     return
   }
 
@@ -927,33 +978,35 @@ async function processGroupMailbox(job: SharedMigration) {
       return true
     }
 
-    let stoppedByUser = false
+    let pausedByUser = false
     for await (const msg of iter) {
       buffer.push(msg)
       if (buffer.length >= GROUP_BATCH_SIZE) {
         const didWork = await flush(buffer)
         buffer = []
-        if (STOP_SIGNALS.has(job.id)) {
-          stoppedByUser = true
+        if (isPauseRequested(job.id)) {
+          pausedByUser = true
           break
         }
         // Délai anti-throttle uniquement si on a vraiment appelé une API
         if (didWork) await new Promise((r) => setTimeout(r, 500))
       }
     }
-    if (!stoppedByUser && buffer.length > 0) await flush(buffer)
+    if (!pausedByUser && buffer.length > 0) await flush(buffer)
 
-    if (stoppedByUser) {
-      STOP_SIGNALS.delete(job.id)
+    if (pausedByUser) {
+      clearPauseSignal(job.id)
       await db
         .update(sharedMigrations)
         .set({
-          stepMailImport: 'error',
+          stepMailImport: 'paused',
           mailFinishedAt: new Date(),
-          mailError: `Arrêt forcé par l'utilisateur (${migrated} migrés)`,
+          mailError:
+            `Import en pause à ${migrated.toLocaleString('fr-FR')} message(s) importé(s) — ` +
+            `clique « Reprendre » pour continuer là où ça s'est arrêté.`,
         })
         .where(eq(sharedMigrations.id, job.id))
-      console.log(`[shared/group] stopped ${job.id}: ${migrated}/${total} OK avant arrêt`)
+      console.log(`[shared/group] paused ${job.id}: ${migrated}/${total} OK avant pause`)
       return
     }
 

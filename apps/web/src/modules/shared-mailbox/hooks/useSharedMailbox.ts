@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { CreateSharedMigrationRequest } from '@dsi-app/shared'
 import { sharedMailboxApi } from '../api'
+import { migrationApi } from '../../migration/api'
 
 export function useSharedMailboxSearch(query: string) {
   return useQuery({
@@ -74,10 +75,18 @@ export function useRunSharedMigration() {
   })
 }
 
-export function useStopSharedMigration() {
+export function usePauseSharedMigration() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => sharedMailboxApi.stop(id),
+    mutationFn: (id: string) => sharedMailboxApi.pause(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['shared-migration-history'] }),
+  })
+}
+
+export function useResumeSharedMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => sharedMailboxApi.resume(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['shared-migration-history'] }),
   })
 }
@@ -170,6 +179,35 @@ export function useSharedAccountStatus(id: string, enabled: boolean) {
     queryFn: () => sharedMailboxApi.accountStatus(id),
     enabled,
     staleTime: 30_000,
+  })
+}
+
+/**
+ * Licences Workspace disponibles. Même endpoint que le module migration : les
+ * sièges sont globaux au tenant, une BAL partagée en consomme un comme un
+ * utilisateur nominatif. La clé de cache est donc partagée, pour que
+ * l'attribution ici rafraîchisse aussi le dashboard.
+ */
+export function useSharedLicenseSkus(enabled: boolean) {
+  return useQuery({
+    queryKey: ['license-skus'],
+    queryFn: migrationApi.licenseSkus,
+    enabled,
+    staleTime: 60_000,
+  })
+}
+
+export function useAssignSharedLicense() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, productId, skuId }: { id: string; productId: string; skuId: string }) =>
+      sharedMailboxApi.assignLicense(id, productId, skuId),
+    onSuccess: (_d, vars) => {
+      void qc.invalidateQueries({ queryKey: ['shared-migration-history'] })
+      void qc.invalidateQueries({ queryKey: ['shared-account-status', vars.id] })
+      void qc.invalidateQueries({ queryKey: ['license-skus'] })
+      void qc.invalidateQueries({ queryKey: ['live-stats'] })
+    },
   })
 }
 
