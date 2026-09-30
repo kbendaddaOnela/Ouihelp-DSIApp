@@ -89,7 +89,7 @@ export const migrationApi = {
           total: number
           done: number
           in_progress: number
-          agencies: Array<{ code: string; groupId: string; total: number; done: number; in_progress: number }>
+          agencies: Array<{ code: string; name: string; groupId: string; total: number; done: number; in_progress: number }>
         }>
         errors: string[]
         cachedAt: number

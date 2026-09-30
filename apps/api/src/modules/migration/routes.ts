@@ -19,7 +19,7 @@ import {
   getOnelaGroupUsers,
 } from './service'
 import { getServiceGroups } from './onelaServiceGroups'
-import { getRegionGroups, getAgencyGroups } from './onelaAgencyGroups'
+import { getAgencyGroups, REGION_ORDER } from './onelaAgencyGroups'
 import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu } from './googleService'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
@@ -69,47 +69,29 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
 // les membres d'une agence appartiennent tous à une seule Direction Régionale).
 // Coûteux (≈70 appels) → mis en cache ; les compteurs de statut sont recalculés
 // à chaque requête depuis la BDD (donc toujours frais).
-interface AgencyMembership { code: string; groupId: string; regionLabel: string; upns: string[]; mails: string[] }
+interface AgencyMembership { code: string; name: string; groupId: string; regionLabel: string; upns: string[]; mails: string[] }
 let membershipCache: { at: number; agencies: AgencyMembership[]; errors: string[] } | null = null
 const MEMBERSHIP_TTL = 5 * 60_000
 const NO_REGION = 'Sans région'
 
+// La région vient du mapping statique (onelaAgencyGroups.ts) ; on ne fait qu'un
+// appel Graph par agence pour compter ses membres actifs.
 async function buildAgencyMembership(): Promise<{ agencies: AgencyMembership[]; errors: string[] }> {
-  const regions = getRegionGroups()
   const agencies = getAgencyGroups()
   const errors: string[] = []
 
-  // upn → région (via les 6 groupes Direction Régionale)
-  const regionByUpn = new Map<string, string>()
-  const regionResults = await mapLimit(regions, 4, async (g) => {
-    try { return { label: g.label, members: await getOnelaGroupMembers(g.groupId) } }
-    catch (e) { errors.push(`Région ${g.label}: ${e instanceof Error ? e.message : String(e)}`); return null }
-  })
-  for (const r of regionResults) {
-    if (!r) continue
-    for (const m of r.members) regionByUpn.set(m.upn, r.label)
-  }
-
-  // membres par agence + région majoritaire de l'agence
   const agencyResults = await mapLimit(agencies, 6, async (a) => {
-    try { return { code: a.code, groupId: a.groupId, members: await getOnelaGroupMembers(a.groupId) } }
+    try { return { def: a, members: await getOnelaGroupMembers(a.groupId) } }
     catch (e) { errors.push(`Agence ${a.code}: ${e instanceof Error ? e.message : String(e)}`); return null }
   })
   const built: AgencyMembership[] = []
   for (const ar of agencyResults) {
     if (!ar) continue
-    const counts = new Map<string, number>()
-    for (const m of ar.members) {
-      const r = regionByUpn.get(m.upn)
-      if (r) counts.set(r, (counts.get(r) ?? 0) + 1)
-    }
-    let regionLabel = NO_REGION
-    let best = 0
-    for (const [r, n] of counts) if (n > best) { best = n; regionLabel = r }
     built.push({
-      code: ar.code,
-      groupId: ar.groupId,
-      regionLabel,
+      code: ar.def.code,
+      name: ar.def.name,
+      groupId: ar.def.groupId,
+      regionLabel: ar.def.region || NO_REGION,
       upns: ar.members.map((m) => m.upn),
       mails: ar.members.map((m) => m.mail ?? ''),
     })
@@ -797,7 +779,7 @@ migrationRouter.get('/agencies-tree', requirePermission('migration:read'), async
     .from(migrationTargets)
   const statusByUpn = new Map(targets.map((t) => [t.upn.toLowerCase(), t.status]))
 
-  interface RegionAcc { label: string; total: number; done: number; in_progress: number; agencies: Array<{ code: string; groupId: string; total: number; done: number; in_progress: number }> }
+  interface RegionAcc { label: string; total: number; done: number; in_progress: number; agencies: Array<{ code: string; name: string; groupId: string; total: number; done: number; in_progress: number }> }
   const byRegion = new Map<string, RegionAcc>()
   const region = (label: string): RegionAcc => {
     let r = byRegion.get(label)
@@ -814,13 +796,17 @@ migrationRouter.get('/agencies-tree', requirePermission('migration:read'), async
       else if (status === 'in_progress') inProgress++
     }
     const r = region(a.regionLabel)
-    r.agencies.push({ code: a.code, groupId: a.groupId, total: a.upns.length, done, in_progress: inProgress })
+    r.agencies.push({ code: a.code, name: a.name, groupId: a.groupId, total: a.upns.length, done, in_progress: inProgress })
     r.total += a.upns.length; r.done += done; r.in_progress += inProgress
   }
 
+  const orderIdx = (label: string) => {
+    const i = REGION_ORDER.indexOf(label)
+    return i === -1 ? (label === NO_REGION ? 999 : 500) : i
+  }
   const regions = [...byRegion.values()]
-    .map((r) => ({ ...r, agencies: r.agencies.sort((x, y) => x.code.localeCompare(y.code)) }))
-    .sort((x, y) => (x.label === NO_REGION ? 1 : y.label === NO_REGION ? -1 : x.label.localeCompare(y.label, 'fr')))
+    .map((r) => ({ ...r, agencies: r.agencies.sort((x, y) => x.name.localeCompare(y.name, 'fr')) }))
+    .sort((x, y) => orderIdx(x.label) - orderIdx(y.label))
 
   return c.json({ regions, errors: cache.errors, cachedAt: cache.at })
 })

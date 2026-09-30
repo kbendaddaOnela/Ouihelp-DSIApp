@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import type { MigrateUsersRequest } from '@dsi-app/shared'
 import { migrationApi } from '../api'
 
-type Agency = { code: string; groupId: string; total: number; done: number; in_progress: number }
+type Agency = { code: string; name: string; groupId: string; total: number; done: number; in_progress: number }
 type Member = Awaited<ReturnType<typeof migrationApi.groupMembers>>[number]
 
 function Counts({ total, done, in_progress }: { total: number; done: number; in_progress: number }) {
@@ -75,8 +75,8 @@ function AgencyMembers({ agency, onLaunched }: { agency: Agency; onLaunched: () 
     <div className="mt-2 rounded-lg border border-gray-200 bg-white p-3">
       <div className="mb-2 flex items-center justify-between">
         <h4 className="flex items-center gap-1.5 text-sm font-semibold text-gray-800">
-          <Users className="h-4 w-4 text-primary-600" /> Agence {agency.code}
-          <span className="text-xs font-normal text-gray-400">({agency.total} membres)</span>
+          <Users className="h-4 w-4 text-primary-600" /> {agency.name}
+          <span className="text-xs font-normal text-gray-400">{agency.code} · {agency.total} membres</span>
         </h4>
         {selectable.length > 0 && (
           <button onClick={toggleAll} className="text-[11px] text-primary-600 hover:underline">
@@ -203,13 +203,14 @@ export function AgenciesPanel() {
                           <button
                             key={a.groupId}
                             onClick={() => setAgency(active ? null : a)}
+                            title={`${a.name} (${a.code})`}
                             className={cn(
-                              'flex items-center justify-between rounded-lg border px-2.5 py-1.5 text-left text-xs',
+                              'flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs',
                               active ? 'border-primary-300 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'
                             )}
                           >
-                            <span className="font-medium text-gray-800">{a.code}</span>
-                            <span className="flex items-center gap-1 text-[11px] text-gray-500">
+                            <span className="min-w-0 truncate font-medium text-gray-800">{a.name}</span>
+                            <span className="flex shrink-0 items-center gap-1 text-[11px] text-gray-500">
                               {a.total}
                               {a.done > 0 && <span className="text-emerald-600">·{a.done}</span>}
                               {a.in_progress > 0 && <span className="text-blue-500">·{a.in_progress}</span>}
