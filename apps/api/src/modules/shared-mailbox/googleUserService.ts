@@ -372,6 +372,19 @@ export async function ensureGmailDelegate(
     body: JSON.stringify({ delegateEmail }),
   })
   if (!res.ok) {
+    // Plafond atteint : la limite porte sur la boîte qui DÉLÈGUE, pas sur le
+    // délégué. Le message brut de Google ("Delegator user cannot have any more
+    // delegates") laissait croire à un problème de compte côté délégué, alors que
+    // le même compte passe sans souci sur une autre boîte. On nomme la boîte et on
+    // donne le nombre de délégations déjà posées (relevé juste au-dessus).
+    if (/cannot have any more delegates/i.test(res.body)) {
+      throw new Error(
+        `La boîte ${mailboxEmail} a atteint le nombre maximum de délégations autorisé par Google ` +
+          `(${existing.length} déjà posée(s)). Le plafond porte sur la boîte déléguée, pas sur ` +
+          `${delegateEmail} : retire une délégation devenue inutile sur cette boîte, ou vérifie ` +
+          `l'édition de licence du compte (le plafond élargi ne s'applique pas à toutes).`,
+      )
+    }
     const mailboxDomain = mailboxEmail.split('@')[1] ?? ''
     const delegateDomain = delegateEmail.split('@')[1] ?? ''
     const crossDomainHint =

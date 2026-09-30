@@ -265,6 +265,22 @@ export function useAddDelegate() {
   })
 }
 
+/**
+ * Délégations réellement posées côté Gmail, telles que Google les renvoie.
+ *
+ * Utile pour trancher un « ça ne marche pas » : le plafond de délégations de
+ * Google porte sur la boîte déléguée, donc connaître le nombre déjà posé dessus
+ * dit tout de suite si on bute sur la limite.
+ */
+export function useLiveDelegates(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['shared-delegates-live', id],
+    queryFn: () => sharedMailboxApi.liveDelegates(id),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
 export function useRemoveDelegate() {
   const qc = useQueryClient()
   return useMutation({

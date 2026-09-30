@@ -42,6 +42,7 @@ import {
   useGoogleUserSearch,
   useAddDelegate,
   useRemoveDelegate,
+  useLiveDelegates,
   useApplyDelegates,
   useArchiveSharedMigration,
   useUnarchiveSharedMigration,
@@ -612,6 +613,9 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
     showCandidates,
   )
   const { data: searchData, isFetching: searching } = useGoogleUserSearch(search)
+  // Compté côté Google et non depuis notre table : le plafond de délégations
+  // s'applique à la boîte, et une délégation posée hors app compte aussi.
+  const { data: liveData } = useLiveDelegates(migration.id, migration.stepCreateAccount === 'success')
   const { mutate: addDelegate, isPending: adding } = useAddDelegate()
   const { mutate: removeDelegate, isPending: removing } = useRemoveDelegate()
   const { mutate: applyDelegates, isPending: applying } = useApplyDelegates()
@@ -631,6 +635,11 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
         <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
           <Users className="h-3.5 w-3.5" />
           Délégations Gmail ({migration.delegates.length})
+          {liveData && (
+            <span className="font-normal text-gray-400">
+              — {liveData.delegates.length} posée{liveData.delegates.length > 1 ? 's' : ''} côté Gmail
+            </span>
+          )}
         </div>
         <button
           onClick={() =>
@@ -646,6 +655,15 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
           {applying ? 'Application…' : 'Réappliquer'}
         </button>
       </div>
+
+      {liveData && liveData.delegates.length >= 20 && (
+        <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+          Cette boîte porte déjà {liveData.delegates.length} délégations. Le plafond de Google
+          s’applique à la <strong>boîte déléguée</strong> (pas aux délégués)&nbsp;: au-delà, l’ajout
+          échoue avec « Delegator user cannot have any more delegates », quel que soit le compte
+          ajouté. Retire les délégations devenues inutiles avant d’en ajouter.
+        </p>
+      )}
 
       <p className="mb-2 text-[11px] text-gray-500">
         Le délégué n’a <strong>rien à connecter</strong> : la boîte apparaît dans le sélecteur de compte
