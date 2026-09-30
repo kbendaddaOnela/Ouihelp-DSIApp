@@ -67,6 +67,7 @@ export const migrationApi = {
     apiClient
       .get<{
         onelaTotal: number | null
+        onelaByDept: Record<string, number> | null
         googleMigrated: number | null
         activeMigrations: number | null
         licenses: {

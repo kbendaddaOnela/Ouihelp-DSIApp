@@ -87,30 +87,40 @@ export async function searchOnelaUsers(query: string): Promise<GraphUser[]> {
 }
 
 /**
- * Compte, en direct dans le tenant ONELA, la population « à migrer » :
- * comptes de type Member, activés, dont le mail est @onela.com (exclut donc les
- * contacts, boîtes partagées non-Member et comptes techniques hors domaine).
- * Utilise $count (requête avancée → header ConsistencyLevel: eventual requis).
- * Le domaine peut être surchargé via ONELA_MAILBOX_DOMAIN.
+ * Compte, en direct dans le tenant ONELA, la population « à migrer », ventilée
+ * par service (attribut `department`) : comptes de type Member, activés, dont le
+ * mail est @onela.com (exclut contacts, boîtes partagées non-Member et comptes
+ * techniques hors domaine). `total` = somme de tous les services. Les comptes
+ * sans département sont regroupés sous « (sans département) » — même libellé que
+ * l'agrégation CSV, pour que les lignes se réconcilient.
+ * Requête avancée (endsWith) → header ConsistencyLevel: eventual + $count=true.
+ * Domaine surchargeable via ONELA_MAILBOX_DOMAIN.
  */
-export async function countOnelaMailboxes(): Promise<number> {
+export async function countOnelaUsersByDepartment(): Promise<{ total: number; byDept: Record<string, number> }> {
   const token = await getOnelaToken()
   const domain = process.env['ONELA_MAILBOX_DOMAIN'] || 'onela.com'
   const filter = `userType eq 'Member' and accountEnabled eq true and endsWith(mail,'@${domain}')`
-  const url =
-    `https://graph.microsoft.com/v1.0/users?$filter=${encodeURIComponent(filter)}&$count=true&$top=1`
-  const res = await fetchWithTimeout(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ConsistencyLevel: 'eventual',
-    },
-  })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Graph count ONELA ${res.status}: ${err.slice(0, 300)}`)
+  let url: string | null =
+    `https://graph.microsoft.com/v1.0/users?$filter=${encodeURIComponent(filter)}&$count=true&$select=department&$top=999`
+  const byDept: Record<string, number> = {}
+  let total = 0
+  while (url) {
+    const res: Response = await fetchWithTimeout(url, {
+      headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Graph byDept ONELA ${res.status}: ${err.slice(0, 300)}`)
+    }
+    const data = (await res.json()) as { value?: Array<{ department: string | null }>; '@odata.nextLink'?: string }
+    for (const u of data.value ?? []) {
+      total++
+      const dept = (u.department ?? '').trim() || '(sans département)'
+      byDept[dept] = (byDept[dept] ?? 0) + 1
+    }
+    url = data['@odata.nextLink'] ?? null
   }
-  const data = (await res.json()) as { '@odata.count'?: number }
-  return data['@odata.count'] ?? 0
+  return { total, byDept }
 }
 
 // ── Exchange Admin REST API (ForwardingSMTPAddress) ──────────────────────────

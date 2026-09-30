@@ -131,7 +131,7 @@ function GroupTable({ rows }: { rows: MigrationStats['byDept'] | MigrationStats[
         </thead>
         <tbody>
           {sorted.map((r) => {
-            const pct = r.total > 0 ? Math.round((r.done / r.total) * 100) : 0
+            const pct = r.total > 0 ? Math.min(100, Math.round((r.done / r.total) * 100)) : 0
             return (
               <tr key={r.label} className="border-b border-gray-50 last:border-b-0 hover:bg-gray-50">
                 <td className="max-w-[160px] truncate px-3 py-2 font-medium text-gray-800">{r.label}</td>
@@ -243,6 +243,28 @@ export function MigrationDashboard() {
   const totalIsLive = live?.onelaTotal != null
   const doneIsLive = live?.googleMigrated != null
   const activeIsLive = live?.activeMigrations != null
+
+  // Tableau « Par département » : quand le live ONELA est dispo, on remplace le
+  // `total` (nb à migrer) de chaque service par l'effectif réel du tenant, en
+  // gardant done / en cours issus du suivi. Réconciliation par libellé (trim,
+  // insensible à la casse). Un service présent live mais absent du CSV = nouveau.
+  const deptRows = useMemo(() => {
+    if (!stats) return []
+    if (!live?.onelaByDept) return stats.byDept
+    const norm = (s: string) => s.trim().toLowerCase()
+    const liveMap = new Map(Object.entries(live.onelaByDept).map(([k, v]) => [norm(k), { label: k, total: v }]))
+    const seen = new Set<string>()
+    const merged = stats.byDept.map((r) => {
+      const key = norm(r.department ?? '')
+      const l = liveMap.get(key)
+      if (l) seen.add(key)
+      return { ...r, total: l ? l.total : r.total }
+    })
+    for (const [key, l] of liveMap) {
+      if (!seen.has(key)) merged.push({ department: l.label, total: l.total, done: 0, in_progress: 0 })
+    }
+    return merged
+  }, [stats, live])
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5">
@@ -384,8 +406,14 @@ export function MigrationDashboard() {
                 </button>
               ))}
             </div>
+            {tab === 'dept' && live?.onelaByDept && (
+              <p className="mb-2 flex items-center gap-1 text-[11px] text-gray-400">
+                <Cloud className="h-3 w-3 text-sky-500" />
+                Effectifs par service recomptés en direct dans ONELA (attribut « service »). « Terminés » / « En cours » issus du suivi.
+              </p>
+            )}
             {tab === 'dept'
-              ? <GroupTable rows={stats.byDept} />
+              ? <GroupTable rows={deptRows} />
               : <GroupTable rows={stats.byOffice} />
             }
           </div>

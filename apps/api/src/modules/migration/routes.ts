@@ -14,7 +14,7 @@ import {
   setOnelaMailForwarding,
   removeOnelaMailForwarding,
   checkOnelaMailForwarding,
-  countOnelaMailboxes,
+  countOnelaUsersByDepartment,
 } from './service'
 import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu } from './googleService'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
@@ -626,7 +626,7 @@ migrationRouter.get('/live-stats', requirePermission('migration:read'), async (c
   const ouPath = process.env['GOOGLE_ONELA_OU_PATH'] ?? '/onela.com'
 
   const [onelaRes, googleRes, activeRes, licRes] = await Promise.allSettled([
-    countOnelaMailboxes(),
+    countOnelaUsersByDepartment(),
     countUsersInOu(ouPath),
     db.select({ n: sql<number>`COUNT(*)` }).from(migrations).where(eq(migrations.archived, 0)),
     (async () => {
@@ -655,9 +655,11 @@ migrationRouter.get('/live-stats', requirePermission('migration:read'), async (c
 
   const activeRows = pick(activeRes, 'migrations')
   const licenses = pick(licRes, 'licences')
+  const onela = pick(onelaRes, 'ONELA')
 
   return c.json({
-    onelaTotal: pick(onelaRes, 'ONELA'),
+    onelaTotal: onela ? onela.total : null,
+    onelaByDept: onela ? onela.byDept : null,
     googleMigrated: pick(googleRes, 'Google'),
     activeMigrations: activeRows ? Number(activeRows[0]?.n ?? 0) : null,
     licenses: licenses && licenses.hasQuota ? licenses : null,
