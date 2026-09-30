@@ -79,22 +79,19 @@ function SortHeader({
   )
 }
 
-function GroupTable({ rows }: { rows: MigrationStats['byDept'] | MigrationStats['byOffice'] }) {
+function GroupTable({ rows, applyDoneOverrides = true }: { rows: MigrationStats['byDept'] | MigrationStats['byOffice']; applyDoneOverrides?: boolean }) {
   const [sortKey, setSortKey] = useState<SortKey>('done')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
-  const normalized: NormalizedRow[] = useMemo(
-    () =>
-      applyOverrides(
-        rows.map((r) => ({
-          label: 'department' in r ? r.department : r.office,
-          total: r.total,
-          done: r.done,
-          in_progress: r.in_progress,
-        }))
-      ),
-    [rows]
-  )
+  const normalized: NormalizedRow[] = useMemo(() => {
+    const mapped = rows.map((r) => ({
+      label: 'department' in r ? r.department : r.office,
+      total: r.total,
+      done: r.done,
+      in_progress: r.in_progress,
+    }))
+    return applyDoneOverrides ? applyOverrides(mapped) : mapped
+  }, [rows, applyDoneOverrides])
 
   const sorted = useMemo(() => {
     const arr = [...normalized]
@@ -161,6 +158,12 @@ export function MigrationDashboard() {
   const { data: live, isFetching: liveFetching, refetch: refetchLive } = useQuery({
     queryKey: ['live-stats'],
     queryFn: migrationApi.liveStats,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  })
+  const { data: serviceCounts, isFetching: svcFetching, refetch: refetchSvc } = useQuery({
+    queryKey: ['service-group-counts'],
+    queryFn: migrationApi.serviceGroupCounts,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   })
@@ -266,6 +269,15 @@ export function MigrationDashboard() {
     return merged
   }, [stats, live])
 
+  // Lignes du tableau « Par service » basées sur les groupes de sécurité ONELA
+  // (source la plus fiable). Prioritaire sur le regroupement par attribut.
+  const groupRows = useMemo(
+    () => (serviceCounts?.rows ?? []).map((r) => ({ department: r.label, total: r.total, done: r.done, in_progress: r.in_progress })),
+    [serviceCounts]
+  )
+  const usingGroups = groupRows.length > 0
+  const deptTabRows = usingGroups ? groupRows : deptRows
+
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5">
       {/* En-tête */}
@@ -276,11 +288,11 @@ export function MigrationDashboard() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { refetch(); refetchLive() }}
-            disabled={isFetching || liveFetching}
+            onClick={() => { refetch(); refetchLive(); refetchSvc() }}
+            disabled={isFetching || liveFetching || svcFetching}
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:opacity-50"
           >
-            <RefreshCw className={cn('h-3 w-3', (isFetching || liveFetching) && 'animate-spin')} />
+            <RefreshCw className={cn('h-3 w-3', (isFetching || liveFetching || svcFetching) && 'animate-spin')} />
             Actualiser
           </button>
           <button
@@ -402,18 +414,20 @@ export function MigrationDashboard() {
                       : 'text-gray-500 hover:text-gray-700'
                   )}
                 >
-                  {t === 'dept' ? 'Par département' : 'Par bureau / site'}
+                  {t === 'dept' ? 'Par service' : 'Par bureau / site'}
                 </button>
               ))}
             </div>
-            {tab === 'dept' && live?.onelaByDept && (
+            {tab === 'dept' && (usingGroups || live?.onelaByDept) && (
               <p className="mb-2 flex items-center gap-1 text-[11px] text-gray-400">
                 <Cloud className="h-3 w-3 text-sky-500" />
-                Effectifs par service recomptés en direct dans ONELA (attribut « service »). « Terminés » / « En cours » issus du suivi.
+                {usingGroups
+                  ? 'Effectifs recomptés en direct depuis les groupes de sécurité ONELA. « Terminés » / « En cours » = statut de suivi de ces membres.'
+                  : 'Effectifs par service recomptés en direct dans ONELA (attribut « service »). « Terminés » / « En cours » issus du suivi.'}
               </p>
             )}
             {tab === 'dept'
-              ? <GroupTable rows={deptRows} />
+              ? <GroupTable rows={deptTabRows} applyDoneOverrides={!usingGroups} />
               : <GroupTable rows={stats.byOffice} />
             }
           </div>

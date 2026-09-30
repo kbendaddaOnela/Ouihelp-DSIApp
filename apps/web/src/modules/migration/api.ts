@@ -80,6 +80,15 @@ export const migrationApi = {
       }>('/migration/live-stats')
       .then((r) => r.data),
 
+  // Effectifs par service, recomptés en direct depuis les groupes de sécurité ONELA.
+  serviceGroupCounts: () =>
+    apiClient
+      .get<{
+        rows: Array<{ label: string; total: number; done: number; in_progress: number }>
+        errors: string[]
+      }>('/migration/service-group-counts')
+      .then((r) => r.data),
+
   // Définit (total = nombre) ou efface (total = null) le total de sièges d'une licence.
   setLicenseQuota: (skuId: string, total: number | null) =>
     apiClient.put<{ ok: boolean }>('/migration/license-quotas', { skuId, total }).then((r) => r.data),

@@ -15,7 +15,9 @@ import {
   removeOnelaMailForwarding,
   checkOnelaMailForwarding,
   countOnelaUsersByDepartment,
+  getOnelaGroupMembers,
 } from './service'
+import { getServiceGroups } from './onelaServiceGroups'
 import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu } from './googleService'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
@@ -665,6 +667,43 @@ migrationRouter.get('/live-stats', requirePermission('migration:read'), async (c
     licenses: licenses && licenses.hasQuota ? licenses : null,
     errors,
   })
+})
+
+// ── Effectifs par service via les groupes de sécurité ONELA ───────────────────
+// total = membres actifs @onela.com du groupe (live) ; terminés / en cours =
+// statut de ces membres dans le suivi (migration_targets, lookup par UPN/mail).
+// Les départs sortent du total (plus dans le groupe), les arrivées y entrent
+// (comptées « en attente »). Chaque groupe est isolé : un échec ne casse pas les
+// autres et le service concerné est listé dans `errors`.
+migrationRouter.get('/service-group-counts', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const groups = getServiceGroups()
+
+  const targets = await db
+    .select({ upn: migrationTargets.onelaUpn, status: migrationTargets.status })
+    .from(migrationTargets)
+  const statusByUpn = new Map(targets.map((t) => [t.upn.toLowerCase(), t.status]))
+
+  const settled = await Promise.allSettled(groups.map((g) => getOnelaGroupMembers(g.groupId)))
+
+  const errors: string[] = []
+  const rows = groups.map((g, i) => {
+    const r = settled[i]!
+    if (r.status === 'rejected') {
+      errors.push(`${g.label}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`)
+      return null
+    }
+    let done = 0
+    let inProgress = 0
+    for (const m of r.value) {
+      const status = statusByUpn.get(m.upn) ?? (m.mail ? statusByUpn.get(m.mail) : undefined)
+      if (status === 'done') done++
+      else if (status === 'in_progress') inProgress++
+    }
+    return { label: g.label, total: r.value.length, done, in_progress: inProgress }
+  }).filter((r): r is { label: string; total: number; done: number; in_progress: number } => r !== null)
+
+  return c.json({ rows, errors })
 })
 
 // Définit (ou efface) le total de sièges achetés pour une licence.

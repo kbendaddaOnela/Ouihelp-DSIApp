@@ -123,6 +123,48 @@ export async function countOnelaUsersByDepartment(): Promise<{ total: number; by
   return { total, byDept }
 }
 
+export interface OnelaGroupMember {
+  upn: string
+  mail: string | null
+}
+
+/**
+ * Liste les membres (utilisateurs actifs) d'un groupe de sécurité ONELA, via
+ * transitiveMembers (gère les groupes imbriqués). Ne garde que les comptes
+ * activés dont le mail est @onela.com — la population réellement à migrer.
+ * Requête avancée ($count) → header ConsistencyLevel: eventual.
+ */
+export async function getOnelaGroupMembers(groupId: string): Promise<OnelaGroupMember[]> {
+  const token = await getOnelaToken()
+  const domain = process.env['ONELA_MAILBOX_DOMAIN'] || 'onela.com'
+  let url: string | null =
+    `https://graph.microsoft.com/v1.0/groups/${encodeURIComponent(groupId)}/transitiveMembers/microsoft.graph.user` +
+    `?$select=userPrincipalName,accountEnabled,mail&$count=true&$top=999`
+  const members: OnelaGroupMember[] = []
+  while (url) {
+    const res: Response = await fetchWithTimeout(url, {
+      headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Graph group members ${res.status} (${groupId}): ${err.slice(0, 300)}`)
+    }
+    const data = (await res.json()) as {
+      value?: Array<{ userPrincipalName: string | null; accountEnabled: boolean | null; mail: string | null }>
+      '@odata.nextLink'?: string
+    }
+    for (const u of data.value ?? []) {
+      if (u.accountEnabled === false) continue
+      const mail = u.mail ?? null
+      if (!mail || !mail.toLowerCase().endsWith(`@${domain}`)) continue
+      const upn = (u.userPrincipalName ?? mail).toLowerCase()
+      members.push({ upn, mail: mail.toLowerCase() })
+    }
+    url = data['@odata.nextLink'] ?? null
+  }
+  return members
+}
+
 // ── Exchange Admin REST API (ForwardingSMTPAddress) ──────────────────────────
 // Uses the same API as Exchange Admin Center to set the real transport-level forwarding
 
