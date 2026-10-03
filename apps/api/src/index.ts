@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { apiRouter } from './routes/index'
 import { requestLogger } from './middleware/logger'
+import { ONELA_LOGO_PNG_B64, OUIHELP_LOGO_PNG_B64 } from './modules/migration/emailAssets'
 import { runMigrations } from './db/migrate'
 import { startMailWorker } from './modules/migration/mailWorker'
 import { startSharedMailboxWorker } from './modules/shared-mailbox/worker'
@@ -28,6 +29,21 @@ app.use('*', requestLogger)
 
 // Routes API montées sous /api
 app.route('/api', apiRouter)
+
+// Logos publics (sans auth) pour les e-mails — référencés en URL absolue car les
+// images inline CID ne s'affichent pas dans Outlook Web.
+const EMAIL_LOGOS: Record<string, string> = {
+  'onela.png': ONELA_LOGO_PNG_B64,
+  'ouihelp.png': OUIHELP_LOGO_PNG_B64,
+}
+app.get('/assets/logo/:name', (c) => {
+  const b64 = EMAIL_LOGOS[c.req.param('name')]
+  if (!b64) return c.json({ error: 'Not Found' }, 404)
+  return c.body(Buffer.from(b64, 'base64'), 200, {
+    'Content-Type': 'image/png',
+    'Cache-Control': 'public, max-age=604800',
+  })
+})
 
 // Route racine
 app.get('/', (c) => c.json({ name: 'DSI App API', status: 'running' }))
