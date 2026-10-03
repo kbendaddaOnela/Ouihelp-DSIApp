@@ -105,24 +105,60 @@ async function buildAgencyMembership(): Promise<{ agencies: AgencyMembership[]; 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
 }
-function buildCredentialsEmail(displayName: string, gohUpn: string, tempPassword: string): { subject: string; html: string } {
+export function buildCredentialsEmail(displayName: string, gohUpn: string, tempPassword: string): { subject: string; html: string } {
   const subject = process.env['CREDENTIALS_EMAIL_SUBJECT'] || 'Vos accès à votre nouvelle messagerie Google Workspace'
-  const firstName = displayName.split(' ')[0] || displayName
+  const firstName = escapeHtml(displayName.split(' ')[0] || displayName)
+  const login = escapeHtml(gohUpn)
+  const pwd = escapeHtml(tempPassword)
+  // Charte : ONELA violet #662D91 / magenta #E5007D · Ouihelp navy #10243E / vert #3ECF8E
   const html = `
-<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.6">
-  <p>Bonjour ${escapeHtml(firstName)},</p>
-  <p>Votre boîte de messagerie a été migrée vers Google Workspace. Voici vos accès pour votre première connexion :</p>
-  <table style="border-collapse:collapse;margin:16px 0">
-    <tr><td style="padding:6px 12px;background:#f3f4f6;font-weight:bold">Identifiant</td><td style="padding:6px 12px;background:#f9fafb">${escapeHtml(gohUpn)}</td></tr>
-    <tr><td style="padding:6px 12px;background:#f3f4f6;font-weight:bold">Mot de passe temporaire</td><td style="padding:6px 12px;background:#f9fafb"><code>${escapeHtml(tempPassword)}</code></td></tr>
+<div style="margin:0;padding:0;background:#f4f4f7;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f7;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 2px 8px rgba(17,24,39,.08);font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+        <tr><td style="height:6px;line-height:6px;font-size:0;background:#662D91;background:linear-gradient(90deg,#662D91 0%,#E5007D 50%,#3ECF8E 100%);">&nbsp;</td></tr>
+        <tr><td style="padding:28px 32px 4px;text-align:center;">
+          <span style="font-size:22px;font-weight:bold;letter-spacing:3px;color:#662D91;">ONELA</span>
+          <span style="color:#c4c4cc;font-size:18px;padding:0 12px;vertical-align:middle;">&#8594;</span>
+          <span style="font-size:22px;font-weight:800;color:#10243E;">oui<span style="color:#3ECF8E;">help</span></span>
+        </td></tr>
+        <tr><td style="padding:8px 32px 0;text-align:center;">
+          <h1 style="margin:10px 0 2px;font-size:21px;color:#111827;font-weight:700;">Votre nouvelle messagerie est prête</h1>
+          <p style="margin:0;color:#8b8f98;font-size:13px;">Migration vers Google&nbsp;Workspace</p>
+        </td></tr>
+        <tr><td style="padding:22px 32px 6px;color:#374151;font-size:14px;line-height:1.6;">
+          <p style="margin:0 0 10px;">Bonjour <b>${firstName}</b>,</p>
+          <p style="margin:0;">Votre boîte mail a été migrée avec succès. Voici vos accès pour votre <b>première connexion</b>&nbsp;:</p>
+        </td></tr>
+        <tr><td style="padding:10px 32px 4px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#faf5ff;border:1px solid #ecd9fb;border-radius:12px;">
+            <tr><td style="padding:18px 22px;">
+              <p style="margin:0 0 3px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#9333ea;">Identifiant</p>
+              <p style="margin:0 0 14px;font-family:'Courier New',monospace;font-size:16px;color:#111827;word-break:break-all;">${login}</p>
+              <p style="margin:0 0 3px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#9333ea;">Mot de passe temporaire</p>
+              <p style="margin:0;font-family:'Courier New',monospace;font-size:16px;color:#111827;">${pwd}</p>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:20px 32px 6px;text-align:center;">
+          <a href="https://accounts.google.com" style="display:inline-block;background:#3ECF8E;color:#06351f;text-decoration:none;font-weight:700;font-size:15px;padding:13px 30px;border-radius:10px;">Se connecter à ma messagerie &#8594;</a>
+        </td></tr>
+        <tr><td style="padding:14px 32px 2px;color:#374151;font-size:13px;line-height:1.7;">
+          <p style="margin:0 0 8px;font-weight:700;color:#111827;">Vos 3 étapes&nbsp;:</p>
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">1.</td><td style="padding-bottom:4px;">Rendez-vous sur <a href="https://accounts.google.com" style="color:#662D91;">accounts.google.com</a>.</td></tr>
+          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">2.</td><td style="padding-bottom:4px;">Connectez-vous avec l'identifiant et le mot de passe temporaire ci-dessus.</td></tr>
+          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">3.</td><td>Choisissez votre nouveau mot de passe personnel.</td></tr></table>
+        </td></tr>
+        <tr><td style="padding:14px 32px 0;">
+          <p style="margin:0;background:#fff7ed;border-left:3px solid #f59e0b;padding:11px 14px;border-radius:6px;font-size:12px;color:#92400e;line-height:1.5;">🔒 Pour votre sécurité, un nouveau mot de passe vous sera demandé dès la première connexion.</p>
+        </td></tr>
+        <tr><td style="padding:24px 32px 26px;text-align:center;border-top:1px solid #f0f0f2;">
+          <p style="margin:18px 0 2px;color:#6b7280;font-size:12px;">Une question&nbsp;? Écrivez-nous à <a href="mailto:dsi@onela.com" style="color:#662D91;font-weight:600;">dsi@onela.com</a></p>
+          <p style="margin:0;color:#b9bcc3;font-size:11px;">Service Informatique ONELA · <span style="color:#E5007D;">être bien chez soi</span></p>
+        </td></tr>
+      </table>
+    </td></tr>
   </table>
-  <ol>
-    <li>Rendez-vous sur <a href="https://accounts.google.com">https://accounts.google.com</a>.</li>
-    <li>Connectez-vous avec l'identifiant et le mot de passe temporaire ci-dessus.</li>
-    <li>Vous devrez définir un nouveau mot de passe personnel lors de cette première connexion.</li>
-  </ol>
-  <p>En cas de difficulté, répondez à cet e-mail ou contactez le support informatique.</p>
-  <p>Bonne journée,<br/>Le service informatique</p>
 </div>`.trim()
   return { subject, html }
 }

@@ -203,8 +203,8 @@ export async function getOnelaGroupUsers(groupId: string): Promise<GraphUser[]> 
  * permission Graph **Mail.Send** (application) sur l'app ONELA.
  */
 export async function sendOnelaMail(params: { to: string; subject: string; html: string }): Promise<void> {
-  const sender = process.env['ONELA_CREDENTIALS_SENDER']
-  if (!sender) throw new Error('ONELA_CREDENTIALS_SENDER non défini (boîte expéditrice ONELA pour l\'envoi des accès)')
+  // Boîte partagée DSI par défaut ; surchargeable via ONELA_CREDENTIALS_SENDER.
+  const sender = process.env['ONELA_CREDENTIALS_SENDER'] || 'dsi@onela.com'
   const token = await getOnelaToken()
   const res = await fetchWithTimeout(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/sendMail`, {
     method: 'POST',
