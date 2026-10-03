@@ -14,6 +14,7 @@ import { UserRow } from './components/UserRow'
 import { MigrationDashboard } from './components/MigrationDashboard'
 import { LicensePanel } from './components/LicensePanel'
 import { AgenciesPanel } from './components/AgenciesPanel'
+import { ConfirmProvider } from './components/ConfirmDialog'
 
 export default function MigrationPage() {
   const [query, setQuery] = useState('')
@@ -142,6 +143,7 @@ export default function MigrationPage() {
   const isRunning = isPending || isPendingExisting
 
   return (
+    <ConfirmProvider>
     <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
       {/* ── Colonne principale ─────────────────────────────────────────── */}
       <div className="flex flex-col gap-6">
@@ -396,5 +398,6 @@ export default function MigrationPage() {
         </div>
       </aside>
     </div>
+    </ConfirmProvider>
   )
 }

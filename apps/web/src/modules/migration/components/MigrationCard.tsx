@@ -8,6 +8,7 @@ import { StepBadge } from './StepBadge'
 import { LicenseStep } from './LicenseStep'
 import { CopyButton } from './CopyButton'
 import { DataMigrationSection } from './DataMigrationSection'
+import { useConfirm } from './ConfirmDialog'
 import {
   useAddGoogleAlias,
   useMigrateMail,
@@ -47,14 +48,18 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
   const { mutate: activateNewFormatRaw, isPending: isActivatingNewFormat } = useActivateNewFormat()
 
   const newFormatAlias = m.gohUpn ? `${m.gohUpn.split('@')[0]}@${m.onelaUpn.split('@')[1] ?? 'onela.com'}` : null
-  const handleActivateNewFormat = () => {
-    if (!window.confirm(
-      `Activer le nouveau format ${newFormatAlias} ?\n\n` +
+  const handleActivateNewFormat = async () => {
+    const res = await confirm({
+      title: 'Activer le nouveau format',
+      message:
+        `Activer le nouveau format ${newFormatAlias} ?\n\n` +
         `Ça va :\n` +
         `1. Ajouter l'alias ${newFormatAlias} sur le compte ${m.gohUpn}\n` +
-        `2. Ajouter "Envoyer en tant que" ${newFormatAlias} dans son Gmail\n\n` +
+        `2. Ajouter « Envoyer en tant que » ${newFormatAlias} dans son Gmail\n\n` +
         `Le user pourra envoyer/recevoir avec ce nouveau format dès maintenant.`,
-    )) return
+      confirmLabel: 'Activer',
+    })
+    if (!res.confirmed) return
     activateNewFormatRaw(m.id, {
       onSuccess: (data) => {
         const lines = [`Nouveau format activé : ${data.alias}`]
@@ -62,12 +67,12 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
         lines.push(`• Envoyer en tant que : ${data.sendAsAdded ? 'ajouté' : '(déjà présent)'}`)
         lines.push(`• Marquée comme défaut : ${data.setAsDefault ? 'oui' : 'non'}`)
         if (data.warnings.length) lines.push('', ...data.warnings.map((w) => `⚠ ${w}`))
-        window.alert(lines.join('\n'))
+        void alert({ title: 'Nouveau format activé', message: lines.join('\n') })
       },
       onError: (err: unknown) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const apiErr = (err as any)?.response?.data?.message
-        window.alert(`Activation nouveau format échouée :\n\n${apiErr || (err instanceof Error ? err.message : String(err))}`)
+        void alert({ title: 'Activation échouée', tone: 'danger', message: apiErr || (err instanceof Error ? err.message : String(err)) })
       },
     })
   }
@@ -80,14 +85,19 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
   const [isSendingCreds, setIsSendingCreds] = useState(false)
   const [sendCredsMsg, setSendCredsMsg] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  const { confirm, alert } = useConfirm()
 
   const handleResumeFull = async () => {
-    if (!window.confirm(
-      `Relancer une migration mail COMPLÈTE pour ${m.onelaDisplayName} ?\n\n` +
-      `Utile si la migration a été marquée "terminée" à tort. Ça relance un ` +
-      `re-parcours complet de la boîte : les mails déjà migrés sont sautés ` +
-      `(rapide), et seuls les manquants sont traités. Aucun doublon.`
-    )) return
+    const res = await confirm({
+      title: 'Reprise mail complète',
+      message:
+        `Relancer une migration mail COMPLÈTE pour ${m.onelaDisplayName} ?\n\n` +
+        `Utile si la migration a été marquée « terminée » à tort. Ça relance un ` +
+        `re-parcours complet de la boîte : les mails déjà migrés sont sautés ` +
+        `(rapide), et seuls les manquants sont traités. Aucun doublon.`,
+      confirmLabel: 'Relancer',
+    })
+    if (!res.confirmed) return
     setIsResumingFull(true)
     try {
       await migrationApi.resumeFullMail(m.id)
@@ -97,18 +107,22 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
       }
     } catch (err: unknown) {
       const apiErr = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-      window.alert(`Reprise complète échouée : ${apiErr || (err instanceof Error ? err.message : String(err))}`)
+      await alert({ title: 'Reprise complète échouée', tone: 'danger', message: apiErr || (err instanceof Error ? err.message : String(err)) })
     } finally {
       setIsResumingFull(false)
     }
   }
 
   const handleSendCredentials = async () => {
-    if (!window.confirm(
-      `Envoyer les accès (identifiant + mot de passe temporaire) à ${m.onelaDisplayName} ?\n\n` +
-      `L'e-mail part vers ${m.onelaEmail} (boîte Outlook ONELA).` +
-      (m.credentialsSentAt ? `\n\n⚠️ Déjà envoyé le ${new Date(m.credentialsSentAt).toLocaleString('fr-FR')}.` : '')
-    )) return
+    const res = await confirm({
+      title: m.credentialsSentAt ? 'Renvoyer les accès' : 'Envoyer les accès',
+      message:
+        `Envoyer les accès (identifiant + mot de passe temporaire) à ${m.onelaDisplayName} ?\n\n` +
+        `L'e-mail part vers ${m.onelaEmail} (boîte Outlook ONELA).` +
+        (m.credentialsSentAt ? `\n\n⚠️ Déjà envoyé le ${new Date(m.credentialsSentAt).toLocaleString('fr-FR')}.` : ''),
+      confirmLabel: 'Envoyer',
+    })
+    if (!res.confirmed) return
     setIsSendingCreds(true)
     setSendCredsMsg(null)
     try {
@@ -124,11 +138,15 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
   }
 
   const handlePushOnelaContacts = async () => {
-    if (!window.confirm(
-      `Intégrer l'annuaire ONELA dans les contacts Google de ${m.gohUpn} ?\n\n` +
-      `Les collègues ONELA pas encore migrés et les listes de diffusion seront ajoutés ` +
-      `dans ses contacts (libellé « ONELA »). Les contacts déjà présents ne seront pas dupliqués.`
-    )) return
+    const r = await confirm({
+      title: 'Intégrer l\'annuaire ONELA',
+      message:
+        `Intégrer l'annuaire ONELA dans les contacts Google de ${m.gohUpn} ?\n\n` +
+        `Les collègues ONELA pas encore migrés et les listes de diffusion seront ajoutés ` +
+        `dans ses contacts (libellé « ONELA »). Les contacts déjà présents ne seront pas dupliqués.`,
+      confirmLabel: 'Intégrer',
+    })
+    if (!r.confirmed) return
     setIsPushingOnela(true)
     setOnelaContactsMsg(null)
     try {
@@ -167,10 +185,14 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
     ['pending', 'running'].includes(m.stepCalendarMigration) ||
     ['pending', 'running'].includes(m.stepContactsMigration)
 
-  const handleDelete = () => {
-    if (window.confirm(`Supprimer definitivement la migration de ${m.onelaDisplayName} ?\nCela ne supprime pas les donnees deja migrees dans Google.`)) {
-      removeMigration(m.id)
-    }
+  const handleDelete = async () => {
+    const res = await confirm({
+      title: 'Supprimer la migration',
+      message: `Supprimer définitivement la migration de ${m.onelaDisplayName} ?\nCela ne supprime pas les données déjà migrées dans Google.`,
+      confirmLabel: 'Supprimer',
+      tone: 'danger',
+    })
+    if (res.confirmed) removeMigration(m.id)
   }
 
   const handleMoveOu = () => {
@@ -250,13 +272,16 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
               {isRelabeling ? 'Lancement...' : 'Re-labelliser'}
             </button>
             <button
-              onClick={() => {
-                if (!window.confirm(
-                  `Dédupliquer la boîte Gmail ?\n\n` +
-                  `Cela va scanner tous les messages et envoyer les doublons (même Message-ID) à la Corbeille Gmail.\n` +
-                  `Les messages supprimés sont récupérables pendant 30 jours.\n\n` +
-                  `L'opération peut durer plusieurs minutes selon la taille de la mailbox.`
-                )) return
+              onClick={async () => {
+                const res = await confirm({
+                  title: 'Dédupliquer la boîte Gmail',
+                  message:
+                    `Cela va scanner tous les messages et envoyer les doublons (même Message-ID) à la Corbeille Gmail.\n` +
+                    `Les messages supprimés sont récupérables pendant 30 jours.\n\n` +
+                    `L'opération peut durer plusieurs minutes selon la taille de la mailbox.`,
+                  confirmLabel: 'Dédupliquer',
+                })
+                if (!res.confirmed) return
                 setDedupeMessage(null)
                 dedupeMail(m.id, {
                   onSuccess: () => setDedupeMessage('Déduplication lancée en arrière-plan'),

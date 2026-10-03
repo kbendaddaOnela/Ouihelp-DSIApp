@@ -8,6 +8,7 @@ import { useResetPhase, useStopPhase } from '../hooks/useMigration'
 import { apiClient } from '@/lib/api'
 import { msalInstance, apiLoginRequest } from '@/lib/auth'
 import { migrationApi } from '../api'
+import { useConfirm } from './ConfirmDialog'
 
 interface Props {
   migrationId: string
@@ -42,25 +43,29 @@ export function DataMigrationSection({
 }: Props) {
   const { mutate: resetPhase, isPending: isResetting } = useResetPhase()
   const { mutate: stopPhase, isPending: isStopping } = useStopPhase()
+  const { confirm, alert } = useConfirm()
 
-  const handleStop = () => {
-    if (window.confirm(
-      `Mettre en pause la migration ${label} ?\n\n` +
-      `La progression est sauvegardée — la reprise continuera exactement ` +
-      `où tu t'es arrêté (les messages déjà migrés ne seront pas refaits).`
-    )) {
-      stopPhase({ id: migrationId, phase })
-    }
+  const handleStop = async () => {
+    const res = await confirm({
+      title: `Mettre en pause — ${label}`,
+      message:
+        `La progression est sauvegardée — la reprise continuera exactement ` +
+        `où tu t'es arrêté (les messages déjà migrés ne seront pas refaits).`,
+      confirmLabel: 'Mettre en pause',
+    })
+    if (res.confirmed) stopPhase({ id: migrationId, phase })
   }
 
-  const handleReset = () => {
-    if (window.confirm(
-      `Réinitialiser la migration ${label} ?\n` +
-      `Cela vide le tracking en DB et permet de tout re-migrer.\n` +
-      `Les données déjà dans Google ne sont pas touchées.`
-    )) {
-      resetPhase({ id: migrationId, phase })
-    }
+  const handleReset = async () => {
+    const res = await confirm({
+      title: `Réinitialiser — ${label}`,
+      message:
+        `Cela vide le tracking en DB et permet de tout re-migrer.\n` +
+        `Les données déjà dans Google ne sont pas touchées.`,
+      confirmLabel: 'Réinitialiser',
+      tone: 'danger',
+    })
+    if (res.confirmed) resetPhase({ id: migrationId, phase })
   }
 
   const [isDownloading, setIsDownloading] = useState(false)
@@ -68,19 +73,23 @@ export function DataMigrationSection({
   const queryClient = useQueryClient()
 
   const handleRetryErrors = async () => {
-    if (!window.confirm(
-      `Réessayer ${failed} message(s) en erreur ?\n\n` +
-      `Les mails seront déposés dans la boîte de réception Gmail ` +
-      `(rapide, sans résolution de labels). Tu pourras ensuite cliquer ` +
-      `"Re-labelliser" pour leur remettre les bons labels.`
-    )) return
+    const res0 = await confirm({
+      title: 'Réessayer les erreurs',
+      message:
+        `Réessayer ${failed} message(s) en erreur ?\n\n` +
+        `Les mails seront déposés dans la boîte de réception Gmail ` +
+        `(rapide, sans résolution de labels). Tu pourras ensuite cliquer ` +
+        `« Re-labelliser » pour leur remettre les bons labels.`,
+      confirmLabel: 'Réessayer',
+    })
+    if (!res0.confirmed) return
     setIsRetrying(true)
     try {
       const res = await migrationApi.retryMailErrors(migrationId)
-      alert(`Reprise lancée sur ${res.count} message(s). Le compteur va se mettre à jour progressivement.`)
+      await alert({ title: 'Reprise lancée', message: `Reprise lancée sur ${res.count} message(s). Le compteur va se mettre à jour progressivement.` })
       queryClient.invalidateQueries({ queryKey: ['migration-history'] })
     } catch (err) {
-      alert(`Erreur : ${err instanceof Error ? err.message : 'inconnue'}`)
+      await alert({ title: 'Erreur', tone: 'danger', message: err instanceof Error ? err.message : 'inconnue' })
     } finally {
       setIsRetrying(false)
     }
@@ -118,7 +127,7 @@ export function DataMigrationSection({
       URL.revokeObjectURL(blobUrl)
     } catch (err) {
       console.error('Download error:', err)
-      alert(`Erreur : ${err instanceof Error ? err.message : 'inconnue'}`)
+      await alert({ title: 'Erreur', tone: 'danger', message: err instanceof Error ? err.message : 'inconnue' })
     } finally {
       setIsDownloading(false)
     }

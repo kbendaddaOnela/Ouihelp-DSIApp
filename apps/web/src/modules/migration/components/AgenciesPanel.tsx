@@ -4,6 +4,7 @@ import { Building2, ChevronRight, ChevronDown, RefreshCw, Loader2, Mail } from '
 import { cn } from '@/lib/utils'
 import { migrationApi } from '../api'
 import { MemberPicker, MiniProgress } from './MemberPicker'
+import { useConfirm } from './ConfirmDialog'
 
 type Agency = { code: string; name: string; groupId: string; total: number; done: number; in_progress: number }
 
@@ -23,6 +24,7 @@ export function AgenciesPanel() {
   const [agency, setAgency] = useState<Agency | null>(null)
   const [bulkMsg, setBulkMsg] = useState<{ key: string; text: string; error?: boolean } | null>(null)
   const queryClient = useQueryClient()
+  const { confirm } = useConfirm()
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['agencies-tree'],
@@ -32,8 +34,8 @@ export function AgenciesPanel() {
   })
 
   const bulk = useMutation({
-    mutationFn: (p: { key: string; agencyGroupId?: string; region?: string }) =>
-      migrationApi.sendCredentialsBulk({ agencyGroupId: p.agencyGroupId, region: p.region }).then((r) => ({ ...r, key: p.key })),
+    mutationFn: (p: { key: string; agencyGroupId?: string; region?: string; force?: boolean }) =>
+      migrationApi.sendCredentialsBulk({ agencyGroupId: p.agencyGroupId, region: p.region, force: p.force }).then((r) => ({ ...r, key: p.key })),
     onSuccess: (res) => {
       const parts = [`${res.sent} envoyé(s)`]
       if (res.skipped) parts.push(`${res.skipped} déjà envoyé(s)`)
@@ -45,10 +47,16 @@ export function AgenciesPanel() {
     onError: (e, vars) => setBulkMsg({ key: vars.key, text: `Erreur : ${e instanceof Error ? e.message : String(e)}`, error: true }),
   })
 
-  const doBulk = (key: string, label: string, params: { agencyGroupId?: string; region?: string }) => {
-    if (!window.confirm(`Envoyer les accès à tous les comptes provisionnés — ${label} ?\nLes comptes déjà notifiés sont ignorés.`)) return
+  const doBulk = async (key: string, label: string, params: { agencyGroupId?: string; region?: string }) => {
+    const res = await confirm({
+      title: 'Envoyer les accès',
+      message: `Envoyer les accès (identifiant + mot de passe) à tous les comptes provisionnés — ${label} ?`,
+      confirmLabel: 'Envoyer',
+      checkbox: { label: 'Renvoyer aussi aux comptes déjà notifiés (forcer)' },
+    })
+    if (!res.confirmed) return
     setBulkMsg(null)
-    bulk.mutate({ key, ...params })
+    bulk.mutate({ key, ...params, force: res.checked })
   }
   const pendingKey = bulk.isPending ? (bulk.variables as { key: string } | undefined)?.key : undefined
 

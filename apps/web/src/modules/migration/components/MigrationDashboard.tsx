@@ -6,6 +6,7 @@ import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useM
 import { onelaContactsApi, migrationApi } from '../api'
 import type { MigrationStats } from '../api'
 import { SuiviTree, type TreeNode } from './SuiviTree'
+import { useConfirm } from './ConfirmDialog'
 
 // ── Override local (groupes terminés non encore reflétés dans la base) ────────
 const DONE_OVERRIDES: Record<string, number> = {
@@ -184,6 +185,7 @@ export function MigrationDashboard() {
   const [isImportingOnela, setIsImportingOnela] = useState(false)
 
   const hasData = stats && stats.totals.total > 0
+  const { confirm, alert } = useConfirm()
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -192,7 +194,7 @@ export function MigrationDashboard() {
     reader.onload = (ev) => {
       const csv = ev.target?.result as string
       importCSV(csv, {
-        onError: (err) => alert(`Erreur import : ${err instanceof Error ? err.message : String(err)}`),
+        onError: (err) => void alert({ title: 'Erreur import', tone: 'danger', message: err instanceof Error ? err.message : String(err) }),
       })
     }
     reader.readAsText(file, 'UTF-8')
@@ -337,9 +339,14 @@ export function MigrationDashboard() {
             Actualiser
           </button>
           <button
-            onClick={() => {
-              if (window.confirm('Remettre tous les compteurs à zéro (done + in_progress → pending) ?'))
-                resetDone()
+            onClick={async () => {
+              const res = await confirm({
+                title: 'Réinitialiser les compteurs',
+                message: 'Remettre tous les compteurs à zéro (terminés + en cours → en attente) ?',
+                confirmLabel: 'Réinitialiser',
+                tone: 'danger',
+              })
+              if (res.confirmed) resetDone()
             }}
             disabled={isResetting}
             className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-60"

@@ -4,6 +4,7 @@ import { Users, Loader2, Rocket, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { MigrateUsersRequest } from '@dsi-app/shared'
 import { migrationApi } from '../api'
+import { useConfirm } from './ConfirmDialog'
 
 type Member = Awaited<ReturnType<typeof migrationApi.groupMembers>>[number]
 
@@ -19,6 +20,7 @@ export function MemberPicker({ groupId, title, subtitle, onLaunched }: {
   onLaunched?: () => void
 }) {
   const queryClient = useQueryClient()
+  const { confirm } = useConfirm()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -50,10 +52,15 @@ export function MemberPicker({ groupId, title, subtitle, onLaunched }: {
   const allSelected = selectable.length > 0 && selectable.every((m) => selected.has(m.id))
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(selectable.map((m) => m.id)))
 
-  const doLaunch = () => {
+  const doLaunch = async () => {
     const chosen = (members ?? []).filter((m) => selected.has(m.id))
     if (!chosen.length) return
-    if (!window.confirm(`Lancer la migration de ${chosen.length} personne(s) — ${title} ?`)) return
+    const res = await confirm({
+      title: 'Lancer la migration',
+      message: `Lancer la migration de ${chosen.length} personne(s) — ${title} ?`,
+      confirmLabel: 'Lancer',
+    })
+    if (!res.confirmed) return
     launch.mutate({
       users: chosen.map((m) => ({
         onelaUserId: m.id,
