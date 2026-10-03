@@ -47,6 +47,16 @@ export const migrationApi = {
   migrateMail: (id: string, order: 'asc' | 'desc' = 'desc', beforeDays?: number | null) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-mail`, { order, beforeDays: beforeDays ?? undefined }).then((r) => r.data),
 
+  // Envoi des accès (login + mdp temporaire) par e-mail à l'utilisateur.
+  sendCredentials: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/send-credentials`).then((r) => r.data),
+
+  // Envoi groupé des accès : par agence (agencyGroupId) ou par région (region).
+  sendCredentialsBulk: (params: { agencyGroupId?: string; region?: string; force?: boolean }) =>
+    apiClient
+      .post<{ sent: number; skipped: number; notReady: number; failed: Array<{ upn: string; error: string }> }>('/migration/send-credentials-bulk', params)
+      .then((r) => r.data),
+
   migrateCalendar: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-calendar`).then((r) => r.data),
 

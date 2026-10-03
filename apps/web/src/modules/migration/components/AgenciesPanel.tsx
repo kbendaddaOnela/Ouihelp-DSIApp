@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Building2, ChevronRight, ChevronDown, RefreshCw, Loader2 } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Building2, ChevronRight, ChevronDown, RefreshCw, Loader2, Mail } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { migrationApi } from '../api'
 import { MemberPicker, MiniProgress } from './MemberPicker'
@@ -21,6 +21,8 @@ function Counts({ total, done, in_progress }: { total: number; done: number; in_
 export function AgenciesPanel() {
   const [openRegion, setOpenRegion] = useState<string | null>(null)
   const [agency, setAgency] = useState<Agency | null>(null)
+  const [bulkMsg, setBulkMsg] = useState<{ key: string; text: string; error?: boolean } | null>(null)
+  const queryClient = useQueryClient()
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['agencies-tree'],
@@ -28,6 +30,27 @@ export function AgenciesPanel() {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   })
+
+  const bulk = useMutation({
+    mutationFn: (p: { key: string; agencyGroupId?: string; region?: string }) =>
+      migrationApi.sendCredentialsBulk({ agencyGroupId: p.agencyGroupId, region: p.region }).then((r) => ({ ...r, key: p.key })),
+    onSuccess: (res) => {
+      const parts = [`${res.sent} envoyé(s)`]
+      if (res.skipped) parts.push(`${res.skipped} déjà envoyé(s)`)
+      if (res.notReady) parts.push(`${res.notReady} pas prêt(s)`)
+      if (res.failed.length) parts.push(`${res.failed.length} échec(s)`)
+      setBulkMsg({ key: res.key, text: parts.join(' · '), error: res.failed.length > 0 })
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    },
+    onError: (e, vars) => setBulkMsg({ key: vars.key, text: `Erreur : ${e instanceof Error ? e.message : String(e)}`, error: true }),
+  })
+
+  const doBulk = (key: string, label: string, params: { agencyGroupId?: string; region?: string }) => {
+    if (!window.confirm(`Envoyer les accès à tous les comptes provisionnés — ${label} ?\nLes comptes déjà notifiés sont ignorés.`)) return
+    setBulkMsg(null)
+    bulk.mutate({ key, ...params })
+  }
+  const pendingKey = bulk.isPending ? (bulk.variables as { key: string } | undefined)?.key : undefined
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-5">
@@ -77,6 +100,19 @@ export function AgenciesPanel() {
 
                 {isOpen && (
                   <div className="p-2">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => doBulk(`region:${r.label}`, `région ${r.label}`, { region: r.label })}
+                        disabled={bulk.isPending}
+                        className="flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-60"
+                      >
+                        {pendingKey === `region:${r.label}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
+                        Envoyer les accès de la région
+                      </button>
+                      {bulkMsg?.key === `region:${r.label}` && (
+                        <span className={cn('text-[11px]', bulkMsg.error ? 'text-red-600' : 'text-emerald-600')}>{bulkMsg.text}</span>
+                      )}
+                    </div>
                     <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 md:grid-cols-3">
                       {r.agencies.map((a) => {
                         const active = agency?.groupId === a.groupId
@@ -104,12 +140,27 @@ export function AgenciesPanel() {
                       })}
                     </div>
                     {agency && r.agencies.some((a) => a.groupId === agency.groupId) && (
-                      <MemberPicker
-                        groupId={agency.groupId}
-                        title={agency.name}
-                        subtitle={`${agency.code} · ${agency.total} membres`}
-                        onLaunched={() => refetch()}
-                      />
+                      <>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => doBulk(`agency:${agency.groupId}`, `agence ${agency.name}`, { agencyGroupId: agency.groupId })}
+                            disabled={bulk.isPending}
+                            className="flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-60"
+                          >
+                            {pendingKey === `agency:${agency.groupId}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
+                            Envoyer les accès de l'agence
+                          </button>
+                          {bulkMsg?.key === `agency:${agency.groupId}` && (
+                            <span className={cn('text-[11px]', bulkMsg.error ? 'text-red-600' : 'text-emerald-600')}>{bulkMsg.text}</span>
+                          )}
+                        </div>
+                        <MemberPicker
+                          groupId={agency.groupId}
+                          title={agency.name}
+                          subtitle={`${agency.code} · ${agency.total} membres`}
+                          onLaunched={() => refetch()}
+                        />
+                      </>
                     )}
                   </div>
                 )}

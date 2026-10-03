@@ -197,6 +197,33 @@ export async function getOnelaGroupUsers(groupId: string): Promise<GraphUser[]> 
   return users
 }
 
+/**
+ * Envoie un e-mail depuis une boîte ONELA via Graph (app-only sendMail).
+ * Expéditeur = ONELA_CREDENTIALS_SENDER (UPN d'une boîte ONELA). Nécessite la
+ * permission Graph **Mail.Send** (application) sur l'app ONELA.
+ */
+export async function sendOnelaMail(params: { to: string; subject: string; html: string }): Promise<void> {
+  const sender = process.env['ONELA_CREDENTIALS_SENDER']
+  if (!sender) throw new Error('ONELA_CREDENTIALS_SENDER non défini (boîte expéditrice ONELA pour l\'envoi des accès)')
+  const token = await getOnelaToken()
+  const res = await fetchWithTimeout(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/sendMail`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: {
+        subject: params.subject,
+        body: { contentType: 'HTML', content: params.html },
+        toRecipients: [{ emailAddress: { address: params.to } }],
+      },
+      saveToSentItems: true,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Graph sendMail ${res.status}: ${err.slice(0, 300)}`)
+  }
+}
+
 // ── Exchange Admin REST API (ForwardingSMTPAddress) ──────────────────────────
 // Uses the same API as Exchange Admin Center to set the real transport-level forwarding
 

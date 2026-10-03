@@ -33,6 +33,8 @@ export const migrations = mysqlTable('migrations', {
   licenseSkuId: varchar('license_sku_id', { length: 64 }),
   licenseSkuName: varchar('license_sku_name', { length: 128 }),
   licenseError: text('license_error'),
+  // Envoi des accès (login + mdp temporaire) à l'utilisateur
+  credentialsSentAt: timestamp('credentials_sent_at'),
   // Mail migration progress (Phase B)
   mailTotal: int('mail_total').default(0).notNull(),
   mailMigrated: int('mail_migrated').default(0).notNull(),

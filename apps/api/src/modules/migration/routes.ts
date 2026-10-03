@@ -17,6 +17,7 @@ import {
   countOnelaUsersByDepartment,
   getOnelaGroupMembers,
   getOnelaGroupUsers,
+  sendOnelaMail,
 } from './service'
 import { getServiceGroups } from './onelaServiceGroups'
 import { getAgencyGroups, REGION_ORDER } from './onelaAgencyGroups'
@@ -97,6 +98,33 @@ async function buildAgencyMembership(): Promise<{ agencies: AgencyMembership[]; 
     })
   }
   return { agencies: built, errors }
+}
+
+// E-mail d'accès envoyé à l'utilisateur migré (login Google + mot de passe
+// temporaire + consignes de 1ʳᵉ connexion). Surchargeable via env.
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
+}
+function buildCredentialsEmail(displayName: string, gohUpn: string, tempPassword: string): { subject: string; html: string } {
+  const subject = process.env['CREDENTIALS_EMAIL_SUBJECT'] || 'Vos accès à votre nouvelle messagerie Google Workspace'
+  const firstName = displayName.split(' ')[0] || displayName
+  const html = `
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.6">
+  <p>Bonjour ${escapeHtml(firstName)},</p>
+  <p>Votre boîte de messagerie a été migrée vers Google Workspace. Voici vos accès pour votre première connexion :</p>
+  <table style="border-collapse:collapse;margin:16px 0">
+    <tr><td style="padding:6px 12px;background:#f3f4f6;font-weight:bold">Identifiant</td><td style="padding:6px 12px;background:#f9fafb">${escapeHtml(gohUpn)}</td></tr>
+    <tr><td style="padding:6px 12px;background:#f3f4f6;font-weight:bold">Mot de passe temporaire</td><td style="padding:6px 12px;background:#f9fafb"><code>${escapeHtml(tempPassword)}</code></td></tr>
+  </table>
+  <ol>
+    <li>Rendez-vous sur <a href="https://accounts.google.com">https://accounts.google.com</a>.</li>
+    <li>Connectez-vous avec l'identifiant et le mot de passe temporaire ci-dessus.</li>
+    <li>Vous devrez définir un nouveau mot de passe personnel lors de cette première connexion.</li>
+  </ol>
+  <p>En cas de difficulté, répondez à cet e-mail ou contactez le support informatique.</p>
+  <p>Bonne journée,<br/>Le service informatique</p>
+</div>`.trim()
+  return { subject, html }
 }
 
 export const migrationRouter = new Hono<{ Variables: RbacVariables }>()
@@ -846,6 +874,88 @@ migrationRouter.get('/group-members/:groupId', requirePermission('migration:read
   return c.json({ users })
 })
 
+// ── Envoi des accès (login + mot de passe) par e-mail ─────────────────────────
+// Un compte est « prêt à envoyer » s'il a gohUpn + tempPassword et que la
+// création du compte a réussi. On envoie à l'adresse @onela.com (Outlook, encore
+// consultée). Trace `credentialsSentAt` pour éviter les doublons.
+function readyToSend(m: typeof migrations.$inferSelect): boolean {
+  return !!m.gohUpn && !!m.tempPassword && m.stepCreateAccount === 'success' && m.archived === 0
+}
+
+migrationRouter.post('/:id/send-credentials', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  if (!row.gohUpn || !row.tempPassword) return c.json({ error: 'Compte Google non provisionné (pas de login / mot de passe)' }, 400)
+
+  const { subject, html } = buildCredentialsEmail(row.onelaDisplayName, row.gohUpn, row.tempPassword)
+  try {
+    await sendOnelaMail({ to: row.onelaEmail, subject, html })
+  } catch (err) {
+    return c.json({ error: 'Envoi e-mail échoué', message: err instanceof Error ? err.message : String(err) }, 502)
+  }
+  const sentAt = new Date()
+  await db.update(migrations).set({ credentialsSentAt: sentAt }).where(eq(migrations.id, id))
+  const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+  return c.json(serializeMigration(updated!))
+})
+
+// Envoi groupé : par agence (agencyGroupId) ou par région (region).
+migrationRouter.post('/send-credentials-bulk', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const body = await c.req.json<{ agencyGroupId?: string; region?: string; force?: boolean }>().catch(() => ({} as { agencyGroupId?: string; region?: string; force?: boolean }))
+
+  // Ensemble des UPN ciblés (minuscule)
+  const targetUpns = new Set<string>()
+  try {
+    if (body.agencyGroupId) {
+      for (const m of await getOnelaGroupMembers(body.agencyGroupId)) targetUpns.add(m.upn)
+    } else if (body.region) {
+      if (!membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
+        const built = await buildAgencyMembership()
+        membershipCache = { at: Date.now(), ...built }
+      }
+      for (const a of membershipCache.agencies) {
+        if (a.regionLabel === body.region) for (const u of a.upns) targetUpns.add(u)
+      }
+    } else {
+      return c.json({ error: 'agencyGroupId ou region requis' }, 400)
+    }
+  } catch (err) {
+    return c.json({ error: 'Lecture groupe ONELA échouée', message: err instanceof Error ? err.message : String(err) }, 502)
+  }
+
+  if (targetUpns.size === 0) return c.json({ sent: 0, skipped: 0, notReady: 0, failed: [] })
+
+  const all = await db.select().from(migrations).where(eq(migrations.archived, 0))
+  const candidates = all.filter((m) => targetUpns.has(m.onelaUpn.toLowerCase()))
+
+  let sent = 0
+  let skipped = 0
+  let notReady = 0
+  const failed: Array<{ upn: string; error: string }> = []
+
+  const toSend = candidates.filter((m) => {
+    if (!readyToSend(m)) { notReady++; return false }
+    if (!body.force && m.credentialsSentAt) { skipped++; return false }
+    return true
+  })
+
+  await mapLimit(toSend, 4, async (m) => {
+    const { subject, html } = buildCredentialsEmail(m.onelaDisplayName, m.gohUpn!, m.tempPassword!)
+    try {
+      await sendOnelaMail({ to: m.onelaEmail, subject, html })
+      await db.update(migrations).set({ credentialsSentAt: new Date() }).where(eq(migrations.id, m.id))
+      sent++
+    } catch (err) {
+      failed.push({ upn: m.onelaUpn, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  return c.json({ sent, skipped, notReady, failed })
+})
+
 // Définit (ou efface) le total de sièges achetés pour une licence.
 migrationRouter.put('/license-quotas', requirePermission('migration:write'), async (c) => {
   const db = getDb()
@@ -1469,6 +1579,7 @@ function serializeMigration(m: typeof migrations.$inferSelect) {
     contactsLastSyncAt: m.contactsLastSyncAt ? m.contactsLastSyncAt.toISOString() : null,
     archived: m.archived === 1,
     archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null,
+    credentialsSentAt: m.credentialsSentAt ? m.credentialsSentAt.toISOString() : null,
   }
 }
 

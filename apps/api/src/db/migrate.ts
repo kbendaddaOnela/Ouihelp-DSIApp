@@ -152,6 +152,8 @@ async function ensureSchemaPatches() {
     { table: 'shared_migrations', column: 'license_sku_id', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_sku_id\` varchar(64)` },
     { table: 'shared_migrations', column: 'license_sku_name', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_sku_name\` varchar(128)` },
     { table: 'shared_migrations', column: 'license_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_error\` text` },
+    // Envoi des accès (login + mdp temporaire) à l'utilisateur migré
+    { table: 'migrations', column: 'credentials_sent_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`credentials_sent_at\` timestamp NULL` },
   ]
   for (const p of columnPatches) {
     try {

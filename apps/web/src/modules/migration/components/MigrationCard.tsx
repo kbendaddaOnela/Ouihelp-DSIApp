@@ -77,6 +77,8 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
   const [onelaContactsMsg, setOnelaContactsMsg] = useState<string | null>(null)
   const [isPushingOnela, setIsPushingOnela] = useState(false)
   const [isResumingFull, setIsResumingFull] = useState(false)
+  const [isSendingCreds, setIsSendingCreds] = useState(false)
+  const [sendCredsMsg, setSendCredsMsg] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const handleResumeFull = async () => {
@@ -98,6 +100,26 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
       window.alert(`Reprise complète échouée : ${apiErr || (err instanceof Error ? err.message : String(err))}`)
     } finally {
       setIsResumingFull(false)
+    }
+  }
+
+  const handleSendCredentials = async () => {
+    if (!window.confirm(
+      `Envoyer les accès (identifiant + mot de passe temporaire) à ${m.onelaDisplayName} ?\n\n` +
+      `L'e-mail part vers ${m.onelaEmail} (boîte Outlook ONELA).` +
+      (m.credentialsSentAt ? `\n\n⚠️ Déjà envoyé le ${new Date(m.credentialsSentAt).toLocaleString('fr-FR')}.` : '')
+    )) return
+    setIsSendingCreds(true)
+    setSendCredsMsg(null)
+    try {
+      await migrationApi.sendCredentials(m.id)
+      setSendCredsMsg(`Accès envoyés à ${m.onelaEmail}.`)
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    } catch (err: unknown) {
+      const apiErr = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data
+      setSendCredsMsg(`Erreur : ${apiErr?.message || apiErr?.error || (err instanceof Error ? err.message : 'inconnue')}`)
+    } finally {
+      setIsSendingCreds(false)
     }
   }
 
@@ -553,6 +575,25 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
                 <code className="font-mono text-sm text-amber-900">{m.tempPassword}</code>
               </div>
               <CopyButton text={m.tempPassword} />
+            </div>
+          )}
+
+          {m.gohUpn && m.tempPassword && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleSendCredentials}
+                disabled={isSendingCreds}
+                className="flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-60"
+              >
+                <Mail className="h-3.5 w-3.5" />
+                {isSendingCreds ? 'Envoi…' : m.credentialsSentAt ? 'Renvoyer les accès' : 'Envoyer les accès'}
+              </button>
+              {m.credentialsSentAt && !sendCredsMsg && (
+                <span className="text-[11px] text-gray-400">Envoyé le {new Date(m.credentialsSentAt).toLocaleString('fr-FR')}</span>
+              )}
+              {sendCredsMsg && (
+                <span className={cn('text-[11px]', sendCredsMsg.startsWith('Erreur') ? 'text-red-600' : 'text-emerald-600')}>{sendCredsMsg}</span>
+              )}
             </div>
           )}
 
