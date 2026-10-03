@@ -206,10 +206,10 @@ export async function sendOnelaMail(params: { to: string; subject: string; html:
   // Boîte partagée DSI par défaut ; surchargeable via ONELA_CREDENTIALS_SENDER.
   const sender = process.env['ONELA_CREDENTIALS_SENDER'] || 'dsi@onela.com'
   // Mode test : si CREDENTIALS_TEST_RECIPIENT est défini, TOUS les mails partent
-  // vers cette adresse (le vrai destinataire est rappelé dans l'objet).
+  // vers cette adresse (objet inchangé). La retirer renvoie vers les vraies boîtes.
   const testTo = process.env['CREDENTIALS_TEST_RECIPIENT']?.trim()
   const recipient = testTo || params.to
-  const subject = testTo ? `[TEST → ${params.to}] ${params.subject}` : params.subject
+  const subject = params.subject
   const token = await getOnelaToken()
   const res = await fetchWithTimeout(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/sendMail`, {
     method: 'POST',
