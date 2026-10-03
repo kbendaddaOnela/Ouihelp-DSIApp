@@ -202,7 +202,9 @@ export async function getOnelaGroupUsers(groupId: string): Promise<GraphUser[]> 
  * Expéditeur = ONELA_CREDENTIALS_SENDER (UPN d'une boîte ONELA). Nécessite la
  * permission Graph **Mail.Send** (application) sur l'app ONELA.
  */
-export async function sendOnelaMail(params: { to: string; subject: string; html: string }): Promise<void> {
+export interface InlineAttachment { name: string; contentType: string; contentId: string; contentBytes: string }
+
+export async function sendOnelaMail(params: { to: string; subject: string; html: string; attachments?: InlineAttachment[] }): Promise<void> {
   // Boîte partagée DSI par défaut ; surchargeable via ONELA_CREDENTIALS_SENDER.
   const sender = process.env['ONELA_CREDENTIALS_SENDER'] || 'dsi@onela.com'
   // Mode test : si CREDENTIALS_TEST_RECIPIENT est défini, TOUS les mails partent
@@ -219,6 +221,18 @@ export async function sendOnelaMail(params: { to: string; subject: string; html:
         subject,
         body: { contentType: 'HTML', content: params.html },
         toRecipients: [{ emailAddress: { address: recipient } }],
+        ...(params.attachments && params.attachments.length
+          ? {
+              attachments: params.attachments.map((a) => ({
+                '@odata.type': '#microsoft.graph.fileAttachment',
+                name: a.name,
+                contentType: a.contentType,
+                isInline: true,
+                contentId: a.contentId,
+                contentBytes: a.contentBytes,
+              })),
+            }
+          : {}),
       },
       saveToSentItems: true,
     }),

@@ -18,7 +18,9 @@ import {
   getOnelaGroupMembers,
   getOnelaGroupUsers,
   sendOnelaMail,
+  type InlineAttachment,
 } from './service'
+import { ONELA_LOGO_PNG_B64, OUIHELP_LOGO_PNG_B64 } from './emailAssets'
 import { getServiceGroups } from './onelaServiceGroups'
 import { getAgencyGroups, REGION_ORDER } from './onelaAgencyGroups'
 import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu } from './googleService'
@@ -105,11 +107,15 @@ async function buildAgencyMembership(): Promise<{ agencies: AgencyMembership[]; 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
 }
-export function buildCredentialsEmail(displayName: string, gohUpn: string, tempPassword: string): { subject: string; html: string } {
+export function buildCredentialsEmail(displayName: string, gohUpn: string, tempPassword: string): { subject: string; html: string; attachments: InlineAttachment[] } {
   const subject = process.env['CREDENTIALS_EMAIL_SUBJECT'] || 'Vos accès à votre nouvelle messagerie Google Workspace'
   const firstName = escapeHtml(displayName.split(' ')[0] || displayName)
   const login = escapeHtml(gohUpn)
   const pwd = escapeHtml(tempPassword)
+  const attachments: InlineAttachment[] = [
+    { name: 'onela.png', contentType: 'image/png', contentId: 'onela-logo', contentBytes: ONELA_LOGO_PNG_B64 },
+    { name: 'ouihelp.png', contentType: 'image/png', contentId: 'ouihelp-logo', contentBytes: OUIHELP_LOGO_PNG_B64 },
+  ]
   // Charte : ONELA violet #662D91 / magenta #E5007D · Ouihelp navy #10243E / vert #3ECF8E
   const html = `
 <div style="margin:0;padding:0;background:#f4f4f7;">
@@ -117,10 +123,10 @@ export function buildCredentialsEmail(displayName: string, gohUpn: string, tempP
     <tr><td align="center">
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 2px 8px rgba(17,24,39,.08);font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
         <tr><td style="height:6px;line-height:6px;font-size:0;background:#662D91;background:linear-gradient(90deg,#662D91 0%,#E5007D 50%,#3ECF8E 100%);">&nbsp;</td></tr>
-        <tr><td style="padding:28px 32px 4px;text-align:center;">
-          <span style="font-size:22px;font-weight:bold;letter-spacing:3px;color:#662D91;">ONELA</span>
-          <span style="color:#c4c4cc;font-size:18px;padding:0 12px;vertical-align:middle;">&#8594;</span>
-          <span style="font-size:22px;font-weight:800;color:#10243E;">oui<span style="color:#3ECF8E;">help</span></span>
+        <tr><td style="padding:26px 32px 6px;text-align:center;">
+          <img src="cid:onela-logo" alt="ONELA" width="104" style="height:auto;vertical-align:middle;" />
+          <span style="color:#c4c4cc;font-size:20px;padding:0 16px;vertical-align:middle;">&#8594;</span>
+          <img src="cid:ouihelp-logo" alt="Ouihelp" width="124" style="height:auto;vertical-align:middle;" />
         </td></tr>
         <tr><td style="padding:8px 32px 0;text-align:center;">
           <h1 style="margin:10px 0 2px;font-size:21px;color:#111827;font-weight:700;">Votre nouvelle messagerie est prête</h1>
@@ -926,9 +932,9 @@ migrationRouter.post('/:id/send-credentials', requirePermission('migration:write
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
   if (!row.gohUpn || !row.tempPassword) return c.json({ error: 'Compte Google non provisionné (pas de login / mot de passe)' }, 400)
 
-  const { subject, html } = buildCredentialsEmail(row.onelaDisplayName, row.gohUpn, row.tempPassword)
+  const { subject, html, attachments } = buildCredentialsEmail(row.onelaDisplayName, row.gohUpn, row.tempPassword)
   try {
-    await sendOnelaMail({ to: row.onelaEmail, subject, html })
+    await sendOnelaMail({ to: row.onelaEmail, subject, html, attachments })
   } catch (err) {
     return c.json({ error: 'Envoi e-mail échoué', message: err instanceof Error ? err.message : String(err) }, 502)
   }
@@ -983,9 +989,9 @@ migrationRouter.post('/send-credentials-bulk', requirePermission('migration:writ
 
   const testMode = !!process.env['CREDENTIALS_TEST_RECIPIENT']?.trim()
   await mapLimit(toSend, 4, async (m) => {
-    const { subject, html } = buildCredentialsEmail(m.onelaDisplayName, m.gohUpn!, m.tempPassword!)
+    const { subject, html, attachments } = buildCredentialsEmail(m.onelaDisplayName, m.gohUpn!, m.tempPassword!)
     try {
-      await sendOnelaMail({ to: m.onelaEmail, subject, html })
+      await sendOnelaMail({ to: m.onelaEmail, subject, html, attachments })
       if (!testMode) await db.update(migrations).set({ credentialsSentAt: new Date() }).where(eq(migrations.id, m.id))
       sent++
     } catch (err) {
