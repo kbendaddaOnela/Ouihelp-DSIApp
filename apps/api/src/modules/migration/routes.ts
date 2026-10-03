@@ -141,13 +141,14 @@ export function buildCredentialsEmail(displayName: string, gohUpn: string, tempP
           </table>
         </td></tr>
         <tr><td style="padding:20px 32px 6px;text-align:center;">
-          <a href="https://accounts.google.com" style="display:inline-block;background:#3ECF8E;color:#06351f;text-decoration:none;font-weight:700;font-size:15px;padding:13px 30px;border-radius:10px;">Se connecter à ma messagerie &#8594;</a>
+          <a href="https://accounts.google.com" style="display:inline-block;background:#3ECF8E;color:#06351f;text-decoration:none;font-weight:700;font-size:15px;padding:13px 30px;border-radius:10px;">Créer mon profil Chrome Pro &#8594;</a>
         </td></tr>
         <tr><td style="padding:14px 32px 2px;color:#374151;font-size:13px;line-height:1.7;">
-          <p style="margin:0 0 8px;font-weight:700;color:#111827;">Vos 3 étapes&nbsp;:</p>
-          <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">1.</td><td style="padding-bottom:4px;">Rendez-vous sur <a href="https://accounts.google.com" style="color:#662D91;">accounts.google.com</a>.</td></tr>
-          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">2.</td><td style="padding-bottom:4px;">Connectez-vous avec l'identifiant et le mot de passe temporaire ci-dessus.</td></tr>
-          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">3.</td><td>Choisissez votre nouveau mot de passe personnel.</td></tr></table>
+          <p style="margin:0 0 8px;font-weight:700;color:#111827;">Créez votre profil professionnel sur Google&nbsp;Chrome&nbsp;:</p>
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">1.</td><td style="padding-bottom:4px;">Dans Google&nbsp;Chrome, cliquez sur votre <b>photo de profil</b> (en haut à droite) puis sur <b>«&nbsp;Ajouter&nbsp;»</b> &rarr; <b>«&nbsp;Se connecter&nbsp;»</b>.</td></tr>
+          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">2.</td><td style="padding-bottom:4px;">Connectez-vous avec l'identifiant et le mot de passe temporaire ci-dessus. Chrome créera automatiquement votre <b>profil professionnel ONELA</b>.</td></tr>
+          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">3.</td><td style="padding-bottom:4px;">Définissez votre nouveau mot de passe personnel.</td></tr>
+          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">4.</td><td>Utilisez désormais ce profil Pro pour votre messagerie et vos outils ONELA.</td></tr></table>
         </td></tr>
         <tr><td style="padding:14px 32px 0;">
           <p style="margin:0;background:#fff7ed;border-left:3px solid #f59e0b;padding:11px 14px;border-radius:6px;font-size:12px;color:#92400e;line-height:1.5;">🔒 Pour votre sécurité, un nouveau mot de passe vous sera demandé dès la première connexion.</p>
