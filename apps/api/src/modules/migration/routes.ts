@@ -931,8 +931,10 @@ migrationRouter.post('/:id/send-credentials', requirePermission('migration:write
   } catch (err) {
     return c.json({ error: 'Envoi e-mail échoué', message: err instanceof Error ? err.message : String(err) }, 502)
   }
-  const sentAt = new Date()
-  await db.update(migrations).set({ credentialsSentAt: sentAt }).where(eq(migrations.id, id))
+  // En mode test, on ne marque pas l'envoi (pour que l'envoi réel reste possible).
+  if (!process.env['CREDENTIALS_TEST_RECIPIENT']?.trim()) {
+    await db.update(migrations).set({ credentialsSentAt: new Date() }).where(eq(migrations.id, id))
+  }
   const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
   return c.json(serializeMigration(updated!))
 })
@@ -978,11 +980,12 @@ migrationRouter.post('/send-credentials-bulk', requirePermission('migration:writ
     return true
   })
 
+  const testMode = !!process.env['CREDENTIALS_TEST_RECIPIENT']?.trim()
   await mapLimit(toSend, 4, async (m) => {
     const { subject, html } = buildCredentialsEmail(m.onelaDisplayName, m.gohUpn!, m.tempPassword!)
     try {
       await sendOnelaMail({ to: m.onelaEmail, subject, html })
-      await db.update(migrations).set({ credentialsSentAt: new Date() }).where(eq(migrations.id, m.id))
+      if (!testMode) await db.update(migrations).set({ credentialsSentAt: new Date() }).where(eq(migrations.id, m.id))
       sent++
     } catch (err) {
       failed.push({ upn: m.onelaUpn, error: err instanceof Error ? err.message : String(err) })
