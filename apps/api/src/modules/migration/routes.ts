@@ -31,7 +31,7 @@ function logoBaseUrl(c: { req: { header: (n: string) => string | undefined; url:
 }
 import { getServiceGroups } from './onelaServiceGroups'
 import { getAgencyGroups, REGION_ORDER } from './onelaAgencyGroups'
-import { agencyContactByCode } from './onelaAgencyContacts'
+import { agencyContactByCode, getAgencyContacts } from './onelaAgencyContacts'
 import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu, setGmailSignature } from './googleService'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
@@ -1065,11 +1065,32 @@ async function agencyCodeByUpnMap(): Promise<Map<string, string>> {
     membershipCache = { at: Date.now(), ...built }
   }
   const map = new Map<string, string>()
-  for (const a of membershipCache.agencies) for (const upn of a.upns) map.set(upn, a.code)
+  for (const a of membershipCache.agencies) {
+    for (const upn of a.upns) map.set(upn, a.code)
+    for (const mail of a.mails) if (mail) map.set(mail.toLowerCase(), a.code)
+  }
   return map
 }
 
-function signatureForUser(row: typeof migrations.$inferSelect, agencyCode: string | undefined, base: string): { sendAs: string; html: string } {
+// Repli : déduire le code agence de l'attribut `department` (code « NOI » ou nom
+// « Noisy-le-sec »), quand l'appartenance au groupe de sécurité ne l'a pas donné.
+function normKey(s: string): string {
+  return s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '')
+}
+function codeFromDepartment(dept: string | null | undefined): string | undefined {
+  if (!dept) return undefined
+  const key = normKey(dept)
+  if (!key) return undefined
+  for (const c of getAgencyContacts()) {
+    if (normKey(c.code) === key || normKey(c.site) === key) return c.code
+  }
+  return undefined
+}
+
+function signatureForUser(row: typeof migrations.$inferSelect, codeMap: Map<string, string>, base: string): { sendAs: string; html: string } {
+  const agencyCode = codeMap.get(row.onelaUpn.toLowerCase())
+    ?? codeMap.get(row.onelaEmail.toLowerCase())
+    ?? codeFromDepartment(row.onelaDepartment)
   const contact = agencyCode ? agencyContactByCode().get(agencyCode.toUpperCase()) : undefined
   const loc = contact ?? SIG_HQ
   const sendAs = newFormatEmail(row.gohUpn!, row.onelaUpn)
@@ -1092,7 +1113,7 @@ migrationRouter.post('/:id/apply-signature', requirePermission('migration:write'
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
   if (!row.gohUpn) return c.json({ error: 'Compte Google non provisionné' }, 400)
   const codeMap = await agencyCodeByUpnMap()
-  const { sendAs, html } = signatureForUser(row, codeMap.get(row.onelaUpn.toLowerCase()), logoBaseUrl(c))
+  const { sendAs, html } = signatureForUser(row, codeMap, logoBaseUrl(c))
   try {
     await setGmailSignature(row.gohUpn, sendAs, html)
   } catch (err) {
@@ -1139,7 +1160,7 @@ migrationRouter.post('/apply-signature-bulk', requirePermission('migration:write
   })
 
   await mapLimit(toApply, 4, async (m) => {
-    const { sendAs, html } = signatureForUser(m, codeMap.get(m.onelaUpn.toLowerCase()), base)
+    const { sendAs, html } = signatureForUser(m, codeMap, base)
     try {
       await setGmailSignature(m.gohUpn!, sendAs, html)
       await db.update(migrations).set({ signatureAppliedAt: new Date() }).where(eq(migrations.id, m.id))
