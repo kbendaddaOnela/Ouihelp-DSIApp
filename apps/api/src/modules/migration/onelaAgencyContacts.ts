@@ -8,6 +8,7 @@ const DEFAULT_AGENCY_CONTACTS: AgencyContact[] = [
   { code: 'AND' , site: 'Andernos-les-Bains' , adresse: '121 boulevard de la République' , cpVille: '33510 Andernos-les-Bains' , tel: '05 64 10 00 12' },
   { code: 'ANT' , site: 'Antony' , adresse: '3 avenue Jeanne d\'Arc' , cpVille: '92160 Antony' , tel: '01 84 01 11 32' },
   { code: 'ARG' , site: 'Argenteuil' , adresse: '64 avenue de Stalingrad' , cpVille: '95100 Argenteuil' , tel: '01 84 28 00 13' },
+  { code: 'ARL' , site: 'Arles' , adresse: '15 rue La Bruyère' , cpVille: '13200 Arles' , tel: '04 84 36 00 70' },
   { code: 'ARM' , site: 'Armentières' , adresse: '117 quai de Beauvais' , cpVille: '59280 Armentières' , tel: '03 66 06 01 32' },
   { code: 'BSC' , site: 'Bagnols-sur-Cèze' , adresse: '6 chemin du cartonnage' , cpVille: '30200 Bagnols-sur-Cèze' , tel: '04 11 94 01 49' },
   { code: 'BEL' , site: 'Belleville-en-Beaujolais' , adresse: '1 rue Joseph Pillard' , cpVille: '69220 Belleville-en-Beaujolais' , tel: '04 74 68 49 51' },
