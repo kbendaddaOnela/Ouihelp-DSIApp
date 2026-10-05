@@ -38,6 +38,7 @@ export interface MigrationRecord {
   licenseSkuName: string | null
   licenseError: string | null
   credentialsSentAt: string | null
+  signatureAppliedAt: string | null
   mailTotal: number
   mailMigrated: number
   mailFailed: number

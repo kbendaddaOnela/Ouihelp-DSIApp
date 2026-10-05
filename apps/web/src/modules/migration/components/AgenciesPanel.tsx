@@ -34,11 +34,17 @@ export function AgenciesPanel() {
   })
 
   const bulk = useMutation({
-    mutationFn: (p: { key: string; agencyGroupId?: string; region?: string; force?: boolean }) =>
-      migrationApi.sendCredentialsBulk({ agencyGroupId: p.agencyGroupId, region: p.region, force: p.force }).then((r) => ({ ...r, key: p.key })),
+    mutationFn: async (p: { key: string; action: 'creds' | 'sig'; agencyGroupId?: string; region?: string; force?: boolean }) => {
+      const args = { agencyGroupId: p.agencyGroupId, region: p.region, force: p.force }
+      const r = p.action === 'creds'
+        ? await migrationApi.sendCredentialsBulk(args)
+        : await migrationApi.applySignatureBulk(args)
+      const count = 'sent' in r ? r.sent : r.applied
+      return { key: p.key, count, skipped: r.skipped, notReady: r.notReady, failed: r.failed, verb: p.action === 'creds' ? 'envoyé(s)' : 'appliquée(s)' }
+    },
     onSuccess: (res) => {
-      const parts = [`${res.sent} envoyé(s)`]
-      if (res.skipped) parts.push(`${res.skipped} déjà envoyé(s)`)
+      const parts = [`${res.count} ${res.verb}`]
+      if (res.skipped) parts.push(`${res.skipped} déjà fait(s)`)
       if (res.notReady) parts.push(`${res.notReady} pas prêt(s)`)
       if (res.failed.length) parts.push(`${res.failed.length} échec(s)`)
       setBulkMsg({ key: res.key, text: parts.join(' · '), error: res.failed.length > 0 })
@@ -47,16 +53,19 @@ export function AgenciesPanel() {
     onError: (e, vars) => setBulkMsg({ key: vars.key, text: `Erreur : ${e instanceof Error ? e.message : String(e)}`, error: true }),
   })
 
-  const doBulk = async (key: string, label: string, params: { agencyGroupId?: string; region?: string }) => {
+  const doBulk = async (action: 'creds' | 'sig', key: string, label: string, params: { agencyGroupId?: string; region?: string }) => {
+    const isCreds = action === 'creds'
     const res = await confirm({
-      title: 'Envoyer les accès',
-      message: `Envoyer les accès (identifiant + mot de passe) à tous les comptes provisionnés — ${label} ?`,
-      confirmLabel: 'Envoyer',
-      checkbox: { label: 'Renvoyer aussi aux comptes déjà notifiés (forcer)' },
+      title: isCreds ? 'Envoyer les accès' : 'Appliquer la signature',
+      message: isCreds
+        ? `Envoyer les accès (identifiant + mot de passe) à tous les comptes provisionnés — ${label} ?`
+        : `Appliquer la signature Gmail à tous les comptes provisionnés — ${label} ?`,
+      confirmLabel: isCreds ? 'Envoyer' : 'Appliquer',
+      checkbox: { label: isCreds ? 'Renvoyer aussi aux comptes déjà notifiés (forcer)' : 'Réappliquer aussi aux comptes déjà faits (forcer)' },
     })
     if (!res.confirmed) return
     setBulkMsg(null)
-    bulk.mutate({ key, ...params, force: res.checked })
+    bulk.mutate({ key, action, ...params, force: res.checked })
   }
   const pendingKey = bulk.isPending ? (bulk.variables as { key: string } | undefined)?.key : undefined
 
@@ -110,14 +119,22 @@ export function AgenciesPanel() {
                   <div className="p-2">
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <button
-                        onClick={() => doBulk(`region:${r.label}`, `région ${r.label}`, { region: r.label })}
+                        onClick={() => doBulk('creds', `creds:region:${r.label}`, `région ${r.label}`, { region: r.label })}
                         disabled={bulk.isPending}
                         className="flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-60"
                       >
-                        {pendingKey === `region:${r.label}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
+                        {pendingKey === `creds:region:${r.label}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
                         Envoyer les accès de la région
                       </button>
-                      {bulkMsg?.key === `region:${r.label}` && (
+                      <button
+                        onClick={() => doBulk('sig', `sig:region:${r.label}`, `région ${r.label}`, { region: r.label })}
+                        disabled={bulk.isPending}
+                        className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+                      >
+                        {pendingKey === `sig:region:${r.label}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
+                        Signatures de la région
+                      </button>
+                      {(bulkMsg?.key === `creds:region:${r.label}` || bulkMsg?.key === `sig:region:${r.label}`) && (
                         <span className={cn('text-[11px]', bulkMsg.error ? 'text-red-600' : 'text-emerald-600')}>{bulkMsg.text}</span>
                       )}
                     </div>
@@ -151,14 +168,22 @@ export function AgenciesPanel() {
                       <>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <button
-                            onClick={() => doBulk(`agency:${agency.groupId}`, `agence ${agency.name}`, { agencyGroupId: agency.groupId })}
+                            onClick={() => doBulk('creds', `creds:agency:${agency.groupId}`, `agence ${agency.name}`, { agencyGroupId: agency.groupId })}
                             disabled={bulk.isPending}
                             className="flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-60"
                           >
-                            {pendingKey === `agency:${agency.groupId}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
+                            {pendingKey === `creds:agency:${agency.groupId}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
                             Envoyer les accès de l'agence
                           </button>
-                          {bulkMsg?.key === `agency:${agency.groupId}` && (
+                          <button
+                            onClick={() => doBulk('sig', `sig:agency:${agency.groupId}`, `agence ${agency.name}`, { agencyGroupId: agency.groupId })}
+                            disabled={bulk.isPending}
+                            className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+                          >
+                            {pendingKey === `sig:agency:${agency.groupId}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
+                            Signatures de l'agence
+                          </button>
+                          {(bulkMsg?.key === `creds:agency:${agency.groupId}` || bulkMsg?.key === `sig:agency:${agency.groupId}`) && (
                             <span className={cn('text-[11px]', bulkMsg.error ? 'text-red-600' : 'text-emerald-600')}>{bulkMsg.text}</span>
                           )}
                         </div>

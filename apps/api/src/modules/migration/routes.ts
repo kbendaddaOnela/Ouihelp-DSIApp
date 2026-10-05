@@ -31,7 +31,8 @@ function logoBaseUrl(c: { req: { header: (n: string) => string | undefined; url:
 }
 import { getServiceGroups } from './onelaServiceGroups'
 import { getAgencyGroups, REGION_ORDER } from './onelaAgencyGroups'
-import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu } from './googleService'
+import { agencyContactByCode } from './onelaAgencyContacts'
+import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu, setGmailSignature } from './googleService'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
@@ -173,6 +174,52 @@ export function buildCredentialsEmail(displayName: string, gohUpn: string, tempP
   </table>
 </div>`.trim()
   return { subject, html }
+}
+
+// Adresse du siège (pas de téléphone — tout le monde n'a pas de ligne).
+const SIG_HQ = { adresse: '8 rue François Ory', cpVille: '92120 Montrouge', tel: '' }
+
+// Signature ONELA fidèle au modèle validé Marketing (bloc gauche + bloc texte +
+// icônes réseaux). Images servies en URL publique (base). Lignes vides masquées.
+function buildSignatureHtml(p: { name: string; poste: string; tel: string; adresse: string; cpVille: string; email: string; base: string }): string {
+  const base = p.base.replace(/\/$/, '')
+  const e = escapeHtml
+  const maps = (q: string) => `https://www.google.com/maps/search/${encodeURIComponent(q)}`
+  const localPart = e(p.email.split('@')[0] ?? p.email)
+  const domain = e(p.email.split('@')[1] ?? 'onela.com')
+  const telLine = p.tel ? `<div style="font-size:10pt;color:#595857;">${e(p.tel)}</div>` : ''
+  const addrLines = p.adresse && p.cpVille
+    ? `<div style="font-size:8pt;"><a href="${maps(`${p.adresse} ${p.cpVille}`)}" target="_blank" style="color:#1155CC;text-decoration:none;">${e(p.adresse)}</a></div>`
+      + `<div style="font-size:8pt;"><a href="${maps(`${p.adresse} ${p.cpVille}`)}" target="_blank" style="color:#1155CC;text-decoration:none;">${e(p.cpVille)}</a></div>`
+    : ''
+  return `<table cellspacing="0" cellpadding="0" style="background:#fff;border-collapse:collapse;">
+ <tr style="height:67.5pt">
+  <td width="162" rowspan="2" style="border-right:1px solid #623D8F;padding:3px;vertical-align:top;">
+    <a href="https://www.onela.com/" target="_blank"><img src="${base}/assets/logo/sig-block.png" width="140" height="106" border="0" style="display:block" alt="ONELA - être bien chez soi"></a>
+  </td>
+  <td style="padding:3px 3px 3px 10px;vertical-align:top;font-family:'Century Gothic',Arial,sans-serif;">
+    <div><b style="font-size:11pt;color:#623D8F;">${e(p.name)}</b></div>
+    ${p.poste ? `<div><b style="font-size:9pt;color:#595857;">${e(p.poste)}</b></div>` : ''}
+    ${telLine}
+    ${addrLines}
+    <div style="font-size:8pt;"><a href="mailto:${e(p.email)}" target="_blank" style="color:#0563C1;"><u>${localPart}</u>@${domain}</a></div>
+  </td>
+ </tr>
+ <tr style="height:16.5pt">
+  <td style="padding:3px 3px 3px 10px;vertical-align:top;">
+    <a href="https://www.linkedin.com/company/onela-etre-bien-chez-soi/" target="_blank"><img src="${base}/assets/logo/sig-linkedin.png" width="12" height="12" border="0" style="margin-right:5px" alt="LinkedIn"></a>
+    <a href="https://www.facebook.com/people/ONELA/100076338856489/" target="_blank"><img src="${base}/assets/logo/sig-facebook.png" width="13" height="13" border="0" style="margin-right:5px" alt="Facebook"></a>
+    <a href="https://www.instagram.com/onela_france/" target="_blank"><img src="${base}/assets/logo/sig-instagram.png" width="13" height="13" border="0" alt="Instagram"></a>
+  </td>
+ </tr>
+</table>`
+}
+
+// Adresse d'envoi « nouveau format » prenom.nom@onela.com (ou domaine onelaUpn).
+function newFormatEmail(gohUpn: string, onelaUpn: string): string {
+  const local = gohUpn.split('@')[0] ?? gohUpn
+  const domain = onelaUpn.split('@')[1] ?? 'onela.com'
+  return `${local}@${domain}`
 }
 
 export const migrationRouter = new Hono<{ Variables: RbacVariables }>()
@@ -1008,6 +1055,102 @@ migrationRouter.post('/send-credentials-bulk', requirePermission('migration:writ
   return c.json({ sent, skipped, notReady, failed })
 })
 
+// ── Application de la signature Gmail ─────────────────────────────────────────
+// Construit la signature (nom/poste/email via Graph + adresse/tél de l'agence via
+// le CSV, siège = Montrouge sans tél), la pose sur le send-as prenom.nom@onela.com
+// et en fait l'adresse par défaut. Trace signatureAppliedAt.
+async function agencyCodeByUpnMap(): Promise<Map<string, string>> {
+  if (!membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
+    const built = await buildAgencyMembership()
+    membershipCache = { at: Date.now(), ...built }
+  }
+  const map = new Map<string, string>()
+  for (const a of membershipCache.agencies) for (const upn of a.upns) map.set(upn, a.code)
+  return map
+}
+
+function signatureForUser(row: typeof migrations.$inferSelect, agencyCode: string | undefined, base: string): { sendAs: string; html: string } {
+  const contact = agencyCode ? agencyContactByCode().get(agencyCode.toUpperCase()) : undefined
+  const loc = contact ?? SIG_HQ
+  const sendAs = newFormatEmail(row.gohUpn!, row.onelaUpn)
+  const html = buildSignatureHtml({
+    name: row.onelaDisplayName,
+    poste: row.onelaJobTitle ?? '',
+    tel: loc.tel ?? '',
+    adresse: 'adresse' in loc ? loc.adresse : '',
+    cpVille: 'cpVille' in loc ? loc.cpVille : '',
+    email: sendAs,
+    base,
+  })
+  return { sendAs, html }
+}
+
+migrationRouter.post('/:id/apply-signature', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(migrations).where(eq(migrations.id, id))
+  if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+  if (!row.gohUpn) return c.json({ error: 'Compte Google non provisionné' }, 400)
+  const codeMap = await agencyCodeByUpnMap()
+  const { sendAs, html } = signatureForUser(row, codeMap.get(row.onelaUpn.toLowerCase()), logoBaseUrl(c))
+  try {
+    await setGmailSignature(row.gohUpn, sendAs, html)
+  } catch (err) {
+    return c.json({ error: 'Signature échouée', message: err instanceof Error ? err.message : String(err) }, 502)
+  }
+  await db.update(migrations).set({ signatureAppliedAt: new Date() }).where(eq(migrations.id, id))
+  const [updated] = await db.select().from(migrations).where(eq(migrations.id, id))
+  return c.json(serializeMigration(updated!))
+})
+
+migrationRouter.post('/apply-signature-bulk', requirePermission('migration:write'), async (c) => {
+  const db = getDb()
+  const body = await c.req.json<{ agencyGroupId?: string; region?: string; force?: boolean }>().catch(() => ({} as { agencyGroupId?: string; region?: string; force?: boolean }))
+
+  const targetUpns = new Set<string>()
+  try {
+    if (body.agencyGroupId) {
+      for (const m of await getOnelaGroupMembers(body.agencyGroupId)) targetUpns.add(m.upn)
+    } else if (body.region) {
+      if (!membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
+        const built = await buildAgencyMembership()
+        membershipCache = { at: Date.now(), ...built }
+      }
+      for (const a of membershipCache.agencies) if (a.regionLabel === body.region) for (const u of a.upns) targetUpns.add(u)
+    } else {
+      return c.json({ error: 'agencyGroupId ou region requis' }, 400)
+    }
+  } catch (err) {
+    return c.json({ error: 'Lecture groupe ONELA échouée', message: err instanceof Error ? err.message : String(err) }, 502)
+  }
+  if (targetUpns.size === 0) return c.json({ applied: 0, skipped: 0, notReady: 0, failed: [] })
+
+  const base = logoBaseUrl(c)
+  const codeMap = await agencyCodeByUpnMap()
+  const all = await db.select().from(migrations).where(eq(migrations.archived, 0))
+  const candidates = all.filter((m) => targetUpns.has(m.onelaUpn.toLowerCase()))
+
+  let applied = 0, skipped = 0, notReady = 0
+  const failed: Array<{ upn: string; error: string }> = []
+  const toApply = candidates.filter((m) => {
+    if (!m.gohUpn || m.stepCreateAccount !== 'success') { notReady++; return false }
+    if (!body.force && m.signatureAppliedAt) { skipped++; return false }
+    return true
+  })
+
+  await mapLimit(toApply, 4, async (m) => {
+    const { sendAs, html } = signatureForUser(m, codeMap.get(m.onelaUpn.toLowerCase()), base)
+    try {
+      await setGmailSignature(m.gohUpn!, sendAs, html)
+      await db.update(migrations).set({ signatureAppliedAt: new Date() }).where(eq(migrations.id, m.id))
+      applied++
+    } catch (err) {
+      failed.push({ upn: m.onelaUpn, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+  return c.json({ applied, skipped, notReady, failed })
+})
+
 // Définit (ou efface) le total de sièges achetés pour une licence.
 migrationRouter.put('/license-quotas', requirePermission('migration:write'), async (c) => {
   const db = getDb()
@@ -1632,6 +1775,7 @@ function serializeMigration(m: typeof migrations.$inferSelect) {
     archived: m.archived === 1,
     archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null,
     credentialsSentAt: m.credentialsSentAt ? m.credentialsSentAt.toISOString() : null,
+    signatureAppliedAt: m.signatureAppliedAt ? m.signatureAppliedAt.toISOString() : null,
   }
 }
 

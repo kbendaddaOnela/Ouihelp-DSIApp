@@ -142,3 +142,25 @@ export async function countUsersInOu(ouPath: string): Promise<number> {
   } while (pageToken)
   return count
 }
+
+/**
+ * Pose la signature Gmail sur une adresse send-as du compte et la définit comme
+ * adresse par défaut (nouveaux mails + réponses utiliseront cette adresse et sa
+ * signature). Impersonne le propriétaire de la boîte (userEmail). Scope DwD
+ * requis : https://www.googleapis.com/auth/gmail.settings.basic
+ */
+export async function setGmailSignature(userEmail: string, sendAsEmail: string, signatureHtml: string): Promise<void> {
+  const token = await getGoogleAccessTokenForUser(userEmail, 'https://www.googleapis.com/auth/gmail.settings.basic')
+  const res = await fetchWithTimeout(
+    `https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs/${encodeURIComponent(sendAsEmail)}`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signature: signatureHtml, isDefault: true }),
+    }
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Gmail signature error (${res.status}) pour ${sendAsEmail}: ${err.slice(0, 300)}`)
+  }
+}

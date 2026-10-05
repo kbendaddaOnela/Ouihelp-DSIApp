@@ -57,6 +57,16 @@ export const migrationApi = {
       .post<{ sent: number; skipped: number; notReady: number; failed: Array<{ upn: string; error: string }> }>('/migration/send-credentials-bulk', params)
       .then((r) => r.data),
 
+  // Application de la signature Gmail (par carte).
+  applySignature: (id: string) =>
+    apiClient.post<MigrationRecord>(`/migration/${id}/apply-signature`).then((r) => r.data),
+
+  // Application groupée des signatures : par agence ou par région.
+  applySignatureBulk: (params: { agencyGroupId?: string; region?: string; force?: boolean }) =>
+    apiClient
+      .post<{ applied: number; skipped: number; notReady: number; failed: Array<{ upn: string; error: string }> }>('/migration/apply-signature-bulk', params)
+      .then((r) => r.data),
+
   migrateCalendar: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-calendar`).then((r) => r.data),
 

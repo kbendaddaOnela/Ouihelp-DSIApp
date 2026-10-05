@@ -154,6 +154,7 @@ async function ensureSchemaPatches() {
     { table: 'shared_migrations', column: 'license_error', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`license_error\` text` },
     // Envoi des accès (login + mdp temporaire) à l'utilisateur migré
     { table: 'migrations', column: 'credentials_sent_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`credentials_sent_at\` timestamp NULL` },
+    { table: 'migrations', column: 'signature_applied_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`signature_applied_at\` timestamp NULL` },
   ]
   for (const p of columnPatches) {
     try {

@@ -84,6 +84,8 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
   const [isResumingFull, setIsResumingFull] = useState(false)
   const [isSendingCreds, setIsSendingCreds] = useState(false)
   const [sendCredsMsg, setSendCredsMsg] = useState<string | null>(null)
+  const [isApplyingSig, setIsApplyingSig] = useState(false)
+  const [sigMsg, setSigMsg] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const { confirm, alert } = useConfirm()
 
@@ -134,6 +136,27 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
       setSendCredsMsg(`Erreur : ${apiErr?.message || apiErr?.error || (err instanceof Error ? err.message : 'inconnue')}`)
     } finally {
       setIsSendingCreds(false)
+    }
+  }
+
+  const handleApplySignature = async () => {
+    const res = await confirm({
+      title: m.signatureAppliedAt ? 'Réappliquer la signature' : 'Appliquer la signature',
+      message: `Appliquer la signature Gmail à ${m.onelaDisplayName} et définir ${m.gohUpn ? `${m.gohUpn.split('@')[0]}@${m.onelaUpn.split('@')[1] ?? 'onela.com'}` : 'l\'adresse @onela.com'} comme adresse par défaut ?`,
+      confirmLabel: 'Appliquer',
+    })
+    if (!res.confirmed) return
+    setIsApplyingSig(true)
+    setSigMsg(null)
+    try {
+      await migrationApi.applySignature(m.id)
+      setSigMsg('Signature appliquée.')
+      queryClient.invalidateQueries({ queryKey: ['migration-history'] })
+    } catch (err: unknown) {
+      const apiErr = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data
+      setSigMsg(`Erreur : ${apiErr?.message || apiErr?.error || (err instanceof Error ? err.message : 'inconnue')}`)
+    } finally {
+      setIsApplyingSig(false)
     }
   }
 
@@ -618,6 +641,20 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
               )}
               {sendCredsMsg && (
                 <span className={cn('text-[11px]', sendCredsMsg.startsWith('Erreur') ? 'text-red-600' : 'text-emerald-600')}>{sendCredsMsg}</span>
+              )}
+              <button
+                onClick={handleApplySignature}
+                disabled={isApplyingSig}
+                className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+              >
+                <Mail className="h-3.5 w-3.5" />
+                {isApplyingSig ? 'Application…' : m.signatureAppliedAt ? 'Réappliquer la signature' : 'Appliquer la signature'}
+              </button>
+              {m.signatureAppliedAt && !sigMsg && (
+                <span className="text-[11px] text-gray-400">Signature le {new Date(m.signatureAppliedAt).toLocaleString('fr-FR')}</span>
+              )}
+              {sigMsg && (
+                <span className={cn('text-[11px]', sigMsg.startsWith('Erreur') ? 'text-red-600' : 'text-emerald-600')}>{sigMsg}</span>
               )}
             </div>
           )}
