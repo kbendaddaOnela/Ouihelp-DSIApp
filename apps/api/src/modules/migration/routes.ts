@@ -30,6 +30,8 @@ function logoBaseUrl(c: { req: { header: (n: string) => string | undefined; url:
   return `https://${host}`
 }
 import { getServiceGroups } from './onelaServiceGroups'
+import { buildIntuneChromeScript, type ChromeLoginEntry } from './intuneChromeScript'
+import type { GraphUser } from './service'
 import { getAgencyGroups, REGION_ORDER } from './onelaAgencyGroups'
 import { agencyContactByCode, getAgencyContacts } from './onelaAgencyContacts'
 import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu, setGmailSignature } from './googleService'
@@ -938,6 +940,59 @@ migrationRouter.get('/agencies-tree', requirePermission('migration:read'), async
     .sort((x, y) => orderIdx(x.label) - orderIdx(y.label))
 
   return c.json({ regions, errors: cache.errors, cachedAt: cache.at })
+})
+
+// Script Intune (tenant ONELA) d'une région : raccourci Chrome « Messagerie ONELA »
+// avec la table ancienne adresse ONELA → compte Google. Compte Google = celui de la
+// migration s'il existe, sinon l'adresse prévue (même règle que /run).
+migrationRouter.get('/intune-chrome-script', requirePermission('migration:read'), async (c) => {
+  const db = getDb()
+  const region = c.req.query('region')?.trim()
+  if (!region) return c.json({ error: 'region requis' }, 400)
+  const agencies = getAgencyGroups().filter((a) => (a.region || NO_REGION) === region)
+  if (agencies.length === 0) return c.json({ error: `Région inconnue : ${region}` }, 404)
+
+  let perAgency
+  try {
+    perAgency = await mapLimit(agencies, 6, async (a) => ({ code: a.code, users: await getOnelaGroupUsers(a.groupId) }))
+  } catch (err) {
+    return c.json({ error: 'Lecture groupes ONELA échouée', message: err instanceof Error ? err.message : String(err) }, 502)
+  }
+
+  const users = new Map<string, { u: GraphUser; code: string }>()
+  for (const a of perAgency) for (const u of a.users) if (!users.has(u.id)) users.set(u.id, { u, code: a.code })
+  const ids = [...users.keys()]
+  const rows = ids.length
+    ? await db.select({ onelaUserId: migrations.onelaUserId, gohUpn: migrations.gohUpn }).from(migrations)
+        .where(and(inArray(migrations.onelaUserId, ids), eq(migrations.archived, 0)))
+    : []
+  const gohById = new Map(rows.filter((r) => r.gohUpn).map((r) => [r.onelaUserId, r.gohUpn!]))
+
+  const entries: ChromeLoginEntry[] = []
+  let unresolved = 0
+  for (const { u, code } of users.values()) {
+    const migrated = gohById.get(u.id)
+    const first = normalizeNamePart(u.givenName ?? '')
+    const last = normalizeNamePart(u.surname ?? '')
+    const googleLogin = migrated ?? (first && last ? `${first}.${last}@mig.onela.com` : '')
+    if (!googleLogin) { unresolved++; continue }
+    entries.push({
+      onelaUpn: u.userPrincipalName,
+      onelaMail: u.mail,
+      googleLogin,
+      displayName: u.displayName,
+      agencyCode: code,
+      source: migrated ? 'migré' : 'prévu',
+    })
+  }
+
+  const script = buildIntuneChromeScript(region, entries, new Date())
+  const slug = normalizeNamePart(region) || 'region'
+  c.header('Content-Type', 'text/plain; charset=utf-8')
+  c.header('Content-Disposition', `attachment; filename="chrome-profil-onela-${slug}.ps1"`)
+  c.header('X-Script-Users', String(entries.length))
+  c.header('X-Script-Unresolved', String(unresolved))
+  return c.body(script)
 })
 
 // Membres (détaillés) d'un groupe ONELA, avec statut migration, pour sélection

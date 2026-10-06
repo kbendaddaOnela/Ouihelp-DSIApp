@@ -67,6 +67,17 @@ export const migrationApi = {
       .post<{ applied: number; skipped: number; notReady: number; failed: Array<{ upn: string; error: string }> }>('/migration/apply-signature-bulk', params)
       .then((r) => r.data),
 
+  // Script Intune (tenant ONELA) d'une région : raccourci Chrome « Messagerie ONELA »
+  // avec la table ancienne adresse → compte Google.
+  intuneChromeScript: (region: string) =>
+    apiClient
+      .get<Blob>('/migration/intune-chrome-script', { params: { region }, responseType: 'blob' })
+      .then((r) => ({
+        blob: r.data,
+        users: Number(r.headers['x-script-users'] ?? 0),
+        unresolved: Number(r.headers['x-script-unresolved'] ?? 0),
+      })),
+
   migrateCalendar: (id: string) =>
     apiClient.post<MigrationRecord>(`/migration/${id}/migrate-calendar`).then((r) => r.data),
 
