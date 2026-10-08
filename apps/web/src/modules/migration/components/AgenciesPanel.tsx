@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Building2, ChevronRight, ChevronDown, RefreshCw, Loader2, Mail, Download } from 'lucide-react'
+import { Building2, ChevronRight, ChevronDown, RefreshCw, Loader2, Mail } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { migrationApi } from '../api'
 import { MemberPicker, MiniProgress } from './MemberPicker'
@@ -23,7 +23,6 @@ export function AgenciesPanel() {
   const [openRegion, setOpenRegion] = useState<string | null>(null)
   const [agency, setAgency] = useState<Agency | null>(null)
   const [bulkMsg, setBulkMsg] = useState<{ key: string; text: string; error?: boolean } | null>(null)
-  const [scriptKey, setScriptKey] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const { confirm } = useConfirm()
 
@@ -53,27 +52,6 @@ export function AgenciesPanel() {
     },
     onError: (e, vars) => setBulkMsg({ key: vars.key, text: `Erreur : ${e instanceof Error ? e.message : String(e)}`, error: true }),
   })
-
-  const downloadScript = async (region: string) => {
-    const key = `intune:region:${region}`
-    setScriptKey(key)
-    try {
-      const { blob, users, unresolved } = await migrationApi.intuneChromeScript(region)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `chrome-profil-onela-${region.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-')}.ps1`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      setBulkMsg({ key, text: `Script téléchargé · ${users} utilisateur(s)${unresolved ? ` · ${unresolved} sans prénom/nom (non pré-remplis)` : ''}` })
-    } catch (e) {
-      setBulkMsg({ key, text: `Erreur : ${e instanceof Error ? e.message : String(e)}`, error: true })
-    } finally {
-      setScriptKey(null)
-    }
-  }
 
   const doBulk = async (action: 'creds' | 'sig', key: string, label: string, params: { agencyGroupId?: string; region?: string }) => {
     const isCreds = action === 'creds'
@@ -156,16 +134,7 @@ export function AgenciesPanel() {
                         {pendingKey === `sig:region:${r.label}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mail className="h-3.5 w-3.5" />}
                         Signatures de la région
                       </button>
-                      <button
-                        onClick={() => downloadScript(r.label)}
-                        disabled={scriptKey !== null}
-                        title="Script de plateforme Intune (tenant ONELA) : raccourci Chrome « Messagerie ONELA » avec identifiant pré-rempli"
-                        className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
-                      >
-                        {scriptKey === `intune:region:${r.label}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                        Script Intune Chrome
-                      </button>
-                      {(bulkMsg?.key === `creds:region:${r.label}` || bulkMsg?.key === `sig:region:${r.label}` || bulkMsg?.key === `intune:region:${r.label}`) && (
+                      {(bulkMsg?.key === `creds:region:${r.label}` || bulkMsg?.key === `sig:region:${r.label}`) && (
                         <span className={cn('text-[11px]', bulkMsg.error ? 'text-red-600' : 'text-emerald-600')}>{bulkMsg.text}</span>
                       )}
                     </div>

@@ -68,47 +68,38 @@ si les PC sont gérés.
 Utilisée quand le lien du mail ne suffit pas (il s'ouvre dans Edge, ou le profil n'est pas créé).
 Prérequis : PC Windows **inscrits dans Intune** et Chrome installé.
 
-## A. Script de plateforme : raccourci « Messagerie ONELA » (un par région)
+## A. Script de plateforme : raccourci « Messagerie ONELA »
 
-**Généré par la DSI App** : Migration → panneau Agences → ouvrir une région → bouton **« Script Intune Chrome »**.
-Le fichier `chrome-profil-onela-<region>.ps1` contient la table **ancienne adresse ONELA (UPN + mail) → compte Google** de tous les
-membres des groupes d'agence de la région :
-- compte déjà migré : l'adresse `gohUpn` de la migration ;
-- pas encore migré : l'adresse **prévue** `prenom.nom@mig.onela.com` (même règle que la migration). Il faut donc
-  **regénérer le script après la migration** si un nom a été corrigé entre-temps.
-
-Intune **ONELA** → **Appareils → Scripts et corrections → Scripts de plateforme → Ajouter → Windows 10 et versions ultérieures**
-
-| Option | Valeur |
-|---|---|
-| Exécuter ce script avec les informations d'identification de l'utilisateur connecté | **Oui** (le raccourci est posé sur le bureau de l'utilisateur) |
-| Appliquer la vérification de la signature du script | Non |
-| Exécuter le script dans un hôte PowerShell 64 bits | Oui |
-| Affectation | **Groupe d'utilisateurs** de la région (pas un groupe d'appareils) |
-
-Le raccourci lance `chrome.exe --profile-directory="ONELA" --no-first-run` sur la connexion Google
-(identifiant pré-rempli d'après l'utilisateur Windows : `whoami /upn`, à défaut l'identité Office), puis Gmail.
-L'utilisateur absent de la table a quand même le raccourci, mais sans pré-remplissage. Aucun droit admin n'est nécessaire et aucun mot de passe n'est stocké dans le script.
-
-Intune n'exécute le script qu'une fois par utilisateur. Pour le relancer (table mise à jour), il faut **remplacer le fichier** dans
-le même script Intune : Intune considère alors qu'il a changé.
-Journal sur le poste : `%LOCALAPPDATA%\ONELA\chrome-profil.log`.
+La génération du script par région depuis la DSI App (bouton « Script Intune Chrome ») a été **retirée le 2026-10-08**.
+Le script du raccourci se gère directement dans Intune ONELA (Appareils → Scripts et corrections → Scripts de plateforme).
 
 ## B. Stratégie Chrome (catalogue de paramètres)
 
-Intune → **Appareils → Configuration → Créer → Windows 10 et versions ultérieures → Catalogue des paramètres**,
-catégorie **Google → Google Chrome**. Affectation : groupe d'appareils ou d'utilisateurs du lot.
+Intune ONELA → **Appareils → Configuration → Créer → Windows 10 et versions ultérieures → Catalogue des paramètres**,
+catégorie **Google → Google Chrome → Moteur de recherche par défaut**. Affectation : groupe pilote, puis la région.
 
-| ☐ | Paramètre | Valeur | Effet |
+| ☐ | Paramètre (nom dans Intune) | Valeur | Effet |
 |---|---|---|---|
-| ☐ | Activer le moteur de recherche par défaut | Activé | Appliqué **avant** la création du profil, ce qui supprime l'écran « Sélectionnez votre moteur de recherche » |
-| ☐ | Nom du moteur de recherche par défaut | `Google` | |
-| ☐ | URL de recherche du moteur par défaut | `https://www.google.com/search?q={searchTerms}` | |
-| ☐ | URL de suggestion du moteur par défaut | `https://www.google.com/complete/search?client=chrome&q={searchTerms}` | |
-| ☐ | Activer l'affichage de contenus promotionnels sur un onglet entier | Désactivé | Moins d'écrans au premier lancement |
-| ☐ | Choisir d'afficher l'invite Privacy Sandbox | Désactivé | Un écran de moins |
+| ☐ | Enable the default search provider | Enabled | **Indispensable** : sans lui, les autres sont ignorés |
+| ☐ | Default search provider name → (Device) | `Google` | |
+| ☐ | Default search provider search URL → (Device) | `https://www.google.com/search?q={searchTerms}` | |
+| ☐ | Default search provider suggest URL → (Device) | `https://www.google.com/complete/search?client=chrome&q={searchTerms}` | |
+| ☐ | Enable showing full-tab promotional content | Disabled | Moins d'écrans au premier lancement |
+| ☐ | Choose whether the Privacy Sandbox prompt can be shown to your users | Disabled | Un écran de moins |
 
-Contrairement à la console Google, ces règles arrivent **sur la machine** avant que le profil existe : c'est ce qui permet de supprimer le choix du moteur.
+Pièges rencontrés lors de la configuration :
+- **Prendre uniquement la catégorie « Google Chrome > … » (règles imposées)**, jamais « Google Chrome - Paramètres par défaut que
+  les utilisateurs peuvent remplacer » (recommandées) : une activation recommandée ne suffit pas pour appliquer le nom et les URL imposés.
+- **Prendre les versions sans « (User) »** : on ne configure que des règles machine, pour éviter les doublons et les conflits.
+- Si l'option est introuvable dans le sélecteur, passer par la **barre de recherche** (« default search provider ») : la navigation
+  par catégorie peut afficher une liste qui ne correspond pas à la sous-catégorie choisie.
+
+Contrairement à la console Google, ces règles arrivent **sur la machine** avant que le profil existe : c'est ce qui permet de supprimer
+le choix du moteur. Les règles de la console Google ne s'appliquent qu'**après** la connexion du profil (constaté le 2026-10-07 : l'écran
+de choix s'affichait encore).
+
+**Vérification** : sur le PC de test, `chrome://policy` → « Actualiser les règles » doit afficher `DefaultSearchProviderEnabled = true`
+avec la source **Plateforme**, avant même la création du profil.
 
 ## C. Point à vérifier au premier test
 
@@ -119,5 +110,5 @@ profil séparé est désormais fourni par le raccourci.
 
 ## D. Parcours attendu
 
-Double-clic sur « Messagerie ONELA » → identifiant (pré-rempli si la table est renseignée) → mot de passe
+Double-clic sur « Messagerie ONELA » → identifiant → mot de passe
 (+ nouveau mot de passe) → J'ai compris → « Ce profil sera géré » : Continuer → Gmail.

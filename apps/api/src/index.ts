@@ -21,7 +21,6 @@ app.use(
     origin: process.env['APP_URL'] ?? 'http://localhost:5173',
     allowHeaders: ['Content-Type', 'Authorization'],
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    exposeHeaders: ['Content-Disposition', 'X-Script-Users', 'X-Script-Unresolved'],
     credentials: true,
   })
 )
