@@ -245,10 +245,19 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
     )
   }
 
-  // Une pause est VOLONTAIRE (initiée par l'utilisateur) → ambre, pas rouge.
-  // Le rouge est réservé aux vraies erreurs (création de compte OU phase data).
-  const anyPaused = m.stepMailMigration === 'paused' || m.stepCalendarMigration === 'paused' || m.stepContactsMigration === 'paused'
-  const anyDataError = m.stepMailMigration === 'error' || m.stepCalendarMigration === 'error' || m.stepContactsMigration === 'error'
+  // Une pause est VOLONTAIRE → ambre, pas rouge. Dans ce module le worker n'a pas
+  // d'état 'paused' : il écrit status='error' + un message « Migration en pause … ».
+  // On distingue donc une pause d'une vraie erreur par le texte du message.
+  const isPhasePaused = (st: string, msg: string | null) => st === 'error' && !!msg && /^Migration en pause/.test(msg)
+  const mailPaused = isPhasePaused(m.stepMailMigration, m.mailError)
+  const calPaused = isPhasePaused(m.stepCalendarMigration, m.calError)
+  const contactsPaused = isPhasePaused(m.stepContactsMigration, m.contactsError)
+  const anyPaused = mailPaused || calPaused || contactsPaused
+  // Vraie erreur de phase data = status 'error' qui n'est PAS une pause.
+  const anyDataError =
+    (m.stepMailMigration === 'error' && !mailPaused) ||
+    (m.stepCalendarMigration === 'error' && !calPaused) ||
+    (m.stepContactsMigration === 'error' && !contactsPaused)
 
   // Résumé compact des statuts
   const statusSummary = () => {

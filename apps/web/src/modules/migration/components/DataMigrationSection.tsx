@@ -134,9 +134,10 @@ export function DataMigrationSection({
   }
 
   const running = status === 'running' || status === 'pending'
-  // Pause VOLONTAIRE (initiée par l'utilisateur) : ce n'est pas une erreur → ambre,
-  // pas rouge. Le message de pause est stocké dans `errorMessage` par le worker.
-  const isPaused = status === 'paused'
+  // Pause VOLONTAIRE (initiée par l'utilisateur) : le worker n'a pas d'état 'paused'
+  // dans ce module — il écrit status='error' + un message « Migration en pause … ».
+  // On reconnaît ce cas pour l'afficher en AMBRE (pas rouge, ce n'est pas une erreur).
+  const isPaused = status === 'error' && !!errorMessage && /^Migration en pause/.test(errorMessage)
   const showStopButton = running
   const showActionButton = !running
   const showBar = running || total > 0
@@ -153,7 +154,7 @@ export function DataMigrationSection({
     ? 'Démarrage...'
     : lastSyncAt
       ? `Synchroniser ${label.toLowerCase()} (delta)`
-      : status === 'error' || isPaused
+      : status === 'error'
         ? `Reprendre la migration ${label.toLowerCase()}`
         : `Lancer la migration ${label.toLowerCase()}`
 
@@ -227,7 +228,7 @@ export function DataMigrationSection({
           </div>
           <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
             <div
-              className={cn('h-full transition-all duration-500', status === 'error' ? 'bg-red-500' : isPaused ? 'bg-amber-500' : c.bar)}
+              className={cn('h-full transition-all duration-500', isPaused ? 'bg-amber-500' : status === 'error' ? 'bg-red-500' : c.bar)}
               style={{ width: `${displayPct}%` }}
             />
           </div>
