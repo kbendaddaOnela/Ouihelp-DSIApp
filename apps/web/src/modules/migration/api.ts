@@ -129,7 +129,7 @@ export const migrationApi = {
           email: string
           department: string | null
           jobTitle: string | null
-          migrationStatus: 'active' | 'none'
+          migrationStatus: 'done' | 'active' | 'none'
         }>
       }>(`/migration/group-members/${encodeURIComponent(groupId)}`)
       .then((r) => r.data.users),

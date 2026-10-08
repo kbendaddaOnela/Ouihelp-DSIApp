@@ -111,6 +111,51 @@ async function buildAgencyMembership(): Promise<{ agencies: AgencyMembership[]; 
   return { agencies: built, errors }
 }
 
+// ── Statut de migration par utilisateur (source autoritaire : table `migrations`) ─
+// Dérivé des mêmes champs que les cartes, pour que compteurs (arbre agences,
+// effectifs services) et sélecteur de membres soient toujours cohérents entre eux.
+// Indexé en CASSE INSENSIBLE par UPN ET e-mail (les UPN/mails ONELA ont parfois des
+// majuscules, ex. EALMEIDADESOUSA@onela.com) + par identifiant Graph (le plus fiable).
+//  • 'done'        = migration archivée OU les 3 phases data réussies.
+//  • 'in_progress' = migration lancée mais pas encore terminée (compte provisionné,
+//                    mail en cours / en pause, etc.).
+type UserMigStatus = 'done' | 'in_progress'
+function deriveMigStatus(r: { archived: number; mail: string; cal: string; con: string }): UserMigStatus {
+  const dataDone = r.mail === 'success' && r.cal === 'success' && r.con === 'success'
+  return r.archived === 1 || dataDone ? 'done' : 'in_progress'
+}
+async function loadUserStatus(db: ReturnType<typeof getDb>): Promise<{
+  byKey: Map<string, UserMigStatus>
+  byId: Map<string, UserMigStatus>
+}> {
+  const rows = await db
+    .select({
+      userId: migrations.onelaUserId,
+      upn: migrations.onelaUpn,
+      email: migrations.onelaEmail,
+      archived: migrations.archived,
+      mail: migrations.stepMailMigration,
+      cal: migrations.stepCalendarMigration,
+      con: migrations.stepContactsMigration,
+    })
+    .from(migrations)
+  const byKey = new Map<string, UserMigStatus>()
+  const byId = new Map<string, UserMigStatus>()
+  const rank: Record<UserMigStatus, number> = { in_progress: 1, done: 2 }
+  const put = (map: Map<string, UserMigStatus>, k: string | null | undefined, s: UserMigStatus) => {
+    if (!k) return
+    const cur = map.get(k)
+    if (!cur || rank[s] > rank[cur]) map.set(k, s) // 'done' l'emporte en cas de doublon
+  }
+  for (const r of rows) {
+    const s = deriveMigStatus({ archived: r.archived, mail: r.mail, cal: r.cal, con: r.con })
+    put(byKey, r.upn?.toLowerCase(), s)
+    put(byKey, r.email?.toLowerCase(), s)
+    put(byId, r.userId, s)
+  }
+  return { byKey, byId }
+}
+
 // E-mail d'accès envoyé à l'utilisateur migré (login Google + mot de passe
 // temporaire + consignes de 1ʳᵉ connexion). Surchargeable via env.
 function escapeHtml(s: string): string {
@@ -853,10 +898,7 @@ migrationRouter.get('/service-group-counts', requirePermission('migration:read')
   const db = getDb()
   const groups = getServiceGroups()
 
-  const targets = await db
-    .select({ upn: migrationTargets.onelaUpn, status: migrationTargets.status })
-    .from(migrationTargets)
-  const statusByUpn = new Map(targets.map((t) => [t.upn.toLowerCase(), t.status]))
+  const { byKey } = await loadUserStatus(db)
 
   const settled = await Promise.allSettled(groups.map((g) => getOnelaGroupMembers(g.groupId)))
 
@@ -870,7 +912,7 @@ migrationRouter.get('/service-group-counts', requirePermission('migration:read')
     let done = 0
     let inProgress = 0
     for (const m of r.value) {
-      const status = statusByUpn.get(m.upn) ?? (m.mail ? statusByUpn.get(m.mail) : undefined)
+      const status = byKey.get(m.upn.toLowerCase()) ?? (m.mail ? byKey.get(m.mail.toLowerCase()) : undefined)
       if (status === 'done') done++
       else if (status === 'in_progress') inProgress++
     }
@@ -897,10 +939,7 @@ migrationRouter.get('/agencies-tree', requirePermission('migration:read'), async
   }
   const cache = membershipCache
 
-  const targets = await db
-    .select({ upn: migrationTargets.onelaUpn, status: migrationTargets.status })
-    .from(migrationTargets)
-  const statusByUpn = new Map(targets.map((t) => [t.upn.toLowerCase(), t.status]))
+  const { byKey } = await loadUserStatus(db)
 
   interface RegionAcc { label: string; total: number; done: number; in_progress: number; agencies: Array<{ code: string; name: string; groupId: string; total: number; done: number; in_progress: number }> }
   const byRegion = new Map<string, RegionAcc>()
@@ -914,7 +953,7 @@ migrationRouter.get('/agencies-tree', requirePermission('migration:read'), async
     let done = 0
     let inProgress = 0
     for (let k = 0; k < a.upns.length; k++) {
-      const status = statusByUpn.get(a.upns[k]!) ?? (a.mails[k] ? statusByUpn.get(a.mails[k]!) : undefined)
+      const status = byKey.get(a.upns[k]!.toLowerCase()) ?? (a.mails[k] ? byKey.get(a.mails[k]!.toLowerCase()) : undefined)
       if (status === 'done') done++
       else if (status === 'in_progress') inProgress++
     }
@@ -945,12 +984,15 @@ migrationRouter.get('/group-members/:groupId', requirePermission('migration:read
   } catch (err) {
     return c.json({ error: 'ONELA group', message: err instanceof Error ? err.message : String(err) }, 502)
   }
-  const ids = graphUsers.map((u) => u.id)
-  const active = ids.length
-    ? await db.select({ onelaUserId: migrations.onelaUserId }).from(migrations)
-        .where(and(inArray(migrations.onelaUserId, ids), eq(migrations.archived, 0)))
-    : []
-  const activeSet = new Set(active.map((a) => a.onelaUserId))
+  const { byKey, byId } = await loadUserStatus(db)
+  // 'done' = migré (ou archivé) · 'active' = en cours · 'none' = pas encore lancé.
+  // Match par id Graph (fiable) puis repli UPN/mail en minuscules.
+  const statusFor = (u: { id: string; userPrincipalName: string; mail?: string | null }): 'done' | 'active' | 'none' => {
+    const s = byId.get(u.id)
+      ?? byKey.get(u.userPrincipalName.toLowerCase())
+      ?? (u.mail ? byKey.get(u.mail.toLowerCase()) : undefined)
+    return s === 'done' ? 'done' : s === 'in_progress' ? 'active' : 'none'
+  }
 
   const users = graphUsers
     .map((u) => ({
@@ -962,7 +1004,7 @@ migrationRouter.get('/group-members/:groupId', requirePermission('migration:read
       email: u.mail ?? u.userPrincipalName,
       department: u.department ?? null,
       jobTitle: u.jobTitle ?? null,
-      migrationStatus: activeSet.has(u.id) ? ('active' as const) : ('none' as const),
+      migrationStatus: statusFor(u),
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, 'fr'))
 

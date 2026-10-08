@@ -134,6 +134,9 @@ export function DataMigrationSection({
   }
 
   const running = status === 'running' || status === 'pending'
+  // Pause VOLONTAIRE (initiée par l'utilisateur) : ce n'est pas une erreur → ambre,
+  // pas rouge. Le message de pause est stocké dans `errorMessage` par le worker.
+  const isPaused = status === 'paused'
   const showStopButton = running
   const showActionButton = !running
   const showBar = running || total > 0
@@ -150,7 +153,7 @@ export function DataMigrationSection({
     ? 'Démarrage...'
     : lastSyncAt
       ? `Synchroniser ${label.toLowerCase()} (delta)`
-      : status === 'error'
+      : status === 'error' || isPaused
         ? `Reprendre la migration ${label.toLowerCase()}`
         : `Lancer la migration ${label.toLowerCase()}`
 
@@ -224,7 +227,7 @@ export function DataMigrationSection({
           </div>
           <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
             <div
-              className={cn('h-full transition-all duration-500', status === 'error' ? 'bg-red-500' : c.bar)}
+              className={cn('h-full transition-all duration-500', status === 'error' ? 'bg-red-500' : isPaused ? 'bg-amber-500' : c.bar)}
               style={{ width: `${displayPct}%` }}
             />
           </div>
@@ -256,10 +259,14 @@ export function DataMigrationSection({
           {/* Progression d'une tâche async (reprise erreurs, dédup, relabel...) :
               messages préfixés "Reprise"/"Déduplication"/"Re-labellisation" → bleu info,
               même si failed > 0. Sinon errorMessage standard en rouge si pas d'erreurs comptées. */}
-          {errorMessage && /^(Reprise|Déduplication|Re-labellisation|Anciens)/.test(errorMessage) && (
+          {/* Pause volontaire : message en ambre (pas une erreur). */}
+          {isPaused && errorMessage && (
+            <p className="mt-1 text-xs text-amber-600">{errorMessage}</p>
+          )}
+          {!isPaused && errorMessage && /^(Reprise|Déduplication|Re-labellisation|Anciens)/.test(errorMessage) && (
             <p className="mt-1 text-xs text-blue-600">{errorMessage}</p>
           )}
-          {!failed && errorMessage && !/^(Reprise|Déduplication|Re-labellisation|Anciens)/.test(errorMessage) && (
+          {!isPaused && !failed && errorMessage && !/^(Reprise|Déduplication|Re-labellisation|Anciens)/.test(errorMessage) && (
             <p className="mt-1 text-xs text-red-600">{errorMessage}</p>
           )}
 

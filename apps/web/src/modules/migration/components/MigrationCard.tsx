@@ -245,13 +245,22 @@ function MigrationCardInner({ m, defaultExpanded = false }: { m: MigrationRecord
     )
   }
 
+  // Une pause est VOLONTAIRE (initiée par l'utilisateur) → ambre, pas rouge.
+  // Le rouge est réservé aux vraies erreurs (création de compte OU phase data).
+  const anyPaused = m.stepMailMigration === 'paused' || m.stepCalendarMigration === 'paused' || m.stepContactsMigration === 'paused'
+  const anyDataError = m.stepMailMigration === 'error' || m.stepCalendarMigration === 'error' || m.stepContactsMigration === 'error'
+
   // Résumé compact des statuts
   const statusSummary = () => {
-    if (hasError) return { text: 'Erreur', color: 'text-red-600' }
+    if (hasError || anyDataError) return { text: 'Erreur', color: 'text-red-600' }
+    if (anyPaused) return { text: 'En pause', color: 'text-amber-600' }
     if (hasRunningData) return { text: 'En cours', color: 'text-blue-600' }
     if (m.stepMailMigration === 'success' && m.stepCalendarMigration === 'success' && m.stepContactsMigration === 'success') {
       return { text: 'Migrations terminées', color: 'text-green-600' }
     }
+    // Dès qu'une phase data est lancée (≠ 'skipped'), la migration est « En cours »
+    // même si rien ne tourne à l'instant (ex. compte prêt, mail lancé puis en pause).
+    if (anyDataStarted) return { text: 'En cours', color: 'text-blue-600' }
     if (accountReady && !googleReady) return { text: 'En attente SCIM...', color: 'text-amber-600' }
     if (accountReady) return { text: 'Compte prêt', color: 'text-blue-600' }
     return { text: 'En cours', color: 'text-gray-600' }

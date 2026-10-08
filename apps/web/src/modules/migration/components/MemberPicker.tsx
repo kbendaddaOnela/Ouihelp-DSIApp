@@ -101,16 +101,19 @@ export function MemberPicker({ groupId, title, subtitle, onLaunched }: {
         <>
           <ul className="max-h-72 space-y-1 overflow-y-auto">
             {members.map((m: Member) => {
+              const isDone = m.migrationStatus === 'done'
               const isActive = m.migrationStatus === 'active'
+              const locked = isDone || isActive // migré ou en cours → pas re-sélectionnable
               return (
                 <li key={m.id}>
-                  <label className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-sm', isActive ? 'opacity-60' : 'cursor-pointer hover:bg-gray-50')}>
-                    <input type="checkbox" className="h-4 w-4 rounded border-gray-300" disabled={isActive} checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
+                  <label className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-sm', locked ? 'opacity-70' : 'cursor-pointer hover:bg-gray-50')}>
+                    <input type="checkbox" className="h-4 w-4 rounded border-gray-300" disabled={locked} checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
                     <span className="min-w-0 flex-1 truncate">
                       <span className="font-medium text-gray-800">{m.displayName}</span>
                       <span className="ml-1 text-xs text-gray-400">{m.email}</span>
                     </span>
-                    {isActive && <span className="flex shrink-0 items-center gap-1 text-[11px] text-blue-500"><CheckCircle2 className="h-3 w-3" /> déjà en cours</span>}
+                    {isDone && <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-emerald-600"><CheckCircle2 className="h-3 w-3" /> migré</span>}
+                    {isActive && <span className="flex shrink-0 items-center gap-1 text-[11px] text-blue-500"><Loader2 className="h-3 w-3 animate-spin" /> en cours</span>}
                   </label>
                 </li>
               )
