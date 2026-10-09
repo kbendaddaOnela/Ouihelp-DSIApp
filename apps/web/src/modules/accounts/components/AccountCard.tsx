@@ -15,6 +15,7 @@ const STEPS: Array<{ key: keyof AccountCreationRecord; label: string }> = [
   { key: 'stepNewFormat', label: '6. Alias' },
   { key: 'stepSendAs', label: '7. Send-as' },
   { key: 'stepContactsOnela', label: '8. Contacts ONELA' },
+  { key: 'stepDelegations', label: '9. Délégations' },
 ]
 
 function overallStatus(a: AccountCreationRecord): { label: string; cls: string } {
@@ -66,7 +67,10 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const done = (s: AccountStepStatus) => s === 'success' || s === 'skipped'
   const canFinalize =
     account.stepCreateGoh === 'success' &&
-    (!done(account.stepNewFormat) || !done(account.stepSendAs) || !done(account.stepContactsOnela))
+    (!done(account.stepNewFormat) ||
+      !done(account.stepSendAs) ||
+      !done(account.stepContactsOnela) ||
+      !done(account.stepDelegations))
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
@@ -95,6 +99,12 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
             <div>Service : <span className="font-medium text-gray-800">{account.department ?? '—'}</span></div>
             <div>Poste : <span className="font-medium text-gray-800">{account.jobTitle ?? '—'}</span></div>
             {account.managerUpn && <div>Manager : <span className="font-medium text-gray-800">{account.managerUpn}</span></div>}
+            {account.delegateMailboxes && account.delegateMailboxes.length > 0 && (
+              <div className="sm:col-span-2">
+                Boîtes déléguées :{' '}
+                <span className="font-medium text-gray-800">{account.delegateMailboxes.join(', ')}</span>
+              </div>
+            )}
           </div>
 
           {/* Étapes */}
@@ -106,6 +116,9 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
 
           {account.errorDetails && (
             <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">{account.errorDetails}</p>
+          )}
+          {account.delegationsError && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">Délégations : {account.delegationsError}</p>
           )}
           {provisionRunning && !account.errorDetails && (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">

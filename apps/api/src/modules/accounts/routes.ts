@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, desc, and, asc } from 'drizzle-orm'
+import { eq, desc, and, asc, isNotNull } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -15,6 +15,8 @@ import {
 } from '../migration/service'
 import { googleUserExists, moveUserToOu, addGoogleAlias } from '../migration/googleService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
+import { ensureGmailDelegate } from '../shared-mailbox/googleUserService'
+import { sharedMigrations } from '../shared-mailbox/schema'
 import { ensureOnelaRouting, buildRoutingAddress, removeOnelaRouting } from './onelaRoutingService'
 import { onelaContacts } from '../onela-contacts/schema'
 import { pushContactsToUser, type ParsedContact } from '../onela-contacts/service'
@@ -25,6 +27,7 @@ import type {
   SearchManagersResponse,
   AgenciesResponse,
   AgencyInput,
+  MigratedSharedMailboxesResponse,
 } from '@dsi-app/shared'
 
 export const accountsRouter = new Hono<{ Variables: RbacVariables }>()
@@ -40,9 +43,21 @@ function normalizeNamePart(s: string): string {
     .replace(/[^a-z]/g, '')
 }
 
+/** Parse la colonne JSON `delegate_mailboxes` (tableau d'adresses) de façon tolérante. */
+function parseDelegateMailboxes(raw: string | null): string[] | null {
+  if (!raw) return null
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null
+  } catch {
+    return null
+  }
+}
+
 function serialize(a: typeof accountCreations.$inferSelect) {
   return {
     ...a,
+    delegateMailboxes: parseDelegateMailboxes(a.delegateMailboxes),
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
   }
@@ -58,6 +73,7 @@ function serializeAgency(a: typeof agencies.$inferSelect) {
     address: a.address,
     postalCode: a.postalCode,
     city: a.city,
+    mailbox: a.mailbox ?? null,
   }
 }
 
@@ -92,6 +108,7 @@ accountsRouter.post('/agencies', requirePermission('accounts:write'), async (c) 
     address: b.address.trim(),
     postalCode: b.postalCode.trim(),
     city: b.city.trim(),
+    mailbox: b.mailbox?.trim() || null,
   })
   const [row] = await db.select().from(agencies).where(eq(agencies.id, id))
   return c.json(serializeAgency(row!), 201)
@@ -113,6 +130,7 @@ accountsRouter.put('/agencies/:id', requirePermission('accounts:write'), async (
     address: b.address.trim(),
     postalCode: b.postalCode.trim(),
     city: b.city.trim(),
+    mailbox: b.mailbox?.trim() || null,
   }).where(eq(agencies.id, id))
   const [updated] = await db.select().from(agencies).where(eq(agencies.id, id))
   return c.json(serializeAgency(updated!))
@@ -144,6 +162,37 @@ accountsRouter.get('/search-managers', requirePermission('accounts:read'), async
     console.error('[accounts/search-managers] Graph error:', msg)
     return c.json({ error: 'Graph error', message: msg }, 502)
   }
+})
+
+// ── Boîtes partagées déjà migrées (candidates à la délégation Gmail) ─────────
+// Mode « compte Google classique » créé avec succès → on peut y déléguer le
+// nouvel arrivant. On expose l'adresse PRIMAIRE Google (targetUserEmail) qui est
+// la cible réelle de l'API de délégation.
+accountsRouter.get('/shared-mailboxes', requirePermission('accounts:read'), async (c) => {
+  const db = getDb()
+  const rows = await db
+    .select()
+    .from(sharedMigrations)
+    .where(
+      and(
+        eq(sharedMigrations.mode, 'account'),
+        eq(sharedMigrations.stepCreateAccount, 'success'),
+        eq(sharedMigrations.archived, 0),
+        isNotNull(sharedMigrations.targetUserEmail),
+      ),
+    )
+    .orderBy(asc(sharedMigrations.onelaDisplayName))
+
+  const mailboxes = rows
+    .filter((r) => r.targetUserEmail)
+    .map((r) => ({
+      id: r.id,
+      displayName: r.targetDisplayName || r.onelaDisplayName,
+      onelaEmail: r.onelaEmail,
+      alias: r.targetUserAlias ?? null,
+      delegateEmail: r.targetUserEmail as string,
+    }))
+  return c.json<MigratedSharedMailboxesResponse>({ mailboxes })
 })
 
 // ── Création d'un compte ──────────────────────────────────────────────────────
@@ -193,6 +242,18 @@ accountsRouter.post('/', requirePermission('accounts:write'), async (c) => {
     return c.json({ error: 'conflict', message: `Un onboarding existe déjà pour ${gohUpn}` }, 409)
   }
 
+  // Boîtes partagées à déléguer : normalisation (adresses minuscules, dédoublonnées)
+  const delegateMailboxes = Array.isArray(body.delegateMailboxes)
+    ? Array.from(
+        new Set(
+          body.delegateMailboxes
+            .filter((m): m is string => typeof m === 'string')
+            .map((m) => m.trim().toLowerCase())
+            .filter((m) => m !== ''),
+        ),
+      )
+    : []
+
   const id = randomUUID()
   await db.insert(accountCreations).values({
     id,
@@ -212,6 +273,7 @@ accountsRouter.post('/', requirePermission('accounts:write'), async (c) => {
     streetAddress: body.streetAddress?.trim() || null,
     postalCode: body.postalCode?.trim() || null,
     city: body.city?.trim() || null,
+    delegateMailboxes: delegateMailboxes.length > 0 ? JSON.stringify(delegateMailboxes) : null,
     stepCreateGoh: 'pending',
     stepSetAttributes: 'pending',
     stepOnelaRouting: 'pending',
@@ -220,6 +282,7 @@ accountsRouter.post('/', requirePermission('accounts:write'), async (c) => {
     stepNewFormat: 'pending',
     stepSendAs: 'pending',
     stepContactsOnela: 'pending',
+    stepDelegations: 'pending',
     initiatedBy,
   })
 
@@ -516,6 +579,55 @@ async function finalizeGoogleBackground(id: string) {
     }
   }
 
+  // 6. Délégations Gmail : le nouvel arrivant devient délégué des boîtes partagées
+  //    migrées sélectionnées (mailboxEmail = compte Google de la boîte, délégué =
+  //    adresse primaire du nouvel arrivant). Idempotent, non bloquant par boîte.
+  if (row.stepDelegations !== 'success') {
+    const targets = parseDelegateMailboxes(row.delegateMailboxes) ?? []
+    if (targets.length === 0) {
+      await db.update(accountCreations).set({ stepDelegations: 'skipped' }).where(eq(accountCreations.id, id))
+      console.log(`[accounts] ${id} délégations: aucune boîte sélectionnée → skipped`)
+    } else {
+      await db.update(accountCreations).set({ stepDelegations: 'running' }).where(eq(accountCreations.id, id))
+      const failures: string[] = []
+      for (const mailbox of targets) {
+        try {
+          // Erreurs transitoires (compte délégué pas encore pleinement propagé) → quelques retries.
+          let done = false
+          let lastErr: unknown = null
+          for (let attempt = 0; attempt < 5 && !done; attempt++) {
+            try {
+              const r = await ensureGmailDelegate(mailbox, gohUpn)
+              console.log(`[accounts] ${id} délégation ${gohUpn} sur ${mailbox}: ${r.created ? 'créée' : 'déjà présente'}${r.verificationStatus ? ` (${r.verificationStatus})` : ''}`)
+              done = true
+            } catch (dErr) {
+              lastErr = dErr
+              const m = dErr instanceof Error ? dErr.message : String(dErr)
+              const transient = /not a valid user or group|invalidArgument|INVALID_ARGUMENT|Precondition check failed|failedPrecondition|FAILED_PRECONDITION|more delegates/i.test(m)
+              if (!transient) throw dErr
+              console.warn(`[accounts] ${id} délégation ${mailbox} pas encore prête (tentative ${attempt + 1}/5), retry dans 20s`)
+              await new Promise((r) => setTimeout(r, 20_000))
+            }
+          }
+          if (!done) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error(`[accounts] ${id} délégation ${mailbox} échouée:`, msg)
+          failures.push(`${mailbox}: ${msg}`)
+        }
+      }
+      if (failures.length === 0) {
+        await db.update(accountCreations).set({ stepDelegations: 'success', delegationsError: null }).where(eq(accountCreations.id, id))
+        console.log(`[accounts] ${id} délégations OK (${targets.length} boîte(s))`)
+      } else {
+        await db.update(accountCreations).set({
+          stepDelegations: 'error',
+          delegationsError: `${failures.length}/${targets.length} délégation(s) en échec — ${failures.join(' | ')}`,
+        }).where(eq(accountCreations.id, id))
+      }
+    }
+  }
+
   console.log(`[accounts] ${id} finalisation Google terminée (${gohUpn})`)
 }
 
@@ -536,7 +648,9 @@ accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'),
     ...(unstick(row.stepNewFormat) ? { stepNewFormat: 'pending' as const } : {}),
     ...(unstick(row.stepSendAs) ? { stepSendAs: 'pending' as const } : {}),
     ...(unstick(row.stepContactsOnela) ? { stepContactsOnela: 'pending' as const } : {}),
+    ...(unstick(row.stepDelegations) ? { stepDelegations: 'pending' as const } : {}),
     errorDetails: null,
+    delegationsError: null,
   }).where(eq(accountCreations.id, id))
   void finalizeGoogleBackground(id)
   return c.json({ message: 'Finalisation Google relancée en background', id }, 202)

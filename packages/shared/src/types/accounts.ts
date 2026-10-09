@@ -163,12 +163,44 @@ export interface Agency {
   address: string
   postalCode: string
   city: string
+  /**
+   * Adresse de la boîte partagée de l'agence (ex. "agence.montpellier@onela.com").
+   * Sert à pré-cocher la délégation Gmail à l'onboarding : on la rapproche des
+   * boîtes partagées déjà migrées pour retrouver le compte Google délégable.
+   * Optionnel (null si l'agence n'a pas de boîte partagée ou pas encore renseignée).
+   */
+  mailbox: string | null
 }
 
 export type AgencyInput = Omit<Agency, 'id'>
 
 export interface AgenciesResponse {
   agencies: Agency[]
+}
+
+// ── Boîtes partagées déjà migrées (candidates à la délégation) ──────────────────
+
+/**
+ * Une boîte partagée migrée en mode « compte Google classique », utilisable comme
+ * cible de délégation Gmail pour un nouvel arrivant.
+ */
+export interface MigratedSharedMailbox {
+  id: string
+  /** Nom d'affichage (ex. "Comptabilité ONELA"). */
+  displayName: string
+  /** Adresse Exchange d'origine (ex. "compta@onela.com"). */
+  onelaEmail: string
+  /** Alias définitif Google (ex. "compta@onela.com"). */
+  alias: string | null
+  /**
+   * Adresse PRIMAIRE Google du compte (ex. "compta@mig.onela.com"). C'est elle
+   * qu'on délègue (l'API de délégation agit sur le compte primaire).
+   */
+  delegateEmail: string
+}
+
+export interface MigratedSharedMailboxesResponse {
+  mailboxes: MigratedSharedMailbox[]
 }
 
 // ── Manager (autocomplétion) ────────────────────────────────────────────────────
@@ -211,6 +243,12 @@ export interface CreateAccountRequest {
   password: string
   /** Forcer le changement de mot de passe au premier login. */
   forceChangePassword: boolean
+  /**
+   * Boîtes partagées (déjà migrées) dont le nouvel arrivant doit recevoir la
+   * délégation Gmail une fois le compte Google provisionné. Chaque élément est
+   * l'adresse PRIMAIRE Google de la boîte (MigratedSharedMailbox.delegateEmail).
+   */
+  delegateMailboxes?: string[]
 }
 
 // ── Enregistrement (suivi) ────────────────────────────────────────────────────
@@ -242,6 +280,11 @@ export interface AccountCreationRecord {
   stepNewFormat: AccountStepStatus
   stepSendAs: AccountStepStatus
   stepContactsOnela: AccountStepStatus
+  /** Délégations Gmail sur les boîtes partagées sélectionnées. */
+  stepDelegations: AccountStepStatus
+  /** Boîtes partagées à déléguer (adresses PRIMAIRES Google). */
+  delegateMailboxes: string[] | null
+  delegationsError: string | null
   errorDetails: string | null
   initiatedBy: string
   createdAt: string
