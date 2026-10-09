@@ -171,6 +171,9 @@ accountsRouter.get('/search-managers', requirePermission('accounts:read'), async
 // la cible réelle de l'API de délégation.
 accountsRouter.get('/shared-mailboxes', requirePermission('accounts:read'), async (c) => {
   const db = getDb()
+  // NB : on n'exclut PAS les migrations archivées — une boîte migrée est archivée
+  // (déplacée dans « Historique ») une fois terminée, mais reste une cible de
+  // délégation parfaitement valide. Seul compte : compte Google créé (targetUserEmail).
   const rows = await db
     .select()
     .from(sharedMigrations)
@@ -178,7 +181,6 @@ accountsRouter.get('/shared-mailboxes', requirePermission('accounts:read'), asyn
       and(
         eq(sharedMigrations.mode, 'account'),
         eq(sharedMigrations.stepCreateAccount, 'success'),
-        eq(sharedMigrations.archived, 0),
         isNotNull(sharedMigrations.targetUserEmail),
       ),
     )
