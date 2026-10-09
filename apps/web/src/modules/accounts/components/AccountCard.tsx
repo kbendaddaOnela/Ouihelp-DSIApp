@@ -1,10 +1,16 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, Trash2, RefreshCw, Cloud, Copy, Check } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2, RefreshCw, Cloud, Copy, Check, KeyRound } from 'lucide-react'
 import type { AccountCreationRecord, AccountStepStatus } from '@dsi-app/shared'
 import { StepBadge } from '@/modules/migration/components/StepBadge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useFinalizeGoogle, useRetryAccount, useDeleteAccount } from '../hooks/useAccounts'
+import {
+  useFinalizeGoogle,
+  useRetryAccount,
+  useDeleteAccount,
+  useLicenseSkus,
+  useAssignAccountLicense,
+} from '../hooks/useAccounts'
 
 const STEPS: Array<{ key: keyof AccountCreationRecord; label: string }> = [
   { key: 'stepCreateGoh', label: '1. Compte Ouihelp' },
@@ -12,10 +18,11 @@ const STEPS: Array<{ key: keyof AccountCreationRecord; label: string }> = [
   { key: 'stepOnelaRouting', label: '3. Routage ONELA' },
   { key: 'stepGoogleProvision', label: '4. SCIM → Google' },
   { key: 'stepOuMove', label: '5. OU /onela.com' },
-  { key: 'stepNewFormat', label: '6. Alias' },
-  { key: 'stepSendAs', label: '7. Send-as' },
-  { key: 'stepContactsOnela', label: '8. Contacts ONELA' },
-  { key: 'stepDelegations', label: '9. Délégations' },
+  { key: 'stepLicense', label: '6. Licence Google' },
+  { key: 'stepNewFormat', label: '7. Alias' },
+  { key: 'stepSendAs', label: '8. Send-as' },
+  { key: 'stepContactsOnela', label: '9. Contacts ONELA' },
+  { key: 'stepDelegations', label: '10. Délégations' },
 ]
 
 function overallStatus(a: AccountCreationRecord): { label: string; cls: string } {
@@ -50,6 +57,11 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const finalize = useFinalizeGoogle()
   const retry = useRetryAccount()
   const del = useDeleteAccount()
+  const assignLicense = useAssignAccountLicense()
+  const licenseNeeded = account.stepLicense !== 'success' && account.stepLicense !== 'skipped'
+  const { data: licenseData } = useLicenseSkus(licenseNeeded)
+  const licenseSkus = licenseData ?? []
+  const [skuChoice, setSkuChoice] = useState('')
 
   const status = overallStatus(account)
   const provisionSteps: AccountStepStatus[] = [
@@ -67,7 +79,8 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const done = (s: AccountStepStatus) => s === 'success' || s === 'skipped'
   const canFinalize =
     account.stepCreateGoh === 'success' &&
-    (!done(account.stepNewFormat) ||
+    (!done(account.stepLicense) ||
+      !done(account.stepNewFormat) ||
       !done(account.stepSendAs) ||
       !done(account.stepContactsOnela) ||
       !done(account.stepDelegations))
@@ -105,6 +118,9 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
                 <span className="font-medium text-gray-800">{account.delegateMailboxes.join(', ')}</span>
               </div>
             )}
+            {account.licenseSkuName && (
+              <div>Licence : <span className="font-medium text-gray-800">{account.licenseSkuName}</span></div>
+            )}
           </div>
 
           {/* Étapes */}
@@ -119,6 +135,39 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
           )}
           {account.delegationsError && (
             <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">Délégations : {account.delegationsError}</p>
+          )}
+          {account.licenseError && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">Licence : {account.licenseError}</p>
+          )}
+
+          {/* Attribution manuelle de licence (si pas encore attribuée) */}
+          {licenseNeeded && (
+            <div className="flex flex-wrap items-center gap-2 rounded-md bg-gray-50 px-3 py-2">
+              <KeyRound className="h-4 w-4 text-gray-400" />
+              <span className="text-xs text-gray-600">Attribuer une licence :</span>
+              <select
+                className="rounded-md border border-gray-300 px-2 py-1 text-xs focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                value={skuChoice}
+                onChange={(e) => setSkuChoice(e.target.value)}
+              >
+                <option value="">— Choisir —</option>
+                {licenseSkus.map((s) => (
+                  <option key={s.skuId} value={s.skuId}>
+                    {s.name}
+                    {s.remaining != null ? ` — ${s.remaining} dispo` : s.total != null ? ` — ${s.total - s.used} dispo` : ''}
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!skuChoice || assignLicense.isPending}
+                onClick={() => assignLicense.mutate({ id: account.id, productId: 'Google-Apps', skuId: skuChoice })}
+              >
+                {assignLicense.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
+                Attribuer
+              </Button>
+            </div>
           )}
           {provisionRunning && !account.errorDetails && (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">

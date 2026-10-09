@@ -430,14 +430,16 @@ Résultat : entrant `@onela.com` → résolu sur le contact → redirigé vers `
 | 3 | `stepOnelaRouting` | **MailContact** Exchange ONELA (cf. §13.1) via `InvokeCommand` (`New-MailContact` / `Set-MailContact`). Idempotent (`Get-MailContact` d'abord). |
 | 4 | `stepGoogleProvision` | Attente du **SCIM** : polling `googleUserExists` (60 s × 45 ≈ 45 min). |
 | 5 | `stepOuMove` | Bascule **automatique** sur l'OU `/onela.com` (`GOOGLE_ONELA_OU_PATH`). |
-| 6 | `stepNewFormat` | Alias `prenom.nom@onela.com` (`addGoogleAlias`, 409 ignoré). Le compte **reçoit** dès ce succès. |
-| 7 | `stepSendAs` | `send-as` par défaut (`ensureSendAs` / `setSendAsAsDefault`), **étape séparée** (retry ~3 min : Gmail refuse tant que la mailbox n'est pas initialisée). Non bloquante. |
-| 8 | `stepContactsOnela` | Import de l'annuaire ONELA (`onela_contacts`) dans les contacts Google (groupe « ONELA », People API, idempotent). `skipped` si annuaire vide. |
-| 9 | `stepDelegations` | **Délégations Gmail** : le nouvel arrivant devient délégué des **boîtes partagées déjà migrées** sélectionnées (`ensureGmailDelegate(boîte, prenom.nom@mig.onela.com)`, idempotent, retry transitoire, non bloquant par boîte). `skipped` si aucune boîte. Côté **agence**, la boîte de l'agence (champ `agencies.mailbox`) est **pré-cochée** automatiquement si elle est déjà migrée. |
+| 6 | `stepLicense` | **Attribution licence Google** (`assignLicense`, License Manager) — l'auto-attribution par OU n'étant plus active. `skipped` si aucune licence sélectionnée. Non bloquante (relançable). |
+| 7 | `stepNewFormat` | Alias `prenom.nom@onela.com` (`addGoogleAlias`, 409 ignoré). Le compte **reçoit** dès ce succès. |
+| 8 | `stepSendAs` | `send-as` par défaut (`ensureSendAs` / `setSendAsAsDefault`), **étape séparée** (retry ~3 min : Gmail refuse tant que la mailbox n'est pas initialisée). Non bloquante. |
+| 9 | `stepContactsOnela` | Import de l'annuaire ONELA (`onela_contacts`) dans les contacts Google (groupe « ONELA », People API, idempotent). `skipped` si annuaire vide. |
+| 10 | `stepDelegations` | **Délégations Gmail** : le nouvel arrivant devient délégué des **boîtes partagées déjà migrées** sélectionnées (`ensureGmailDelegate(boîte, prenom.nom@mig.onela.com)`, idempotent, retry transitoire, non bloquant par boîte). `skipped` si aucune boîte. **Pré-cochage auto** : la boîte de l'agence (`agencies.mailbox`) ou les boîtes du service (`SERVICE_SHARED_MAILBOXES`) si déjà migrées. |
 
-- **Étapes 1-3** = `provisionBackground` (fire-and-forget après `202`). **4-9** = `finalizeGoogleBackground`, enchaîné automatiquement.
-- **Boîtes partagées délégables** : `GET /accounts/shared-mailboxes` liste les migrations shared-mailbox en mode `account`, créées (`stepCreateAccount=success`), non archivées. On délègue leur **adresse primaire Google** (`targetUserEmail`). Le rapprochement agence→boîte se fait sur `agencies.mailbox` vs `onelaEmail`/alias de la boîte migrée.
-- **Robustesse** : le poller SCIM est un background in-process → un **redéploiement le tue** (comme les workers de migration). Fallback : bouton **« Finaliser sur Google »** (`POST /:id/finalize-google`) qui reprend 4-6. Bouton **« Relancer le provisioning »** (`POST /:id/retry`) rejoue 1-3.
+- **Étapes 1-3** = `provisionBackground` (fire-and-forget après `202`). **4-10** = `finalizeGoogleBackground`, enchaîné automatiquement.
+- **Licence Google** : choisie au formulaire (`GET /migration/license-skus` pour les SKU dispo), attribuée à l'étape 6. Attribution/ré-attribution manuelle aussi via `POST /accounts/:id/assign-license` (bouton sur la carte, utile pour les comptes créés sans licence). Colonnes `step_license`/`license_product_id`/`license_sku_id`/`license_sku_name`/`license_error`.
+- **Boîtes partagées délégables** : `GET /accounts/shared-mailboxes` liste les migrations shared-mailbox en mode `account`, créées (`stepCreateAccount=success`), non archivées. On délègue leur **adresse primaire Google** (`targetUserEmail`). Le rapprochement se fait sur `agencies.mailbox` (agence) ou `SERVICE_SHARED_MAILBOXES`/`mailboxesForService` (service) vs `onelaEmail`/alias de la boîte migrée. Les boîtes (agences + services) sont fournies dans `AGENCY_MAILBOXES`/`SERVICE_SHARED_MAILBOXES` ; `agencies.mailbox` est **seedé et backfillé** depuis `AGENCY_MAILBOXES` (idempotent, n'écrase pas une saisie).
+- **Robustesse** : le poller SCIM est un background in-process → un **redéploiement le tue** (comme les workers de migration). Fallback : bouton **« Finaliser sur Google »** (`POST /:id/finalize-google`) qui reprend 4-10. Bouton **« Relancer le provisioning »** (`POST /:id/retry`) rejoue 1-3.
 
 ### 13.3 Schéma DB
 

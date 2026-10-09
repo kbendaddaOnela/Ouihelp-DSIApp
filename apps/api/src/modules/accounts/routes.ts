@@ -16,6 +16,7 @@ import {
 import { googleUserExists, moveUserToOu, addGoogleAlias } from '../migration/googleService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { ensureGmailDelegate } from '../shared-mailbox/googleUserService'
+import { assignLicense, skuDisplayName } from '../migration/googleLicenseService'
 import { sharedMigrations } from '../shared-mailbox/schema'
 import { ensureOnelaRouting, buildRoutingAddress, removeOnelaRouting } from './onelaRoutingService'
 import { onelaContacts } from '../onela-contacts/schema'
@@ -274,11 +275,15 @@ accountsRouter.post('/', requirePermission('accounts:write'), async (c) => {
     postalCode: body.postalCode?.trim() || null,
     city: body.city?.trim() || null,
     delegateMailboxes: delegateMailboxes.length > 0 ? JSON.stringify(delegateMailboxes) : null,
+    licenseProductId: body.licenseSkuId ? (body.licenseProductId?.trim() || 'Google-Apps') : null,
+    licenseSkuId: body.licenseSkuId?.trim() || null,
+    licenseSkuName: body.licenseSkuId ? skuDisplayName(body.licenseSkuId.trim()) : null,
     stepCreateGoh: 'pending',
     stepSetAttributes: 'pending',
     stepOnelaRouting: 'pending',
     stepGoogleProvision: 'pending',
     stepOuMove: 'pending',
+    stepLicense: 'pending',
     stepNewFormat: 'pending',
     stepSendAs: 'pending',
     stepContactsOnela: 'pending',
@@ -494,6 +499,34 @@ async function finalizeGoogleBackground(id: string) {
     }
   }
 
+  // 2bis. Attribution de licence Google Workspace (l'auto-attribution par OU est
+  //       coupée). Sans licence, Gmail n'est pas provisionné → send-as/contacts
+  //       échoueraient. Étape placée avant l'alias/send-as. Non bloquante : une
+  //       erreur n'empêche pas les étapes suivantes de tenter leur chance.
+  if (row.stepLicense !== 'success') {
+    if (!row.licenseSkuId) {
+      await db.update(accountCreations).set({ stepLicense: 'skipped' }).where(eq(accountCreations.id, id))
+      console.log(`[accounts] ${id} licence: aucune sélectionnée → skipped`)
+    } else {
+      await db.update(accountCreations).set({ stepLicense: 'running', licenseError: null }).where(eq(accountCreations.id, id))
+      try {
+        const productId = row.licenseProductId || 'Google-Apps'
+        await assignLicense(gohUpn, productId, row.licenseSkuId)
+        await db.update(accountCreations).set({
+          stepLicense: 'success',
+          licenseSkuName: skuDisplayName(row.licenseSkuId),
+          licenseError: null,
+        }).where(eq(accountCreations.id, id))
+        console.log(`[accounts] ${id} licence attribuée (${skuDisplayName(row.licenseSkuId)}) à ${gohUpn}`)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[accounts] ${id} licence error:`, msg)
+        await db.update(accountCreations).set({ stepLicense: 'error', licenseError: msg }).where(eq(accountCreations.id, id))
+        // Non bloquant : on continue (send-as réessaiera, et la licence est relançable).
+      }
+    }
+  }
+
   // 3. Alias prenom.nom@onela.com (le compte reçoit dès que c'est fait)
   if (row.stepNewFormat !== 'success') {
     await db.update(accountCreations).set({ stepNewFormat: 'running' }).where(eq(accountCreations.id, id))
@@ -645,15 +678,62 @@ accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'),
   await db.update(accountCreations).set({
     ...(unstick(row.stepGoogleProvision) ? { stepGoogleProvision: 'pending' as const } : {}),
     ...(unstick(row.stepOuMove) ? { stepOuMove: 'pending' as const } : {}),
+    ...(unstick(row.stepLicense) ? { stepLicense: 'pending' as const } : {}),
     ...(unstick(row.stepNewFormat) ? { stepNewFormat: 'pending' as const } : {}),
     ...(unstick(row.stepSendAs) ? { stepSendAs: 'pending' as const } : {}),
     ...(unstick(row.stepContactsOnela) ? { stepContactsOnela: 'pending' as const } : {}),
     ...(unstick(row.stepDelegations) ? { stepDelegations: 'pending' as const } : {}),
     errorDetails: null,
     delegationsError: null,
+    licenseError: null,
   }).where(eq(accountCreations.id, id))
   void finalizeGoogleBackground(id)
   return c.json({ message: 'Finalisation Google relancée en background', id }, 202)
+})
+
+// ── Attribution manuelle d'une licence Google ────────────────────────────────
+// Utile pour (ré)assigner une licence après coup — notamment pour les comptes
+// créés sans sélection de licence. Enchaîne la finalisation si le compte est prêt.
+accountsRouter.post('/:id/assign-license', requirePermission('accounts:write'), async (c) => {
+  const db = getDb()
+  const id = c.req.param('id')
+  const [row] = await db.select().from(accountCreations).where(eq(accountCreations.id, id))
+  if (!row) return c.json({ error: 'Not Found' }, 404)
+
+  const body = await c.req
+    .json<{ productId?: string; skuId?: string }>()
+    .catch(() => ({}) as { productId?: string; skuId?: string })
+  const skuId = body.skuId?.trim()
+  const productId = body.productId?.trim() || 'Google-Apps'
+  if (!skuId) return c.json({ error: 'validation', message: 'skuId requis' }, 400)
+
+  await db.update(accountCreations).set({
+    stepLicense: 'running',
+    licenseProductId: productId,
+    licenseSkuId: skuId,
+    licenseError: null,
+  }).where(eq(accountCreations.id, id))
+
+  try {
+    await assignLicense(row.gohUpn, productId, skuId)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    await db.update(accountCreations).set({ stepLicense: 'error', licenseError: msg }).where(eq(accountCreations.id, id))
+    return c.json({ error: 'Attribution de licence échouée', message: msg }, 502)
+  }
+
+  await db.update(accountCreations).set({
+    stepLicense: 'success',
+    licenseSkuName: skuDisplayName(skuId),
+    licenseError: null,
+  }).where(eq(accountCreations.id, id))
+
+  // Si le compte est déjà remonté dans Google, enchaîner la finalisation (send-as,
+  // contacts, délégations) maintenant que la boîte va s'initialiser.
+  if (row.stepGoogleProvision === 'success') void finalizeGoogleBackground(id)
+
+  const [updated] = await db.select().from(accountCreations).where(eq(accountCreations.id, id))
+  return c.json({ account: serialize(updated!) })
 })
 
 // ── Relancer le provisioning (étapes GOH/attributs/routage en erreur) ────────

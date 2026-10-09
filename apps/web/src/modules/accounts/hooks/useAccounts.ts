@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { CreateAccountRequest, AgencyInput } from '@dsi-app/shared'
 import { accountsApi } from '../api'
+import { migrationApi } from '@/modules/migration/api'
 
 const AGENCIES_KEY = ['accounts-agencies']
 
@@ -44,6 +45,28 @@ export function useMigratedSharedMailboxes() {
   })
 }
 
+/** Licences Workspace disponibles (même endpoint/cache que migration + boîtes partagées). */
+export function useLicenseSkus(enabled = true) {
+  return useQuery({
+    queryKey: ['license-skus'],
+    queryFn: migrationApi.licenseSkus,
+    enabled,
+    staleTime: 60_000,
+  })
+}
+
+export function useAssignAccountLicense() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, productId, skuId }: { id: string; productId: string; skuId: string }) =>
+      accountsApi.assignLicense(id, productId, skuId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: HISTORY_KEY })
+      qc.invalidateQueries({ queryKey: ['license-skus'] })
+    },
+  })
+}
+
 const HISTORY_KEY = ['accounts-history']
 
 export function useAccountsHistory() {
@@ -60,6 +83,7 @@ export function useAccountsHistory() {
           a.stepOnelaRouting,
           a.stepGoogleProvision,
           a.stepOuMove,
+          a.stepLicense,
           a.stepNewFormat,
           a.stepSendAs,
           a.stepContactsOnela,
