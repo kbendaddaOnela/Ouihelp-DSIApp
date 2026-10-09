@@ -36,6 +36,14 @@ export function useDeleteAgency() {
   })
 }
 
+export function useMigratedSharedMailboxes() {
+  return useQuery({
+    queryKey: ['accounts-shared-mailboxes'],
+    queryFn: () => accountsApi.sharedMailboxes(),
+    staleTime: 5 * 60_000,
+  })
+}
+
 const HISTORY_KEY = ['accounts-history']
 
 export function useAccountsHistory() {
@@ -53,6 +61,9 @@ export function useAccountsHistory() {
           a.stepGoogleProvision,
           a.stepOuMove,
           a.stepNewFormat,
+          a.stepSendAs,
+          a.stepContactsOnela,
+          a.stepDelegations,
         ].some((s) => s === 'pending' || s === 'running'),
       )
       return anyPending ? 5_000 : false

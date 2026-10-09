@@ -44,6 +44,11 @@ export const accountCreations = mysqlTable('account_creations', {
   stepNewFormat: mysqlEnum('step_new_format', stepStatus).default('pending').notNull(),
   stepSendAs: mysqlEnum('step_send_as', stepStatus).default('pending').notNull(),
   stepContactsOnela: mysqlEnum('step_contacts_onela', stepStatus).default('pending').notNull(),
+  /** Délégations Gmail sur les boîtes partagées migrées sélectionnées. */
+  stepDelegations: mysqlEnum('step_delegations', stepStatus).default('pending').notNull(),
+  /** Liste JSON des adresses PRIMAIRES Google des boîtes à déléguer. */
+  delegateMailboxes: text('delegate_mailboxes'),
+  delegationsError: text('delegations_error'),
   errorDetails: text('error_details'),
   // Métadonnées
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
@@ -67,6 +72,9 @@ export const agencies = mysqlTable('agencies', {
   address: varchar('address', { length: 500 }).notNull(),
   postalCode: varchar('postal_code', { length: 20 }).notNull(),
   city: varchar('city', { length: 255 }).notNull(),
+  /** Boîte partagée de l'agence (ex. "agence.montpellier@onela.com"), optionnelle.
+   *  Sert à pré-cocher la délégation Gmail à l'onboarding. */
+  mailbox: varchar('mailbox', { length: 320 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
 })

@@ -7,6 +7,7 @@ import type {
   AgenciesResponse,
   Agency,
   AgencyInput,
+  MigratedSharedMailboxesResponse,
 } from '@dsi-app/shared'
 
 export const accountsApi = {
@@ -16,6 +17,9 @@ export const accountsApi = {
   updateAgency: (id: string, input: AgencyInput) =>
     apiClient.put<Agency>(`/accounts/agencies/${id}`, input).then((r) => r.data),
   deleteAgency: (id: string) => apiClient.delete(`/accounts/agencies/${id}`).then((r) => r.data),
+
+  sharedMailboxes: () =>
+    apiClient.get<MigratedSharedMailboxesResponse>('/accounts/shared-mailboxes').then((r) => r.data),
 
   searchManagers: (q: string) =>
     apiClient

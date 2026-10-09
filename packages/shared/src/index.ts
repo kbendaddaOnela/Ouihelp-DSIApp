@@ -39,6 +39,8 @@ export type {
   Agency,
   AgencyInput,
   AgenciesResponse,
+  MigratedSharedMailbox,
+  MigratedSharedMailboxesResponse,
   ManagerCandidate,
   SearchManagersResponse,
   CreateAccountRequest,

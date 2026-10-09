@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { UserPlus, Loader2, X } from 'lucide-react'
+import { UserPlus, Loader2, X, Search, Mail } from 'lucide-react'
 import {
   ONELA_SERVICES,
   AGENCY_JOB_TITLES,
@@ -9,7 +9,12 @@ import {
 } from '@dsi-app/shared'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useCreateAccount, useSearchManagers, useAgencies } from '../hooks/useAccounts'
+import {
+  useCreateAccount,
+  useSearchManagers,
+  useAgencies,
+  useMigratedSharedMailboxes,
+} from '../hooks/useAccounts'
 
 function normalizePart(s: string): string {
   return s
@@ -107,6 +112,8 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const create = useCreateAccount()
   const { data: agenciesData } = useAgencies()
   const agencyList = agenciesData?.agencies ?? []
+  const { data: mailboxesData } = useMigratedSharedMailboxes()
+  const sharedMailboxes = useMemo(() => mailboxesData?.mailboxes ?? [], [mailboxesData])
 
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
@@ -120,6 +127,9 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const [password, setPassword] = useState('')
   const [forceChange, setForceChange] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Délégations : adresses PRIMAIRES Google (delegateEmail) des boîtes à déléguer
+  const [delegateMailboxes, setDelegateMailboxes] = useState<string[]>([])
+  const [mailboxSearch, setMailboxSearch] = useState('')
 
   // Dérivés
   const displayName = useMemo(
@@ -137,10 +147,51 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const agencyInfo = agency ? agencyList.find((a) => a.name === agency) : undefined
   const email = emailPrefix ? `${emailPrefix}@onela.com` : ''
 
+  // Boîte partagée de l'agence sélectionnée, rapprochée des boîtes déjà migrées
+  const agencyMailboxAddr = agencyInfo?.mailbox?.trim().toLowerCase() || null
+  const agencyMigratedMailbox = useMemo(() => {
+    if (!agencyMailboxAddr) return null
+    return (
+      sharedMailboxes.find(
+        (m) =>
+          m.onelaEmail.toLowerCase() === agencyMailboxAddr ||
+          m.alias?.toLowerCase() === agencyMailboxAddr,
+      ) ?? null
+    )
+  }, [agencyMailboxAddr, sharedMailboxes])
+
+  // Pré-cocher automatiquement la boîte de l'agence dès qu'elle est résolue
+  useEffect(() => {
+    if (agencyMigratedMailbox) {
+      setDelegateMailboxes((prev) =>
+        prev.includes(agencyMigratedMailbox.delegateEmail)
+          ? prev
+          : [...prev, agencyMigratedMailbox.delegateEmail],
+      )
+    }
+  }, [agencyMigratedMailbox])
+
+  const toggleMailbox = (email: string) =>
+    setDelegateMailboxes((prev) =>
+      prev.includes(email) ? prev.filter((e) => e !== email) : [...prev, email],
+    )
+
+  const filteredMailboxes = useMemo(() => {
+    const q = mailboxSearch.trim().toLowerCase()
+    if (!q) return sharedMailboxes
+    return sharedMailboxes.filter(
+      (m) =>
+        m.displayName.toLowerCase().includes(q) ||
+        m.onelaEmail.toLowerCase().includes(q) ||
+        (m.alias?.toLowerCase().includes(q) ?? false),
+    )
+  }, [sharedMailboxes, mailboxSearch])
+
   const reset = () => {
     setFirstName(''); setLastName(''); setEmailPrefix(''); setPrefixTouched(false)
     setAssignmentType(''); setService(''); setAgency(''); setJobTitle('')
     setManager(null); setPassword(''); setForceChange(true); setError(null)
+    setDelegateMailboxes([]); setMailboxSearch('')
   }
 
   const submit = () => {
@@ -171,6 +222,7 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
       city: isAgence ? (agencyInfo?.city ?? null) : HEAD_OFFICE.city,
       password,
       forceChangePassword: forceChange,
+      delegateMailboxes,
     }
     create.mutate(req, {
       onSuccess: () => { reset(); onCreated() },
@@ -282,6 +334,94 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
             <ManagerPicker value={manager} onChange={setManager} />
           </div>
         </div>
+      </section>
+
+      {/* Délégations boîtes partagées */}
+      <section>
+        <h3 className="mb-1 text-sm font-semibold text-gray-900">Boîtes partagées à déléguer</h3>
+        <p className="mb-3 text-xs text-gray-500">
+          Le nouvel arrivant recevra la délégation Gmail sur les boîtes sélectionnées, une fois son
+          compte Google créé. Seules les boîtes déjà migrées (mode compte) sont proposées.
+        </p>
+
+        {/* Note sur la boîte de l'agence */}
+        {assignmentType === 'Agence' && agencyInfo && (
+          agencyMigratedMailbox ? (
+            <p className="mb-3 flex items-center gap-1.5 rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
+              <Mail className="h-3.5 w-3.5" />
+              Boîte de l'agence pré-cochée : <span className="font-medium">{agencyMigratedMailbox.onelaEmail}</span>
+            </p>
+          ) : agencyMailboxAddr ? (
+            <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              La boîte de l'agence (<span className="font-medium">{agencyMailboxAddr}</span>) n'a pas encore été
+              migrée : aucune délégation possible pour le moment.
+            </p>
+          ) : (
+            <p className="mb-3 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
+              Aucune boîte partagée renseignée pour cette agence (à définir dans « Gérer les agences »).
+            </p>
+          )
+        )}
+
+        {/* Chips des boîtes sélectionnées */}
+        {delegateMailboxes.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {delegateMailboxes.map((email) => {
+              const mb = sharedMailboxes.find((m) => m.delegateEmail === email)
+              return (
+                <span
+                  key={email}
+                  className="inline-flex items-center gap-1 rounded-full bg-primary-50 px-2.5 py-1 text-xs text-primary-700"
+                >
+                  {mb ? mb.onelaEmail : email}
+                  <button type="button" onClick={() => toggleMailbox(email)} className="text-primary-400 hover:text-primary-700">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )
+            })}
+          </div>
+        )}
+
+        {sharedMailboxes.length === 0 ? (
+          <p className="rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
+            Aucune boîte partagée migrée disponible.
+          </p>
+        ) : (
+          <div className="rounded-md border border-gray-200">
+            <div className="relative border-b border-gray-100">
+              <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-400" />
+              <input
+                className="w-full rounded-t-md border-0 py-2 pl-8 pr-3 text-sm focus:outline-none focus:ring-0"
+                placeholder="Rechercher une boîte partagée…"
+                value={mailboxSearch}
+                onChange={(e) => setMailboxSearch(e.target.value)}
+              />
+            </div>
+            <div className="max-h-48 overflow-y-auto">
+              {filteredMailboxes.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-gray-400">Aucun résultat.</p>
+              ) : (
+                filteredMailboxes.map((m) => (
+                  <label
+                    key={m.id}
+                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={delegateMailboxes.includes(m.delegateEmail)}
+                      onChange={() => toggleMailbox(m.delegateEmail)}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="font-medium text-gray-800">{m.displayName}</span>{' '}
+                      <span className="text-gray-400">· {m.onelaEmail}</span>
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Sécurité */}

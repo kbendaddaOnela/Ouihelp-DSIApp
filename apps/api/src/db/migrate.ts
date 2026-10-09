@@ -121,6 +121,12 @@ async function ensureSchemaPatches() {
     { table: 'account_creations', column: 'step_send_as', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_send_as\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
     // Accounts : import annuaire ONELA dans les contacts Google (étape 8)
     { table: 'account_creations', column: 'step_contacts_onela', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_contacts_onela\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    // Accounts : délégations Gmail sur boîtes partagées migrées (étape 9)
+    { table: 'account_creations', column: 'step_delegations', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_delegations\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'account_creations', column: 'delegate_mailboxes', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`delegate_mailboxes\` text` },
+    { table: 'account_creations', column: 'delegations_error', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`delegations_error\` text` },
+    // Accounts : boîte partagée de l'agence (pré-cochage de la délégation)
+    { table: 'agencies', column: 'mailbox', ddl: `ALTER TABLE \`agencies\` ADD COLUMN \`mailbox\` varchar(320)` },
     // Boîtes partagées : nouveau mode « compte Google classique » (licence Business
     // Plus hors app + délégations Gmail). Les migrations existantes restent 'group'.
     { table: 'shared_migrations', column: 'mode', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`mode\` enum('group','account') NOT NULL DEFAULT 'group'` },
@@ -541,6 +547,9 @@ async function ensureSchemaPatches() {
         \`step_new_format\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_send_as\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_contacts_onela\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+        \`step_delegations\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+        \`delegate_mailboxes\` text,
+        \`delegations_error\` text,
         \`error_details\` text,
         \`initiated_by\` varchar(255) NOT NULL,
         \`created_at\` timestamp NOT NULL DEFAULT (now()),
@@ -560,6 +569,7 @@ async function ensureSchemaPatches() {
         \`address\` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
         \`postal_code\` varchar(20) NOT NULL,
         \`city\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+        \`mailbox\` varchar(320),
         \`created_at\` timestamp NOT NULL DEFAULT (now()),
         \`updated_at\` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (\`id\`),
