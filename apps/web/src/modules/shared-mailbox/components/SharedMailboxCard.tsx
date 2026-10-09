@@ -129,6 +129,11 @@ export function SharedMailboxCard({ migration }: Props) {
     if (isPaused) return { text: 'En pause', color: 'text-amber-600' }
     if (isInFlight) return { text: 'Import en cours', color: 'text-blue-600' }
     if (runBlockedByLicense) return { text: 'En attente de licence', color: 'text-amber-600' }
+    // Licence posée mais import jamais démarré : c'est l'état d'attente normal
+    // depuis qu'attribuer une licence ne déclenche plus la migration.
+    if (migration.stepMailImport === 'skipped' && migration.mailMigrated === 0) {
+      return { text: 'Prêt à lancer', color: 'text-blue-600' }
+    }
     if (isDone && (!isAccountMode || migration.stepDelegates === 'success')) {
       return { text: 'Migration terminée', color: 'text-green-600' }
     }
@@ -521,7 +526,8 @@ function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord })
                         onSuccess: (d) =>
                           window.alert(
                             d.mailboxReady
-                              ? `Licence « ${sku.name} » attribuée. La boîte Gmail est prête : l’import démarre.`
+                              ? `Licence « ${sku.name} » attribuée. La boîte Gmail est prête : ` +
+                                `clique « Lancer » quand tu veux démarrer l’import.`
                               : `Licence « ${sku.name} » attribuée.\n\nGmail met quelques minutes à se provisionner : ` +
                                 `rafraîchis l’état, puis clique « Lancer » quand la boîte est prête.`,
                           ),
@@ -619,10 +625,10 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
             }
             disabled={acking}
             className="inline-flex items-center gap-1 rounded bg-green-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
-            title="À cliquer une fois la licence Business Plus attribuée dans la console Google"
+            title="À cliquer si la licence a été posée dans la console Google ou par l’OU. Ne démarre pas l’import."
           >
             <BadgeCheck className="h-3 w-3" />
-            {acking ? 'Vérification…' : 'Licence déjà attribuée → lancer l’import'}
+            {acking ? 'Vérification…' : 'Licence déjà attribuée (hors app)'}
           </button>
         )}
         <button
@@ -647,8 +653,9 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
         <p className="mt-2 text-[11px] text-gray-500">
           Deux voies&nbsp;: <strong>attribuer</strong> une licence ci-dessus (elle est posée
           immédiatement via l’API Google), ou la poser hors app (OU / console Admin) puis cliquer
-          « Licence déjà attribuée » — ce bouton-là vérifie d’abord que la boîte Gmail est
-          provisionnée avant de lancer l’import.
+          « Licence déjà attribuée », qui vérifie que la boîte Gmail est bien provisionnée. Dans
+          les deux cas l’import <strong>ne démarre pas tout seul</strong>&nbsp;: c’est le bouton
+          « Lancer » qui le déclenche, au moment que tu choisis.
         </p>
       )}
     </div>

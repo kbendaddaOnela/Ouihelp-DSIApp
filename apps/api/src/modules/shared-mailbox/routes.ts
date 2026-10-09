@@ -434,10 +434,12 @@ sharedMailboxRouter.get('/:id/account', requirePermission('migration:read'), asy
  * POST : attribue une licence Google Workspace au compte partagé, depuis l'app.
  *
  * Voie recommandée quand le compte n'est pas dans une OU à licence automatique.
- * Le provisionnement de Gmail n'est pas instantané après l'attribution : on ne
- * lance l'import que si la boîte répond déjà `isMailboxSetup`. Sinon l'étape
- * licence est quand même validée et le worker attendra le provisionnement
- * (waitForMailboxSetup) au prochain lancement.
+ *
+ * N'enchaîne **pas** l'import : attribuer une licence et décider du moment de la
+ * migration sont deux gestes distincts — on prépare souvent plusieurs boîtes à
+ * l'avance pour ne les lancer qu'au créneau choisi. Le départ reste donc le
+ * bouton « Lancer ». `mailboxReady` est renvoyé pour que l'UI dise si Gmail est
+ * déjà provisionné (quelques minutes après l'attribution).
  */
 sharedMailboxRouter.post('/:id/assign-license', requirePermission('migration:write'), async (c) => {
   const id = c.req.param('id')
@@ -486,9 +488,9 @@ sharedMailboxRouter.post('/:id/assign-license', requirePermission('migration:wri
       licenseError: null,
       licenseAckAt: new Date(),
       licenseAckBy: c.get('dbUser').email,
-      // Import enchaîné seulement si la boîte est prête ; sinon on laisse la main
-      // à l'opérateur pour éviter un aller-retour en erreur.
-      ...(mailboxReady ? { stepMailImport: 'pending' as const, mailError: null } : {}),
+      // Le message « en attente de licence » posé par le worker n'a plus lieu
+      // d'être ; l'étape import reste à l'arrêt jusqu'au clic sur « Lancer ».
+      mailError: null,
     })
     .where(eq(sharedMigrations.id, id))
 
@@ -496,7 +498,12 @@ sharedMailboxRouter.post('/:id/assign-license', requirePermission('migration:wri
   return c.json({ ...record, mailboxReady })
 })
 
-/** POST : acquitte l'attribution de la licence et lance l'import mail. */
+/**
+ * POST : acquitte une licence posée hors app (OU, console admin).
+ *
+ * Comme `assign-license`, ne lance pas l'import : l'acquittement débloque
+ * seulement l'étape. Le départ de la migration reste un geste explicite.
+ */
 sharedMailboxRouter.post('/:id/license-ack', requirePermission('migration:write'), async (c) => {
   const id = c.req.param('id')
   const [row] = await db.select().from(sharedMigrations).where(eq(sharedMigrations.id, id))
@@ -531,7 +538,6 @@ sharedMailboxRouter.post('/:id/license-ack', requirePermission('migration:write'
       stepLicense: 'success',
       licenseAckAt: new Date(),
       licenseAckBy: c.get('dbUser').email,
-      stepMailImport: 'pending',
       mailError: null,
     })
     .where(eq(sharedMigrations.id, id))

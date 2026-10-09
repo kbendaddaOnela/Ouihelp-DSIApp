@@ -439,7 +439,7 @@ async function processAccountMailbox(job: SharedMigration) {
           stepMailImport: 'skipped',
           mailError:
             `En attente de la licence Business Plus sur ${job.targetUserEmail} ` +
-            `(à attribuer dans la console Google, puis « Licence attribuée » dans l'app).`,
+            `(à attribuer depuis la carte, ou dans la console Google puis acquittée ici).`,
         })
         .where(eq(sharedMigrations.id, job.id))
       console.log(`[shared/account] ${job.id} en attente de licence`)
