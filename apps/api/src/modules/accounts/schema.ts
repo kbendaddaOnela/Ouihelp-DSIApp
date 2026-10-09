@@ -41,6 +41,12 @@ export const accountCreations = mysqlTable('account_creations', {
   stepOnelaRouting: mysqlEnum('step_onela_routing', stepStatus).default('pending').notNull(),
   stepGoogleProvision: mysqlEnum('step_google_provision', stepStatus).default('pending').notNull(),
   stepOuMove: mysqlEnum('step_ou_move', stepStatus).default('pending').notNull(),
+  /** Attribution de licence Google Workspace (l'auto-attribution par OU est coupée). */
+  stepLicense: mysqlEnum('step_license', stepStatus).default('pending').notNull(),
+  licenseProductId: varchar('license_product_id', { length: 64 }),
+  licenseSkuId: varchar('license_sku_id', { length: 64 }),
+  licenseSkuName: varchar('license_sku_name', { length: 128 }),
+  licenseError: text('license_error'),
   stepNewFormat: mysqlEnum('step_new_format', stepStatus).default('pending').notNull(),
   stepSendAs: mysqlEnum('step_send_as', stepStatus).default('pending').notNull(),
   stepContactsOnela: mysqlEnum('step_contacts_onela', stepStatus).default('pending').notNull(),

@@ -4,6 +4,7 @@ import {
   ONELA_SERVICES,
   AGENCY_JOB_TITLES,
   HEAD_OFFICE,
+  mailboxesForService,
   type AssignmentType,
   type CreateAccountRequest,
 } from '@dsi-app/shared'
@@ -14,6 +15,7 @@ import {
   useSearchManagers,
   useAgencies,
   useMigratedSharedMailboxes,
+  useLicenseSkus,
 } from '../hooks/useAccounts'
 
 function normalizePart(s: string): string {
@@ -114,6 +116,8 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const agencyList = agenciesData?.agencies ?? []
   const { data: mailboxesData } = useMigratedSharedMailboxes()
   const sharedMailboxes = useMemo(() => mailboxesData?.mailboxes ?? [], [mailboxesData])
+  const { data: licenseData } = useLicenseSkus()
+  const licenseSkus = useMemo(() => licenseData ?? [], [licenseData])
 
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
@@ -130,6 +134,8 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   // Délégations : adresses PRIMAIRES Google (delegateEmail) des boîtes à déléguer
   const [delegateMailboxes, setDelegateMailboxes] = useState<string[]>([])
   const [mailboxSearch, setMailboxSearch] = useState('')
+  // Licence Google à attribuer (skuId ; '' = ne pas attribuer)
+  const [licenseSkuId, setLicenseSkuId] = useState('')
 
   // Dérivés
   const displayName = useMemo(
@@ -147,29 +153,38 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const agencyInfo = agency ? agencyList.find((a) => a.name === agency) : undefined
   const email = emailPrefix ? `${emailPrefix}@onela.com` : ''
 
-  // Boîte partagée de l'agence sélectionnée, rapprochée des boîtes déjà migrées
-  const agencyMailboxAddr = agencyInfo?.mailbox?.trim().toLowerCase() || null
-  const agencyMigratedMailbox = useMemo(() => {
-    if (!agencyMailboxAddr) return null
-    return (
-      sharedMailboxes.find(
-        (m) =>
-          m.onelaEmail.toLowerCase() === agencyMailboxAddr ||
-          m.alias?.toLowerCase() === agencyMailboxAddr,
-      ) ?? null
-    )
-  }, [agencyMailboxAddr, sharedMailboxes])
-
-  // Pré-cocher automatiquement la boîte de l'agence dès qu'elle est résolue
-  useEffect(() => {
-    if (agencyMigratedMailbox) {
-      setDelegateMailboxes((prev) =>
-        prev.includes(agencyMigratedMailbox.delegateEmail)
-          ? prev
-          : [...prev, agencyMigratedMailbox.delegateEmail],
-      )
+  // Adresses de boîtes à pré-cocher selon l'affectation :
+  //  - Agence : la boîte de l'agence (agencies.mailbox)
+  //  - Siège  : les boîtes du service (SERVICE_SHARED_MAILBOXES via mailboxesForService)
+  const autoMailboxAddrs = useMemo<string[]>(() => {
+    if (assignmentType === 'Agence') {
+      const a = agencyInfo?.mailbox?.trim().toLowerCase()
+      return a ? [a] : []
     }
-  }, [agencyMigratedMailbox])
+    if (assignmentType === 'Siège') return mailboxesForService(service).map((a) => a.toLowerCase())
+    return []
+  }, [assignmentType, agencyInfo, service])
+
+  // Rapproche chaque adresse attendue des boîtes réellement migrées (donc délégables)
+  const autoResolved = useMemo(
+    () =>
+      autoMailboxAddrs.map((addr) => ({
+        addr,
+        mb:
+          sharedMailboxes.find(
+            (m) => m.onelaEmail.toLowerCase() === addr || m.alias?.toLowerCase() === addr,
+          ) ?? null,
+      })),
+    [autoMailboxAddrs, sharedMailboxes],
+  )
+
+  // Pré-cocher automatiquement les boîtes résolues (union — l'opérateur peut décocher)
+  useEffect(() => {
+    const toAdd = autoResolved.filter((x) => x.mb).map((x) => x.mb!.delegateEmail)
+    if (toAdd.length > 0) {
+      setDelegateMailboxes((prev) => Array.from(new Set([...prev, ...toAdd])))
+    }
+  }, [autoResolved])
 
   const toggleMailbox = (email: string) =>
     setDelegateMailboxes((prev) =>
@@ -191,7 +206,7 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
     setFirstName(''); setLastName(''); setEmailPrefix(''); setPrefixTouched(false)
     setAssignmentType(''); setService(''); setAgency(''); setJobTitle('')
     setManager(null); setPassword(''); setForceChange(true); setError(null)
-    setDelegateMailboxes([]); setMailboxSearch('')
+    setDelegateMailboxes([]); setMailboxSearch(''); setLicenseSkuId('')
   }
 
   const submit = () => {
@@ -223,6 +238,8 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
       password,
       forceChangePassword: forceChange,
       delegateMailboxes,
+      licenseProductId: licenseSkuId ? 'Google-Apps' : null,
+      licenseSkuId: licenseSkuId || null,
     }
     create.mutate(req, {
       onSuccess: () => { reset(); onCreated() },
@@ -344,23 +361,26 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
           compte Google créé. Seules les boîtes déjà migrées (mode compte) sont proposées.
         </p>
 
-        {/* Note sur la boîte de l'agence */}
-        {assignmentType === 'Agence' && agencyInfo && (
-          agencyMigratedMailbox ? (
-            <p className="mb-3 flex items-center gap-1.5 rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
-              <Mail className="h-3.5 w-3.5" />
-              Boîte de l'agence pré-cochée : <span className="font-medium">{agencyMigratedMailbox.onelaEmail}</span>
-            </p>
-          ) : agencyMailboxAddr ? (
-            <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              La boîte de l'agence (<span className="font-medium">{agencyMailboxAddr}</span>) n'a pas encore été
-              migrée : aucune délégation possible pour le moment.
-            </p>
-          ) : (
-            <p className="mb-3 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
-              Aucune boîte partagée renseignée pour cette agence (à définir dans « Gérer les agences »).
-            </p>
-          )
+        {/* Notes de pré-sélection (boîte agence ou boîtes du service) */}
+        {autoResolved.filter((x) => x.mb).length > 0 && (
+          <p className="mb-2 flex items-start gap-1.5 rounded-md bg-green-50 px-3 py-2 text-xs text-green-700">
+            <Mail className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Pré-cochée{autoResolved.filter((x) => x.mb).length > 1 ? 's' : ''} ({assignmentType === 'Agence' ? "boîte de l'agence" : 'boîtes du service'}) :{' '}
+              <span className="font-medium">{autoResolved.filter((x) => x.mb).map((x) => x.mb!.onelaEmail).join(', ')}</span>
+            </span>
+          </p>
+        )}
+        {autoResolved.filter((x) => !x.mb).length > 0 && (
+          <p className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            Non encore migrée{autoResolved.filter((x) => !x.mb).length > 1 ? 's' : ''} (délégation impossible pour le moment) :{' '}
+            <span className="font-medium">{autoResolved.filter((x) => !x.mb).map((x) => x.addr).join(', ')}</span>
+          </p>
+        )}
+        {assignmentType === 'Agence' && agencyInfo && !agencyInfo.mailbox && (
+          <p className="mb-2 rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
+            Aucune boîte partagée renseignée pour cette agence (à définir dans « Gérer les agences »).
+          </p>
         )}
 
         {/* Chips des boîtes sélectionnées */}
@@ -422,6 +442,27 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
             </div>
           </div>
         )}
+      </section>
+
+      {/* Licence Google */}
+      <section>
+        <h3 className="mb-1 text-sm font-semibold text-gray-900">Licence Google</h3>
+        <p className="mb-3 text-xs text-gray-500">
+          L'attribution automatique via l'OU n'étant plus active, choisis la licence à attribuer au
+          compte dès sa remontée dans Google (nécessaire pour activer Gmail). Laisse « Aucune » pour
+          l'attribuer plus tard.
+        </p>
+        <div className="sm:w-1/2">
+          <select className={inputCls} value={licenseSkuId} onChange={(e) => setLicenseSkuId(e.target.value)}>
+            <option value="">— Aucune (ne pas attribuer) —</option>
+            {licenseSkus.map((s) => (
+              <option key={s.skuId} value={s.skuId}>
+                {s.name}
+                {s.remaining != null ? ` — ${s.remaining} dispo` : s.total != null ? ` — ${s.total - s.used} dispo` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
       </section>
 
       {/* Sécurité */}

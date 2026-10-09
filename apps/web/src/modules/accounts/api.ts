@@ -41,4 +41,9 @@ export const accountsApi = {
     apiClient
       .delete(`/accounts/${id}${purgeRouting ? '?purgeRouting=1' : ''}`)
       .then((r) => r.data),
+
+  assignLicense: (id: string, productId: string, skuId: string) =>
+    apiClient
+      .post<{ account: CreateAccountResponse['account'] }>(`/accounts/${id}/assign-license`, { productId, skuId })
+      .then((r) => r.data),
 }

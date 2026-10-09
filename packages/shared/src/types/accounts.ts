@@ -150,6 +150,106 @@ export const ONELA_AGENCIES: Record<string, AgencyInfo> = {
   'Yvetot': { service: 'YVE', region: 'NORD NORMANDIE EST', adresse: '6 rue Pierre Varin, Immeuble Jura appt 3', cp: '76190', ville: 'Yvetot' },
 }
 
+/**
+ * Boîte partagée de chaque agence (adresse Exchange d'origine), fournie par la DSI.
+ * Clé = nom d'agence (= `agencies.name`). Sert à peupler `agencies.mailbox` au seed
+ * et au backfill. ⚠️ Quelques adresses ne suivent pas le nom (ex. Bruges → bordeaux).
+ */
+export const AGENCY_MAILBOXES: Record<string, string> = {
+  'Aix-en-Provence': 'aix@onela.com',
+  'Andernos-les-Bains': 'andernos@onela.com',
+  'Antony': 'antony@onela.com',
+  'Argenteuil': 'argenteuil@onela.com',
+  'Arles': 'arles@onela.com',
+  'Armentières': 'armentieres@onela.com',
+  'Bagnols-sur-Cèze': 'bagnols-sur-ceze@onela.com',
+  'Belleville-en-Beaujolais': 'belleville@onela.com',
+  'Biarritz': 'biarritz@onela.com',
+  'Bruges': 'bordeaux@onela.com',
+  'Caen': 'caen@onela.com',
+  'Cannes': 'cannes@onela.com',
+  'Champs-sur-Marne': 'champs@onela.com',
+  'Chilly-Mazarin': 'chilly@onela.com',
+  'Clichy-sous-Bois': 'clichy@onela.com',
+  'Croix': 'croix@onela.com',
+  'Dieppe': 'dieppe@onela.com',
+  'Dijon': 'dijon@onela.com',
+  'Elbeuf': 'elbeuf@onela.com',
+  'Evreux': 'evreux@onela.com',
+  'Fontainebleau': 'fontainebleau@onela.com',
+  'Gagny': 'gagny@onela.com',
+  'Grenoble': 'grenoble@onela.com',
+  'Hazebrouck': 'hazebrouck@onela.com',
+  'Joeuf': 'joeuf@onela.com',
+  'La Garenne-Colombes': 'lagarenne@onela.com',
+  'La Rochelle': 'larochelle@onela.com',
+  'Le Mans': 'lemans@onela.com',
+  'Libourne': 'libourne@onela.com',
+  'Lille': 'lille@onela.com',
+  'Limoges': 'limoges@onela.com',
+  'Lyon': 'lyon@onela.com',
+  'Marseille Prado': 'marseilleprado@onela.com',
+  'Melun': 'melun@onela.com',
+  'Menton': 'menton@onela.com',
+  'Metz': 'metz@onela.com',
+  'Montbrison': 'montbrison@onela.com',
+  'Montpellier': 'montpellier@onela.com',
+  'Nantes': 'nantes@onela.com',
+  'Neuilly-sur-Seine': 'neuilly@onela.com',
+  'Nice': 'nice@onela.com',
+  'Nîmes': 'nimes@onela.com',
+  'Noisy-le-Sec': 'noisy-le-sec@onela.com',
+  'Orléans': 'orleans@onela.com',
+  'Paris 11': 'paris11@onela.com',
+  'Paris 13': 'paris13@onela.com',
+  'Paris 16': 'paris16@onela.com',
+  'Reims': 'reims@onela.com',
+  'Rennes': 'rennes@onela.com',
+  'Rouen': 'rouen@onela.com',
+  'Saint-Chamond': 'saint-chamond@onela.com',
+  'Saint-Etienne': 'saint-etienne@onela.com',
+  'Saint-Germain-en-Laye': 'saint-germain-en-laye@onela.com',
+  'Saint-Maur-des-Fossés': 'saint-maur@onela.com',
+  'Saint-Nazaire': 'saint-nazaire@onela.com',
+  'Savigny-sur-Orge': 'savigny@onela.com',
+  'Strasbourg': 'strasbourg@onela.com',
+  'Thiais': 'thiais@onela.com',
+  'Toulouse': 'toulouse@onela.com',
+  'Valenciennes': 'valenciennes@onela.com',
+  'Versailles': 'versailles@onela.com',
+  'Vienne': 'vienne@onela.com',
+  'Villefranche-sur-Saône': 'villefranche@onela.com',
+  'Villeurbanne': 'villeurbanne@onela.com',
+  'Vincennes': 'vincennes@onela.com',
+  'Yvetot': 'yvetot@onela.com',
+}
+
+/**
+ * Boîtes partagées de SERVICE (hors agences), par service du Siège. Un service peut
+ * en avoir plusieurs. Sert à pré-cocher la délégation pour une affectation Siège.
+ * Les clés correspondent à des groupes grossiers ; `mailboxesForService` fait le
+ * rapprochement depuis un service fin de ONELA_SERVICES.
+ */
+export const SERVICE_SHARED_MAILBOXES: Record<string, string[]> = {
+  'Service Clients': ['serviceclients@onela.com'],
+  'Service Relais Réseau': ['castreinte@onela.com'],
+  'Finance': ['ndf@onela.com', 'tierspayeurs@onela.com', 'onelaimpots@onela.com', 'recouvrement@onela.com'],
+  'Services Généraux': ['servicesgeneraux@onela.com'],
+  'RH': ['paieadm@onela.com', 'recrutement@onela.com'],
+  'Marketing': ['communication@onela.com', 'marketing@onela.com'],
+  'DSI': ['dsi@onela.com'],
+  'Service Qualité': ['servicequalite@onela.com'],
+}
+
+/** Boîtes partagées à pré-cocher pour un service du Siège (ONELA_SERVICES). */
+export function mailboxesForService(service: string): string[] {
+  const s = service.trim()
+  if (!s) return []
+  if (s.startsWith('Finance')) return SERVICE_SHARED_MAILBOXES['Finance'] ?? []
+  if (s.startsWith('RH')) return SERVICE_SHARED_MAILBOXES['RH'] ?? []
+  return SERVICE_SHARED_MAILBOXES[s] ?? []
+}
+
 // ── Agences (persistées en base, éditables) ─────────────────────────────────────
 
 export interface Agency {
@@ -243,6 +343,10 @@ export interface CreateAccountRequest {
   password: string
   /** Forcer le changement de mot de passe au premier login. */
   forceChangePassword: boolean
+  /** Licence Google à attribuer (productId License Manager, ex. "Google-Apps"). */
+  licenseProductId?: string | null
+  /** Licence Google à attribuer (skuId, ex. "1010020025" = Business Plus). */
+  licenseSkuId?: string | null
   /**
    * Boîtes partagées (déjà migrées) dont le nouvel arrivant doit recevoir la
    * délégation Gmail une fois le compte Google provisionné. Chaque élément est
@@ -277,6 +381,12 @@ export interface AccountCreationRecord {
   stepOnelaRouting: AccountStepStatus
   stepGoogleProvision: AccountStepStatus
   stepOuMove: AccountStepStatus
+  /** Attribution de la licence Google Workspace. */
+  stepLicense: AccountStepStatus
+  licenseProductId: string | null
+  licenseSkuId: string | null
+  licenseSkuName: string | null
+  licenseError: string | null
   stepNewFormat: AccountStepStatus
   stepSendAs: AccountStepStatus
   stepContactsOnela: AccountStepStatus

@@ -2,7 +2,7 @@ import 'dotenv/config'
 import { migrate } from 'drizzle-orm/mysql2/migrator'
 import { sql } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
-import { ONELA_AGENCIES } from '@dsi-app/shared'
+import { ONELA_AGENCIES, AGENCY_MAILBOXES } from '@dsi-app/shared'
 import { db, pool } from './index'
 import path from 'path'
 
@@ -127,6 +127,12 @@ async function ensureSchemaPatches() {
     { table: 'account_creations', column: 'delegations_error', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`delegations_error\` text` },
     // Accounts : boîte partagée de l'agence (pré-cochage de la délégation)
     { table: 'agencies', column: 'mailbox', ddl: `ALTER TABLE \`agencies\` ADD COLUMN \`mailbox\` varchar(320)` },
+    // Accounts : attribution de licence Google (auto-attribution OU coupée)
+    { table: 'account_creations', column: 'step_license', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`step_license\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending'` },
+    { table: 'account_creations', column: 'license_product_id', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`license_product_id\` varchar(64)` },
+    { table: 'account_creations', column: 'license_sku_id', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`license_sku_id\` varchar(64)` },
+    { table: 'account_creations', column: 'license_sku_name', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`license_sku_name\` varchar(128)` },
+    { table: 'account_creations', column: 'license_error', ddl: `ALTER TABLE \`account_creations\` ADD COLUMN \`license_error\` text` },
     // Boîtes partagées : nouveau mode « compte Google classique » (licence Business
     // Plus hors app + délégations Gmail). Les migrations existantes restent 'group'.
     { table: 'shared_migrations', column: 'mode', ddl: `ALTER TABLE \`shared_migrations\` ADD COLUMN \`mode\` enum('group','account') NOT NULL DEFAULT 'group'` },
@@ -544,6 +550,11 @@ async function ensureSchemaPatches() {
         \`step_onela_routing\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_google_provision\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_ou_move\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+        \`step_license\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
+        \`license_product_id\` varchar(64),
+        \`license_sku_id\` varchar(64),
+        \`license_sku_name\` varchar(128),
+        \`license_error\` text,
         \`step_new_format\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_send_as\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
         \`step_contacts_onela\` enum('pending','running','success','error','skipped') NOT NULL DEFAULT 'pending',
@@ -715,13 +726,32 @@ async function seedAgenciesIfEmpty() {
     const entries = Object.entries(ONELA_AGENCIES)
     for (const [name, info] of entries) {
       await pool.query(
-        'INSERT INTO `agencies` (`id`,`name`,`trigramme`,`region`,`address`,`postal_code`,`city`) VALUES (?,?,?,?,?,?,?)',
-        [randomUUID(), name, info.service, info.region, info.adresse, info.cp, info.ville],
+        'INSERT INTO `agencies` (`id`,`name`,`trigramme`,`region`,`address`,`postal_code`,`city`,`mailbox`) VALUES (?,?,?,?,?,?,?,?)',
+        [randomUUID(), name, info.service, info.region, info.adresse, info.cp, info.ville, AGENCY_MAILBOXES[name] ?? null],
       )
     }
     console.log(`[migrate] Seed agences OK: ${entries.length} agences insérées`)
   } catch (err) {
     console.error('[migrate] Seed agences échoué:', err instanceof Error ? err.message : String(err))
+  }
+}
+
+// Backfill des boîtes partagées d'agence : remplit `agencies.mailbox` là où il est
+// encore vide, par nom d'agence (AGENCY_MAILBOXES). N'écrase jamais une valeur
+// saisie. Idempotent — pour les bases déjà seedées avant l'ajout de la colonne.
+async function backfillAgencyMailboxes() {
+  try {
+    let filled = 0
+    for (const [name, mailbox] of Object.entries(AGENCY_MAILBOXES)) {
+      const [res] = (await pool.query(
+        'UPDATE `agencies` SET `mailbox` = ? WHERE `name` = ? AND (`mailbox` IS NULL OR `mailbox` = \'\')',
+        [mailbox, name],
+      )) as [{ affectedRows?: number }, unknown]
+      filled += Number(res?.affectedRows ?? 0)
+    }
+    if (filled > 0) console.log(`[migrate] Backfill boîtes agences: ${filled} agence(s) renseignée(s)`)
+  } catch (err) {
+    console.error('[migrate] Backfill boîtes agences échoué:', err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -737,6 +767,7 @@ export async function runMigrations() {
   }
   await ensureSchemaPatches()
   await seedAgenciesIfEmpty()
+  await backfillAgencyMailboxes()
 }
 
 // Permet d'exécuter ce fichier directement : node dist/migrate.js
