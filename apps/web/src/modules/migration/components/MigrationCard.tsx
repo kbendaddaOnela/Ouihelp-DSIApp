@@ -8,7 +8,7 @@ import { StepBadge } from './StepBadge'
 import { LicenseStep } from './LicenseStep'
 import { CopyButton } from './CopyButton'
 import { DataMigrationSection } from './DataMigrationSection'
-import { useConfirm } from './ConfirmDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import {
   useAddGoogleAlias,
   useMigrateMail,

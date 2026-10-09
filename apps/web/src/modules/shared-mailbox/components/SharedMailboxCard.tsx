@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import type { MailImportStatus, SharedMigrationRecord } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import {
   useRunSharedMigration,
   usePauseSharedMigration,
@@ -68,8 +69,17 @@ function errorMessage(err: unknown): string {
   return apiErr || (err instanceof Error ? err.message : String(err))
 }
 
-const alertOnError = (action: string) => (err: unknown) =>
-  window.alert(`${action} a échoué :\n\n${errorMessage(err)}`)
+/**
+ * Rapporte l'échec d'une action dans la boîte de dialogue de l'app.
+ *
+ * Renvoie la même signature que le handler `onError` de TanStack Query, pour que
+ * les appels restent `{ onError: alertOnError('…') }`.
+ */
+function useAlertOnError() {
+  const { alert } = useConfirm()
+  return (action: string) => (err: unknown) =>
+    void alert({ title: `${action} a échoué`, tone: 'danger', message: errorMessage(err) })
+}
 
 function StepBadge({ status, label }: { status: MailImportStatus; label: string }) {
   const map: Record<MailImportStatus, { cls: string; icon: React.ReactNode }> = {
@@ -90,6 +100,8 @@ function StepBadge({ status, label }: { status: MailImportStatus; label: string 
 }
 
 export function SharedMailboxCard({ migration }: Props) {
+  const alertOnError = useAlertOnError()
+  const { confirm } = useConfirm()
   const { mutate: runMigration, isPending: isRunning } = useRunSharedMigration()
   const { mutate: pauseMigration, isPending: isPausing } = usePauseSharedMigration()
   const { mutate: resumeMigration, isPending: isResuming } = useResumeSharedMigration()
@@ -260,15 +272,17 @@ export function SharedMailboxCard({ migration }: Props) {
               )}
               {canDelete && (
                 <button
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        isAccountMode
-                          ? 'Supprimer le suivi de cette migration ?\n\nLe compte Google, sa licence et ses délégations ne sont PAS supprimés.'
-                          : 'Supprimer cette migration (pas le groupe Google) ?',
-                      )
-                    )
-                      deleteMigration(migration.id)
+                  onClick={async () => {
+                    const res = await confirm({
+                      title: 'Supprimer le suivi',
+                      tone: 'danger',
+                      confirmLabel: 'Supprimer',
+                      message: isAccountMode
+                        ? `Supprimer le suivi de la migration de ${migration.onelaDisplayName} ?\n\n` +
+                          `Le compte Google, sa licence et ses délégations ne sont PAS supprimés.`
+                        : `Supprimer cette migration (pas le groupe Google) ?`,
+                    })
+                    if (res.confirmed) deleteMigration(migration.id)
                   }}
                   disabled={isDeleting}
                   className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
@@ -375,6 +389,8 @@ export function SharedMailboxCard({ migration }: Props) {
 // ── Messages en erreur + reprise ciblée ─────────────────────────────────────
 
 function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { alert } = useConfirm()
   const [expanded, setExpanded] = useState(false)
   const { data, isFetching } = useSharedMigrationErrors(migration.id, expanded)
   const { mutate: retry, isPending: retrying } = useRetrySharedErrors()
@@ -405,7 +421,7 @@ function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
             onClick={() =>
               retry(migration.id, {
                 onError: alertOnError('Reprise des erreurs'),
-                onSuccess: (d) => window.alert(d.message),
+                onSuccess: (d) => void alert({ title: 'Reprise des erreurs', message: d.message }),
               })
             }
             disabled={retrying || isInFlight || isPaused || migration.archived}
@@ -462,6 +478,8 @@ function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
  * saisissent une seule fois dans le panneau licences du dashboard.
  */
 function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { alert } = useConfirm()
   const { data: skus, isLoading, isError, error, refetch } = useSharedLicenseSkus(true)
   const { mutate: assign, isPending: assigning } = useAssignSharedLicense()
 
@@ -524,13 +542,13 @@ function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord })
                       {
                         onError: alertOnError(`Attribuer « ${sku.name} »`),
                         onSuccess: (d) =>
-                          window.alert(
-                            d.mailboxReady
-                              ? `Licence « ${sku.name} » attribuée. La boîte Gmail est prête : ` +
-                                `clique « Lancer » quand tu veux démarrer l’import.`
-                              : `Licence « ${sku.name} » attribuée.\n\nGmail met quelques minutes à se provisionner : ` +
-                                `rafraîchis l’état, puis clique « Lancer » quand la boîte est prête.`,
-                          ),
+                          void alert({
+                            title: `Licence « ${sku.name} » attribuée`,
+                            message: d.mailboxReady
+                              ? `La boîte Gmail est prête : clique « Lancer » quand tu veux démarrer l’import.`
+                              : `Gmail met quelques minutes à se provisionner. Rafraîchis l’état, puis ` +
+                                `clique « Lancer » quand la boîte est prête.`,
+                          }),
                       },
                     )
                   }
@@ -556,6 +574,7 @@ function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord })
 }
 
 function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
   const accountCreated = migration.stepCreateAccount === 'success'
   const { data, isLoading, refetch } = useSharedAccountStatus(migration.id, accountCreated)
   const { mutate: ackLicense, isPending: acking } = useLicenseAck()
@@ -665,6 +684,8 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
 // ── Délégations Gmail ───────────────────────────────────────────────────────
 
 function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { confirm, alert } = useConfirm()
   const [showCandidates, setShowCandidates] = useState(false)
   const [search, setSearch] = useState('')
 
@@ -706,7 +727,11 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
             applyDelegates(migration.id, {
               onError: alertOnError('Appliquer les délégations'),
               onSuccess: (d) =>
-                window.alert(`Délégations : ${d.applied}/${d.total} appliquées, ${d.failed} en erreur.`),
+                void alert({
+                  title: 'Délégations réappliquées',
+                  tone: d.failed > 0 ? 'danger' : 'default',
+                  message: `${d.applied}/${d.total} appliquées, ${d.failed} en erreur.`,
+                }),
             })
           }
           disabled={applying || migration.delegates.length === 0}
@@ -758,8 +783,14 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
               <div className="flex items-center gap-2">
                 <StepBadge status={d.status} label={d.status} />
                 <button
-                  onClick={() => {
-                    if (window.confirm(`Retirer la délégation de ${d.googleEmail} ?`))
+                  onClick={async () => {
+                    const res = await confirm({
+                      title: 'Retirer la délégation',
+                      tone: 'danger',
+                      confirmLabel: 'Retirer',
+                      message: `Retirer la délégation de ${d.googleEmail} sur cette boîte ?`,
+                    })
+                    if (res.confirmed)
                       removeDelegate(
                         { id: migration.id, delegateId: d.id },
                         { onError: alertOnError('Retirer le délégué') },
@@ -881,6 +912,8 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
 // ── Dual delivery (commun aux deux modes) ───────────────────────────────────
 
 function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { confirm } = useConfirm()
   const targetReady =
     migration.mode === 'account'
       ? migration.stepCreateAccount === 'success'
@@ -965,10 +998,16 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           )}
           {isActive && !wrongTarget && (
             <button
-              onClick={() => {
-                if (window.confirm('Désactiver le dual delivery (supprimer la transport rule) ?')) {
-                  disable(migration.id)
-                }
+              onClick={async () => {
+                const res = await confirm({
+                  title: 'Désactiver le dual delivery',
+                  tone: 'danger',
+                  confirmLabel: 'Désactiver',
+                  message:
+                    'Supprimer la transport rule ? La boîte Google cessera de recevoir une copie ' +
+                    'des messages arrivant sur la BAL Exchange.',
+                })
+                if (res.confirmed) disable(migration.id)
               }}
               disabled={disabling}
               className="inline-flex items-center gap-1 rounded bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
@@ -986,6 +1025,8 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
 // ── Réglages spécifiques aux anciennes migrations « Google Group » ──────────
 
 function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { confirm, alert } = useConfirm()
   const groupReady = migration.stepCreateGroup === 'success' && !!migration.targetGroupEmail
   const { data } = useSharedDualDeliveryStatus(migration.id, groupReady)
   const { mutate: allowExternalRaw, isPending: opening } = useAllowExternalGroupPosts()
@@ -1006,10 +1047,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
   const bulkResultAlert =
     (action: string) =>
     (d: { total: number; created: number; alreadyOk: number; failed: number; failedMembers: string[] }) =>
-      window.alert(
-        `${action}\n\nMembres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}` +
+      void alert({
+        title: action,
+        tone: d.failed > 0 ? 'danger' : 'default',
+        message:
+          `Membres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}` +
           (d.failedMembers.length ? `\n\nÉchecs sur :\n- ${d.failedMembers.slice(0, 10).join('\n- ')}` : ''),
-      )
+      })
 
   return (
     <div className="mt-4 rounded border border-amber-100 bg-amber-50 p-2.5">
@@ -1019,12 +1063,15 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
       <div className="flex flex-wrap gap-2">
         {!allowsExternal && (
           <button
-            onClick={() => {
-              if (
-                window.confirm(
-                  "Ouvrir le groupe à TOUS les expéditeurs externes (ANYONE_CAN_POST) ?\n\nNécessaire pour que les mails BCC arrivent dans l'archive.",
-                )
-              )
+            onClick={async () => {
+              const res = await confirm({
+                title: 'Ouvrir le groupe aux externes',
+                confirmLabel: 'Ouvrir',
+                message:
+                  "Autoriser TOUS les expéditeurs externes à poster (ANYONE_CAN_POST) ?\n\n" +
+                  "Nécessaire pour que les mails BCC arrivent dans l'archive.",
+              })
+              if (res.confirmed)
                 allowExternalRaw(migration.id, { onError: alertOnError('Ouvrir le groupe aux externes') })
             }}
             disabled={opening}
@@ -1035,8 +1082,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
         )}
         {!collaborativeInboxOn && (
           <button
-            onClick={() => {
-              if (window.confirm('Activer la boîte de réception collaborative sur ce groupe ?'))
+            onClick={async () => {
+              const res = await confirm({
+                title: 'Boîte de réception collaborative',
+                confirmLabel: 'Activer',
+                message: 'Activer la boîte de réception collaborative sur ce groupe ?',
+              })
+              if (res.confirmed)
                 enableCollabRaw(migration.id, { onError: alertOnError('Activer la boîte collaborative') })
             }}
             disabled={enablingCollab}
@@ -1050,7 +1102,10 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
             addAliasRaw(migration.id, {
               onError: alertOnError("Ajouter l'alias @mig.onela.com"),
               onSuccess: (d) =>
-                window.alert(d.added ? `Alias ajouté : ${d.alias}` : `Alias déjà présent : ${d.alias}`),
+                void alert({
+                  title: d.added ? 'Alias ajouté' : 'Alias déjà présent',
+                  message: d.alias,
+                }),
             })
           }
           disabled={addingAlias}
@@ -1059,14 +1114,21 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {addingAlias ? 'Ajout…' : 'Ajouter alias @mig.onela.com'}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm("Passer TOUS les membres en mode silencieux (delivery_settings='NONE') ?"))
+          onClick={async () => {
+            const res = await confirm({
+              title: "Pas d'email aux membres",
+              confirmLabel: 'Appliquer',
+              message: "Passer TOUS les membres en mode silencieux (delivery_settings='NONE') ?",
+            })
+            if (res.confirmed)
               silenceRaw(migration.id, {
                 onError: alertOnError('Désactiver le fan-out membres'),
                 onSuccess: (d) =>
-                  window.alert(
-                    `Membres traités : ${d.total}\n• Mis en silencieux : ${d.updated}\n• Déjà silencieux : ${d.alreadySilent}\n• Échecs : ${d.failed}`,
-                  ),
+                  void alert({
+                    title: 'Membres passés en silencieux',
+                    tone: d.failed > 0 ? 'danger' : 'default',
+                    message: `Membres traités : ${d.total}\n• Mis en silencieux : ${d.updated}\n• Déjà silencieux : ${d.alreadySilent}\n• Échecs : ${d.failed}`,
+                  }),
               })
           }}
           disabled={silencing}
@@ -1075,8 +1137,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {silencing ? 'Application…' : "Pas d'email aux membres"}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Créer le libellé "${groupName}" dans le Gmail de tous les membres ?`))
+          onClick={async () => {
+            const res = await confirm({
+              title: 'Créer le libellé chez les membres',
+              confirmLabel: 'Créer',
+              message: `Créer le libellé « ${groupName} » dans le Gmail de tous les membres ?`,
+            })
+            if (res.confirmed)
               setupLabelRaw(migration.id, {
                 onError: alertOnError('Créer le libellé aux membres'),
                 onSuccess: bulkResultAlert('Libellé Gmail créé'),
@@ -1088,14 +1155,21 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {settingUpLabel ? 'Création…' : `Créer libellé "${groupName}"`}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Créer un filtre Gmail chez tous les membres ?\n\nCritère : to:${groupEmail}`))
+          onClick={async () => {
+            const res = await confirm({
+              title: 'Créer la règle de tri',
+              confirmLabel: 'Créer',
+              message: `Créer un filtre Gmail chez tous les membres ?\n\nCritère : to:${groupEmail}`,
+            })
+            if (res.confirmed)
               setupFilterRaw(migration.id, {
                 onError: alertOnError('Créer le filtre aux membres'),
                 onSuccess: (d) =>
-                  window.alert(
-                    `Filtre Gmail créé\n\nMembres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}\n\nMails existants reclassés : ${d.backfilledMessages}`,
-                  ),
+                  void alert({
+                    title: 'Filtre Gmail créé',
+                    tone: d.failed > 0 ? 'danger' : 'default',
+                    message: `Membres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}\n\nMails existants reclassés : ${d.backfilledMessages}`,
+                  }),
               })
           }}
           disabled={settingUpFilter}
@@ -1104,8 +1178,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {settingUpFilter ? 'Création…' : 'Créer règle de tri'}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Ajouter "Envoyer en tant que ${groupEmail}" chez tous les membres ?`))
+          onClick={async () => {
+            const res = await confirm({
+              title: '« Envoyer en tant que » chez les membres',
+              confirmLabel: 'Ajouter',
+              message: `Ajouter l'identité d'envoi « ${groupEmail} » dans le Gmail de tous les membres ?`,
+            })
+            if (res.confirmed)
               setupSendAsRaw(migration.id, {
                 onError: alertOnError('Ajouter "Envoyer en tant que"'),
                 onSuccess: bulkResultAlert('"Envoyer en tant que" ajouté'),

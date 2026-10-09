@@ -6,7 +6,7 @@ import { useMigrationStats, useImportTargets, useResetDone } from '../hooks/useM
 import { onelaContactsApi, migrationApi } from '../api'
 import type { MigrationStats } from '../api'
 import { SuiviTree, type TreeNode } from './SuiviTree'
-import { useConfirm } from './ConfirmDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 // ── Override local (groupes terminés non encore reflétés dans la base) ────────
 const DONE_OVERRIDES: Record<string, number> = {
