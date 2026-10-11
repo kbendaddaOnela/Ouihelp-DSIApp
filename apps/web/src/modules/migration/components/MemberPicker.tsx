@@ -4,7 +4,7 @@ import { Users, Loader2, Rocket, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { MigrateUsersRequest } from '@dsi-app/shared'
 import { migrationApi } from '../api'
-import { useConfirm } from './ConfirmDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type Member = Awaited<ReturnType<typeof migrationApi.groupMembers>>[number]
 

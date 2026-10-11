@@ -14,7 +14,7 @@ import { UserRow } from './components/UserRow'
 import { MigrationDashboard } from './components/MigrationDashboard'
 import { LicensePanel } from './components/LicensePanel'
 import { AgenciesPanel } from './components/AgenciesPanel'
-import { ConfirmProvider } from './components/ConfirmDialog'
+import { ConfirmProvider } from '@/components/ui/ConfirmDialog'
 
 export default function MigrationPage() {
   const [query, setQuery] = useState('')

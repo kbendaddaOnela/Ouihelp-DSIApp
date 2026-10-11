@@ -8,7 +8,10 @@ import { useAgencies, useCreateAgency, useUpdateAgency, useDeleteAgency } from '
 const inputCls =
   'w-full rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500'
 
-const EMPTY: AgencyInput = { name: '', trigramme: '', region: ONELA_REGIONS[0] ?? '', address: '', postalCode: '', city: '' }
+const EMPTY: AgencyInput = { name: '', trigramme: '', region: ONELA_REGIONS[0] ?? '', address: '', postalCode: '', city: '', mailbox: '' }
+
+// Champs obligatoires (mailbox est optionnel).
+const REQUIRED_FIELDS: Array<keyof AgencyInput> = ['name', 'trigramme', 'region', 'address', 'postalCode', 'city']
 
 function EditRow({
   initial,
@@ -23,7 +26,7 @@ function EditRow({
 }) {
   const [v, setV] = useState<AgencyInput>(initial)
   const set = (k: keyof AgencyInput, val: string) => setV((p) => ({ ...p, [k]: val }))
-  const valid = Object.values(v).every((x) => x.trim() !== '')
+  const valid = REQUIRED_FIELDS.every((k) => String(v[k] ?? '').trim() !== '')
   return (
     <tr className="bg-primary-50/40">
       <td className="p-1"><input className={inputCls} value={v.name} onChange={(e) => set('name', e.target.value)} placeholder="Nom" /></td>
@@ -36,6 +39,7 @@ function EditRow({
       <td className="p-1"><input className={inputCls} value={v.address} onChange={(e) => set('address', e.target.value)} placeholder="Adresse" /></td>
       <td className="p-1"><input className={inputCls} value={v.postalCode} onChange={(e) => set('postalCode', e.target.value)} placeholder="CP" /></td>
       <td className="p-1"><input className={inputCls} value={v.city} onChange={(e) => set('city', e.target.value)} placeholder="Ville" /></td>
+      <td className="p-1"><input className={inputCls} value={v.mailbox ?? ''} onChange={(e) => set('mailbox', e.target.value)} placeholder="boîte@onela.com" /></td>
       <td className="p-1 whitespace-nowrap">
         <button
           className="mr-1 inline-flex items-center rounded p-1 text-green-600 hover:bg-green-50 disabled:opacity-40"
@@ -72,12 +76,13 @@ export function AgenciesManager() {
         a.name.toLowerCase().includes(q) ||
         a.trigramme.toLowerCase().includes(q) ||
         a.region.toLowerCase().includes(q) ||
-        a.city.toLowerCase().includes(q),
+        a.city.toLowerCase().includes(q) ||
+        (a.mailbox?.toLowerCase().includes(q) ?? false),
     )
   }, [agencies, search])
 
   const toInput = (a: Agency): AgencyInput => ({
-    name: a.name, trigramme: a.trigramme, region: a.region, address: a.address, postalCode: a.postalCode, city: a.city,
+    name: a.name, trigramme: a.trigramme, region: a.region, address: a.address, postalCode: a.postalCode, city: a.city, mailbox: a.mailbox ?? '',
   })
 
   return (
@@ -110,6 +115,7 @@ export function AgenciesManager() {
                 <th className="p-2 font-medium">Adresse</th>
                 <th className="p-2 font-medium">CP</th>
                 <th className="p-2 font-medium">Ville</th>
+                <th className="p-2 font-medium">Boîte partagée</th>
                 <th className="p-2" />
               </tr>
             </thead>
@@ -139,6 +145,7 @@ export function AgenciesManager() {
                     <td className="p-2 text-gray-600">{a.address}</td>
                     <td className="p-2 text-gray-600">{a.postalCode}</td>
                     <td className="p-2 text-gray-600">{a.city}</td>
+                    <td className="p-2 text-gray-600">{a.mailbox || <span className="text-gray-300">—</span>}</td>
                     <td className="p-2 whitespace-nowrap">
                       <button className="mr-1 inline-flex rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-primary-600" onClick={() => { setEditingId(a.id); setAdding(false) }} title="Modifier">
                         <Pencil className="h-4 w-4" />
@@ -155,7 +162,7 @@ export function AgenciesManager() {
                 ),
               )}
               {filtered.length === 0 && !adding && (
-                <tr><td colSpan={7} className="p-6 text-center text-gray-400">Aucune agence.</td></tr>
+                <tr><td colSpan={8} className="p-6 text-center text-gray-400">Aucune agence.</td></tr>
               )}
             </tbody>
           </table>

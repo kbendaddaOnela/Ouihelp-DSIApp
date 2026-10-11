@@ -1,15 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
-import { UserPlus, Loader2, X } from 'lucide-react'
+import { UserPlus, Loader2, X, Mail } from 'lucide-react'
 import {
   ONELA_SERVICES,
   AGENCY_JOB_TITLES,
   HEAD_OFFICE,
+  mailboxesForService,
   type AssignmentType,
   type CreateAccountRequest,
 } from '@dsi-app/shared'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useCreateAccount, useSearchManagers, useAgencies } from '../hooks/useAccounts'
+import {
+  useCreateAccount,
+  useSearchManagers,
+  useAgencies,
+  useMigratedSharedMailboxes,
+  useLicenseSkus,
+} from '../hooks/useAccounts'
 
 function normalizePart(s: string): string {
   return s
@@ -107,6 +114,10 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const create = useCreateAccount()
   const { data: agenciesData } = useAgencies()
   const agencyList = agenciesData?.agencies ?? []
+  const { data: mailboxesData } = useMigratedSharedMailboxes()
+  const sharedMailboxes = useMemo(() => mailboxesData?.mailboxes ?? [], [mailboxesData])
+  const { data: licenseData } = useLicenseSkus()
+  const licenseSkus = useMemo(() => licenseData ?? [], [licenseData])
 
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
@@ -120,6 +131,10 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const [password, setPassword] = useState('')
   const [forceChange, setForceChange] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Délégations : adresses PRIMAIRES Google (delegateEmail) des boîtes à déléguer
+  const [delegateMailboxes, setDelegateMailboxes] = useState<string[]>([])
+  // Licence Google à attribuer (skuId ; '' = ne pas attribuer)
+  const [licenseSkuId, setLicenseSkuId] = useState('')
 
   // Dérivés
   const displayName = useMemo(
@@ -137,10 +152,61 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const agencyInfo = agency ? agencyList.find((a) => a.name === agency) : undefined
   const email = emailPrefix ? `${emailPrefix}@onela.com` : ''
 
+  // Adresses de boîtes à pré-cocher selon l'affectation :
+  //  - Agence : la boîte de l'agence (agencies.mailbox)
+  //  - Siège  : les boîtes du service (SERVICE_SHARED_MAILBOXES via mailboxesForService)
+  const autoMailboxAddrs = useMemo<string[]>(() => {
+    if (assignmentType === 'Agence') {
+      const a = agencyInfo?.mailbox?.trim().toLowerCase()
+      return a ? [a] : []
+    }
+    if (assignmentType === 'Siège') return mailboxesForService(service).map((a) => a.toLowerCase())
+    return []
+  }, [assignmentType, agencyInfo, service])
+
+  // Rapproche chaque adresse attendue des boîtes réellement migrées (donc délégables)
+  const autoResolved = useMemo(
+    () =>
+      autoMailboxAddrs.map((addr) => ({
+        addr,
+        mb:
+          sharedMailboxes.find(
+            (m) => m.onelaEmail.toLowerCase() === addr || m.alias?.toLowerCase() === addr,
+          ) ?? null,
+      })),
+    [autoMailboxAddrs, sharedMailboxes],
+  )
+
+  // Boîtes du service/agence effectivement migrées (= proposées à la délégation)
+  const relevantMailboxes = useMemo(
+    () => autoResolved.filter((x) => x.mb).map((x) => x.mb!),
+    [autoResolved],
+  )
+  // Adresses attendues mais pas encore migrées (information)
+  const notMigratedAddrs = useMemo(
+    () => autoResolved.filter((x) => !x.mb).map((x) => x.addr),
+    [autoResolved],
+  )
+
+  // La sélection suit le périmètre : on la RÉINITIALISE sur les boîtes du service/
+  // agence courant à chaque changement d'affectation (la clé de dépendance ne bouge
+  // que quand le périmètre change — décocher une boîte ne la relance pas).
+  const relevantKey = relevantMailboxes.map((m) => m.delegateEmail).sort().join(',')
+  useEffect(() => {
+    setDelegateMailboxes(relevantKey ? relevantKey.split(',') : [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relevantKey])
+
+  const toggleMailbox = (email: string) =>
+    setDelegateMailboxes((prev) =>
+      prev.includes(email) ? prev.filter((e) => e !== email) : [...prev, email],
+    )
+
   const reset = () => {
     setFirstName(''); setLastName(''); setEmailPrefix(''); setPrefixTouched(false)
     setAssignmentType(''); setService(''); setAgency(''); setJobTitle('')
     setManager(null); setPassword(''); setForceChange(true); setError(null)
+    setDelegateMailboxes([]); setLicenseSkuId('')
   }
 
   const submit = () => {
@@ -171,6 +237,9 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
       city: isAgence ? (agencyInfo?.city ?? null) : HEAD_OFFICE.city,
       password,
       forceChangePassword: forceChange,
+      delegateMailboxes,
+      licenseProductId: licenseSkuId ? 'Google-Apps' : null,
+      licenseSkuId: licenseSkuId || null,
     }
     create.mutate(req, {
       onSuccess: () => { reset(); onCreated() },
@@ -281,6 +350,83 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
             <label className={labelCls}>Manager (optionnel)</label>
             <ManagerPicker value={manager} onChange={setManager} />
           </div>
+        </div>
+      </section>
+
+      {/* Délégations boîtes partagées — limitées au service / à l'agence choisi(e) */}
+      <section>
+        <h3 className="mb-1 text-sm font-semibold text-gray-900">Boîtes partagées à déléguer</h3>
+        <p className="mb-3 text-xs text-gray-500">
+          {assignmentType === 'Agence'
+            ? "La boîte partagée de l'agence choisie est pré-cochée (si déjà migrée). Le nouvel arrivant en recevra la délégation Gmail une fois son compte Google créé."
+            : assignmentType === 'Siège'
+              ? 'Les boîtes partagées du service choisi sont pré-cochées (si déjà migrées). Le nouvel arrivant en recevra la délégation Gmail une fois son compte Google créé.'
+              : "Choisis d'abord l'affectation : les boîtes partagées correspondantes seront proposées ici."}
+        </p>
+
+        {/* Boîtes du service/agence effectivement migrées → cases à cocher */}
+        {relevantMailboxes.length > 0 && (
+          <div className="mb-2 overflow-hidden rounded-md border border-gray-200">
+            {relevantMailboxes.map((m) => (
+              <label
+                key={m.id}
+                className="flex cursor-pointer items-center gap-2 border-b border-gray-100 px-3 py-1.5 text-sm last:border-b-0 hover:bg-gray-50"
+              >
+                <input
+                  type="checkbox"
+                  checked={delegateMailboxes.includes(m.delegateEmail)}
+                  onChange={() => toggleMailbox(m.delegateEmail)}
+                />
+                <Mail className="h-3.5 w-3.5 text-gray-400" />
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium text-gray-800">{m.displayName}</span>{' '}
+                  <span className="text-gray-400">· {m.onelaEmail}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {/* Boîtes attendues mais pas encore migrées (information) */}
+        {notMigratedAddrs.length > 0 && (
+          <p className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            Non encore migrée{notMigratedAddrs.length > 1 ? 's' : ''} (délégation impossible pour le moment) :{' '}
+            <span className="font-medium">{notMigratedAddrs.join(', ')}</span>
+          </p>
+        )}
+
+        {/* Cas sans boîte à proposer */}
+        {assignmentType !== '' && relevantMailboxes.length === 0 && notMigratedAddrs.length === 0 && (
+          <p className="rounded-md bg-gray-50 px-3 py-2 text-xs text-gray-500">
+            {assignmentType === 'Agence'
+              ? agency
+                ? "Aucune boîte partagée renseignée pour cette agence (à définir dans « Gérer les agences »)."
+                : 'Choisis une agence pour voir sa boîte partagée.'
+              : service
+                ? 'Aucune boîte partagée connue pour ce service.'
+                : 'Choisis un service pour voir ses boîtes partagées.'}
+          </p>
+        )}
+      </section>
+
+      {/* Licence Google */}
+      <section>
+        <h3 className="mb-1 text-sm font-semibold text-gray-900">Licence Google</h3>
+        <p className="mb-3 text-xs text-gray-500">
+          L'attribution automatique via l'OU n'étant plus active, choisis la licence à attribuer au
+          compte dès sa remontée dans Google (nécessaire pour activer Gmail). Laisse « Aucune » pour
+          l'attribuer plus tard.
+        </p>
+        <div className="sm:w-1/2">
+          <select className={inputCls} value={licenseSkuId} onChange={(e) => setLicenseSkuId(e.target.value)}>
+            <option value="">— Aucune (ne pas attribuer) —</option>
+            {licenseSkus.map((s) => (
+              <option key={s.skuId} value={s.skuId}>
+                {s.name}
+                {s.remaining != null ? ` — ${s.remaining} dispo` : s.total != null ? ` — ${s.total - s.used} dispo` : ''}
+              </option>
+            ))}
+          </select>
         </div>
       </section>
 

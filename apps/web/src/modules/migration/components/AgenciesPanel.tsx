@@ -4,7 +4,7 @@ import { Building2, ChevronRight, ChevronDown, RefreshCw, Loader2, Mail } from '
 import { cn } from '@/lib/utils'
 import { migrationApi } from '../api'
 import { MemberPicker, MiniProgress } from './MemberPicker'
-import { useConfirm } from './ConfirmDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 type Agency = { code: string; name: string; groupId: string; total: number; done: number; in_progress: number }
 

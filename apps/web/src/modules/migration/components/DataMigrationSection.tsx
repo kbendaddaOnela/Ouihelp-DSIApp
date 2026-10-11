@@ -8,7 +8,7 @@ import { useResetPhase, useStopPhase } from '../hooks/useMigration'
 import { apiClient } from '@/lib/api'
 import { msalInstance, apiLoginRequest } from '@/lib/auth'
 import { migrationApi } from '../api'
-import { useConfirm } from './ConfirmDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 interface Props {
   migrationId: string

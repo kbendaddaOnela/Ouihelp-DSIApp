@@ -430,10 +430,16 @@ Résultat : entrant `@onela.com` → résolu sur le contact → redirigé vers `
 | 3 | `stepOnelaRouting` | **MailContact** Exchange ONELA (cf. §13.1) via `InvokeCommand` (`New-MailContact` / `Set-MailContact`). Idempotent (`Get-MailContact` d'abord). |
 | 4 | `stepGoogleProvision` | Attente du **SCIM** : polling `googleUserExists` (60 s × 45 ≈ 45 min). |
 | 5 | `stepOuMove` | Bascule **automatique** sur l'OU `/onela.com` (`GOOGLE_ONELA_OU_PATH`). |
-| 6 | `stepNewFormat` | Alias `prenom.nom@onela.com` (`addGoogleAlias`, 409 ignoré) + `send-as` par défaut (`ensureSendAs` / `setSendAsAsDefault`). |
+| 6 | `stepLicense` | **Attribution licence Google** (`assignLicense`, License Manager) — l'auto-attribution par OU n'étant plus active. `skipped` si aucune licence sélectionnée. Non bloquante (relançable). |
+| 7 | `stepNewFormat` | Alias `prenom.nom@onela.com` (`addGoogleAlias`, 409 ignoré). Le compte **reçoit** dès ce succès. |
+| 8 | `stepSendAs` | `send-as` par défaut (`ensureSendAs` / `setSendAsAsDefault`), **étape séparée** (retry ~3 min : Gmail refuse tant que la mailbox n'est pas initialisée). Non bloquante. |
+| 9 | `stepContactsOnela` | Import de l'annuaire ONELA (`onela_contacts`) dans les contacts Google (groupe « ONELA », People API, idempotent). `skipped` si annuaire vide. |
+| 10 | `stepDelegations` | **Délégations Gmail** : le nouvel arrivant devient délégué des **boîtes partagées déjà migrées** sélectionnées (`ensureGmailDelegate(boîte, prenom.nom@mig.onela.com)`, idempotent, retry transitoire, non bloquant par boîte). `skipped` si aucune boîte. **Pré-cochage auto** : la boîte de l'agence (`agencies.mailbox`) ou les boîtes du service (`SERVICE_SHARED_MAILBOXES`) si déjà migrées. |
 
-- **Étapes 1-3** = `provisionBackground` (fire-and-forget après `202`). **4-6** = `finalizeGoogleBackground`, enchaîné automatiquement.
-- **Robustesse** : le poller SCIM est un background in-process → un **redéploiement le tue** (comme les workers de migration). Fallback : bouton **« Finaliser sur Google »** (`POST /:id/finalize-google`) qui reprend 4-6. Bouton **« Relancer le provisioning »** (`POST /:id/retry`) rejoue 1-3.
+- **Étapes 1-3** = `provisionBackground` (fire-and-forget après `202`). **4-10** = `finalizeGoogleBackground`, enchaîné automatiquement.
+- **Licence Google** : choisie au formulaire (`GET /migration/license-skus` pour les SKU dispo), attribuée à l'étape 6. Attribution/ré-attribution manuelle aussi via `POST /accounts/:id/assign-license` (bouton sur la carte, utile pour les comptes créés sans licence). Colonnes `step_license`/`license_product_id`/`license_sku_id`/`license_sku_name`/`license_error`.
+- **Boîtes partagées délégables** : `GET /accounts/shared-mailboxes` liste les migrations shared-mailbox en mode `account`, créées (`stepCreateAccount=success`), non archivées. On délègue leur **adresse primaire Google** (`targetUserEmail`). Le rapprochement se fait sur `agencies.mailbox` (agence) ou `SERVICE_SHARED_MAILBOXES`/`mailboxesForService` (service) vs `onelaEmail`/alias de la boîte migrée. Les boîtes (agences + services) sont fournies dans `AGENCY_MAILBOXES`/`SERVICE_SHARED_MAILBOXES` ; `agencies.mailbox` est **seedé et backfillé** depuis `AGENCY_MAILBOXES` (idempotent, n'écrase pas une saisie).
+- **Robustesse** : le poller SCIM est un background in-process → un **redéploiement le tue** (comme les workers de migration). Fallback : bouton **« Finaliser sur Google »** (`POST /:id/finalize-google`) qui reprend 4-10. Bouton **« Relancer le provisioning »** (`POST /:id/retry`) rejoue 1-3.
 
 ### 13.3 Schéma DB
 
@@ -490,7 +496,8 @@ L'adresse primaire étant déjà sur `mig.onela.com`, le **dual delivery** vise 
 ### 14.3 Séquence
 
 1. **Compte Google** — création directe via Admin SDK Directory (`users.insert`), mot de passe aléatoire jamais communiqué (personne ne s'y connecte), OU `GOOGLE_SHARED_MAILBOX_OU_PATH` (défaut : celle des users ONELA). Idempotent.
-2. **Licence Business Plus** — deux voies. **Depuis l'app** (`POST /:id/assign-license`, License Manager API) : le SKU choisi est posé immédiatement sur le compte, et l'import n'est enchaîné que si Gmail répond déjà `isMailboxSetup` (le provisionnement prend quelques minutes). Ou **hors application** (OU à licence automatique, console admin), auquel cas le bouton **« Licence déjà attribuée »** vérifie `isMailboxSetup` avant de relancer. Dans les deux cas le worker s'arrête ici (`step_mail_import = 'skipped'`) tant que l'étape n'est pas validée : sans Gmail provisionné, l'import échouerait avec des erreurs illisibles.
+2. **Licence Business Plus** — deux voies. **Depuis l'app** (`POST /:id/assign-license`, License Manager API) : le SKU choisi est posé immédiatement sur le compte. Ou **hors application** (OU à licence automatique, console admin), auquel cas le bouton **« Licence déjà attribuée »** vérifie `isMailboxSetup` avant de valider l'étape. Le worker s'arrête ici (`step_mail_import = 'skipped'`) tant que l'étape n'est pas validée : sans Gmail provisionné, l'import échouerait avec des erreurs illisibles.
+   **Aucune des deux voies ne démarre l'import** — le départ est le bouton « Lancer », toujours. On prépare couramment plusieurs boîtes (compte + licence) plusieurs jours à l'avance pour ne lancer les migrations qu'au créneau choisi ; enchaîner automatiquement sur l'attribution lançait des migrations non souhaitées.
 3. **Alias + « Envoyer en tant que »** — alias `@onela.com` posé sur le compte, identité send-as créée et marquée **par défaut** (les réponses partent avec l'adresse historique du service). Non bloquant : rejouable via un bouton.
 4. **Dual delivery** — transport rule Exchange `BlindCopyTo` → adresse primaire du compte (posée automatiquement, rejouable).
 5. **Import mail** — Exchange → Gmail, **dossiers convertis en libellés**, dédup par `Message-ID`, reprise idempotente (`shared_migrated_messages`), delta via `mail_last_sync_at`. Exactement le traitement d'un utilisateur nominatif (mêmes helpers `mailService`). **Interruptible** : voir 14.4.
@@ -531,8 +538,8 @@ Trois détails qui comptent :
 | `POST /:id/pause` (`/:id/stop`) · `POST /:id/resume` | Mettre en pause (arrêt à la fin du lot, `step_mail_import = 'paused'`) / reprendre au point d'arrêt — voir 14.4 |
 | `POST /:id/archive` · `/:id/unarchive` | Ranger dans l'historique / réactiver — une migration archivée sort de la liste active **et** du polling du worker, et `/run` la refuse |
 | `GET /:id/account` | État du compte Google (existence, OU, alias, boîte Gmail prête) |
-| `POST /:id/assign-license` | Attribuer une licence au compte (`productId` + `skuId`, License Manager) ; enchaîne l'import si Gmail est prêt |
-| `POST /:id/license-ack` | Acquitter une licence posée hors app (vérifie `isMailboxSetup`) et lancer l'import |
+| `POST /:id/assign-license` | Attribuer une licence au compte (`productId` + `skuId`, License Manager). Ne lance pas l'import |
+| `POST /:id/license-ack` | Acquitter une licence posée hors app (vérifie `isMailboxSetup`). Ne lance pas l'import |
 | `POST /:id/alias-send-as` | (Re)poser alias + « Envoyer en tant que » par défaut |
 | `GET /:id/delegate-candidates` | Candidats issus du FullAccess Exchange, résolus en comptes Google |
 | `GET /google-users/search?q=` | Recherche annuaire Google (ajout manuel d'un délégué) |

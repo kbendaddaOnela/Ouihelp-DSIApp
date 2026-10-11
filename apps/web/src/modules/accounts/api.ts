@@ -7,6 +7,7 @@ import type {
   AgenciesResponse,
   Agency,
   AgencyInput,
+  MigratedSharedMailboxesResponse,
 } from '@dsi-app/shared'
 
 export const accountsApi = {
@@ -16,6 +17,9 @@ export const accountsApi = {
   updateAgency: (id: string, input: AgencyInput) =>
     apiClient.put<Agency>(`/accounts/agencies/${id}`, input).then((r) => r.data),
   deleteAgency: (id: string) => apiClient.delete(`/accounts/agencies/${id}`).then((r) => r.data),
+
+  sharedMailboxes: () =>
+    apiClient.get<MigratedSharedMailboxesResponse>('/accounts/shared-mailboxes').then((r) => r.data),
 
   searchManagers: (q: string) =>
     apiClient
@@ -36,5 +40,10 @@ export const accountsApi = {
   remove: (id: string, purgeRouting = false) =>
     apiClient
       .delete(`/accounts/${id}${purgeRouting ? '?purgeRouting=1' : ''}`)
+      .then((r) => r.data),
+
+  assignLicense: (id: string, productId: string, skuId: string) =>
+    apiClient
+      .post<{ account: CreateAccountResponse['account'] }>(`/accounts/${id}/assign-license`, { productId, skuId })
       .then((r) => r.data),
 }

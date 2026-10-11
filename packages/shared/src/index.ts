@@ -39,6 +39,8 @@ export type {
   Agency,
   AgencyInput,
   AgenciesResponse,
+  MigratedSharedMailbox,
+  MigratedSharedMailboxesResponse,
   ManagerCandidate,
   SearchManagersResponse,
   CreateAccountRequest,
@@ -52,6 +54,9 @@ export {
   AGENCY_JOB_TITLES,
   HEAD_OFFICE,
   ONELA_AGENCIES,
+  AGENCY_MAILBOXES,
+  SERVICE_SHARED_MAILBOXES,
+  mailboxesForService,
 } from './types/accounts'
 
 export type {

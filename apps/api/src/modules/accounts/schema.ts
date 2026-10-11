@@ -41,9 +41,20 @@ export const accountCreations = mysqlTable('account_creations', {
   stepOnelaRouting: mysqlEnum('step_onela_routing', stepStatus).default('pending').notNull(),
   stepGoogleProvision: mysqlEnum('step_google_provision', stepStatus).default('pending').notNull(),
   stepOuMove: mysqlEnum('step_ou_move', stepStatus).default('pending').notNull(),
+  /** Attribution de licence Google Workspace (l'auto-attribution par OU est coupée). */
+  stepLicense: mysqlEnum('step_license', stepStatus).default('pending').notNull(),
+  licenseProductId: varchar('license_product_id', { length: 64 }),
+  licenseSkuId: varchar('license_sku_id', { length: 64 }),
+  licenseSkuName: varchar('license_sku_name', { length: 128 }),
+  licenseError: text('license_error'),
   stepNewFormat: mysqlEnum('step_new_format', stepStatus).default('pending').notNull(),
   stepSendAs: mysqlEnum('step_send_as', stepStatus).default('pending').notNull(),
   stepContactsOnela: mysqlEnum('step_contacts_onela', stepStatus).default('pending').notNull(),
+  /** Délégations Gmail sur les boîtes partagées migrées sélectionnées. */
+  stepDelegations: mysqlEnum('step_delegations', stepStatus).default('pending').notNull(),
+  /** Liste JSON des adresses PRIMAIRES Google des boîtes à déléguer. */
+  delegateMailboxes: text('delegate_mailboxes'),
+  delegationsError: text('delegations_error'),
   errorDetails: text('error_details'),
   // Métadonnées
   initiatedBy: varchar('initiated_by', { length: 255 }).notNull(),
@@ -67,6 +78,9 @@ export const agencies = mysqlTable('agencies', {
   address: varchar('address', { length: 500 }).notNull(),
   postalCode: varchar('postal_code', { length: 20 }).notNull(),
   city: varchar('city', { length: 255 }).notNull(),
+  /** Boîte partagée de l'agence (ex. "agence.montpellier@onela.com"), optionnelle.
+   *  Sert à pré-cocher la délégation Gmail à l'onboarding. */
+  mailbox: varchar('mailbox', { length: 320 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().onUpdateNow().notNull(),
 })

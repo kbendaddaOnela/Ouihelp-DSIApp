@@ -16,8 +16,11 @@ import {
   ArchiveRestore,
   RefreshCw,
   FileWarning,
+  ChevronRight,
 } from 'lucide-react'
 import type { MailImportStatus, SharedMigrationRecord } from '@dsi-app/shared'
+import { cn } from '@/lib/utils'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import {
   useRunSharedMigration,
   usePauseSharedMigration,
@@ -66,8 +69,17 @@ function errorMessage(err: unknown): string {
   return apiErr || (err instanceof Error ? err.message : String(err))
 }
 
-const alertOnError = (action: string) => (err: unknown) =>
-  window.alert(`${action} a échoué :\n\n${errorMessage(err)}`)
+/**
+ * Rapporte l'échec d'une action dans la boîte de dialogue de l'app.
+ *
+ * Renvoie la même signature que le handler `onError` de TanStack Query, pour que
+ * les appels restent `{ onError: alertOnError('…') }`.
+ */
+function useAlertOnError() {
+  const { alert } = useConfirm()
+  return (action: string) => (err: unknown) =>
+    void alert({ title: `${action} a échoué`, tone: 'danger', message: errorMessage(err) })
+}
 
 function StepBadge({ status, label }: { status: MailImportStatus; label: string }) {
   const map: Record<MailImportStatus, { cls: string; icon: React.ReactNode }> = {
@@ -88,6 +100,8 @@ function StepBadge({ status, label }: { status: MailImportStatus; label: string 
 }
 
 export function SharedMailboxCard({ migration }: Props) {
+  const alertOnError = useAlertOnError()
+  const { confirm } = useConfirm()
   const { mutate: runMigration, isPending: isRunning } = useRunSharedMigration()
   const { mutate: pauseMigration, isPending: isPausing } = usePauseSharedMigration()
   const { mutate: resumeMigration, isPending: isResuming } = useResumeSharedMigration()
@@ -111,205 +125,263 @@ export function SharedMailboxCard({ migration }: Props) {
   const runBlockedByLicense = isAccountMode && migration.stepLicense !== 'success'
   const isDone = migration.stepMailImport === 'success'
 
+  const [expanded, setExpanded] = useState(false)
+
+  const hasError =
+    migration.stepMailImport === 'error' ||
+    !!migration.createAccountError ||
+    !!migration.licenseError ||
+    !!migration.aliasSendAsError ||
+    !!migration.delegatesError
+
+  // Résumé de l'en-tête replié : une phrase pour savoir si la carte mérite d'être
+  // ouverte. L'ordre est volontaire — ce qui bloque passe devant ce qui est fini.
+  const summary = (() => {
+    if (hasError) return { text: 'Erreur', color: 'text-red-600' }
+    if (isPaused) return { text: 'En pause', color: 'text-amber-600' }
+    if (isInFlight) return { text: 'Import en cours', color: 'text-blue-600' }
+    if (runBlockedByLicense) return { text: 'En attente de licence', color: 'text-amber-600' }
+    // Licence posée mais import jamais démarré : c'est l'état d'attente normal
+    // depuis qu'attribuer une licence ne déclenche plus la migration.
+    if (migration.stepMailImport === 'skipped' && migration.mailMigrated === 0) {
+      return { text: 'Prêt à lancer', color: 'text-blue-600' }
+    }
+    if (isDone && (!isAccountMode || migration.stepDelegates === 'success')) {
+      return { text: 'Migration terminée', color: 'text-green-600' }
+    }
+    if (isDone) return { text: 'Mails importés', color: 'text-green-600' }
+    return { text: 'En cours', color: 'text-gray-600' }
+  })()
+
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-4">
+    <div className={cn('rounded-xl border bg-white shadow-sm', hasError ? 'border-red-200' : 'border-gray-200')}>
+      {/* En-tête compact, toujours visible : même principe que les cartes du module migration ONELA */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-3 rounded-xl p-4 text-left transition-colors hover:bg-gray-50"
+      >
+        <ChevronRight
+          className={cn('h-4 w-4 shrink-0 text-gray-400 transition-transform', expanded && 'rotate-90')}
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-gray-900">{migration.onelaDisplayName}</span>
-            <span className="text-xs text-gray-500">{migration.onelaEmail}</span>
+            <span className="truncate font-medium text-gray-900">{migration.onelaDisplayName}</span>
+            <span className={cn('shrink-0 text-xs font-medium', summary.color)}>{summary.text}</span>
             {!isAccountMode && (
-              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+              <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
                 ancien mode : Google Group
               </span>
             )}
           </div>
-          {isAccountMode ? (
-            <div className="mt-1 text-sm text-gray-600">
-              → <span className="font-mono text-xs">{migration.targetUserEmail}</span>{' '}
-              <span className="text-gray-400">
-                (alias <span className="font-mono">{migration.targetUserAlias}</span> — {migration.targetDisplayName})
-              </span>
-            </div>
-          ) : (
-            <div className="mt-1 text-sm text-gray-600">
-              → <span className="font-mono text-xs">{migration.targetGroupEmail}</span>{' '}
-              <span className="text-gray-400">({migration.targetGroupName})</span>
-            </div>
-          )}
+          <p className="truncate text-xs text-gray-500">
+            {migration.onelaEmail} →{' '}
+            {(isAccountMode ? migration.targetUserEmail : migration.targetGroupEmail) ?? '…'}
+          </p>
         </div>
-        <div className="flex items-center gap-2">
-          {migration.archived ? (
-            <button
-              onClick={() =>
-                unarchiveMigration(migration.id, { onError: alertOnError('Désarchiver') })
-              }
-              disabled={isUnarchiving}
-              className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-            >
-              <ArchiveRestore className="h-3.5 w-3.5" />
-              Désarchiver
-            </button>
-          ) : (
-            <button
-              onClick={() => archiveMigration(migration.id, { onError: alertOnError('Archiver') })}
-              disabled={isArchiving || isInFlight}
-              title={
-                isInFlight
-                  ? 'Arrête l’import avant d’archiver'
-                  : 'Ranger dans l’historique (le compte Google et les délégations sont conservés)'
-              }
-              className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-            >
-              <Archive className="h-3.5 w-3.5" />
-              Archiver
-            </button>
-          )}
-          {canRun && !migration.archived && (
-            <button
-              onClick={() => runMigration(migration.id, { onError: alertOnError('Lancer la migration') })}
-              disabled={isRunning || runBlockedByLicense}
-              title={
-                runBlockedByLicense
-                  ? 'Attribue d’abord la licence Business Plus, puis clique « Licence attribuée »'
-                  : undefined
-              }
-              className="inline-flex items-center gap-1 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              <Play className="h-3.5 w-3.5" />
-              {migration.stepMailImport === 'success' ? 'Resynchroniser' : 'Lancer'}
-            </button>
-          )}
-          {isPaused && !migration.archived && (
-            <button
-              onClick={() => resumeMigration(migration.id, { onError: alertOnError('Reprendre l’import') })}
-              disabled={isResuming || runBlockedByLicense}
-              title="Repart au point d’arrêt : les messages déjà importés sont sautés, pas retéléchargés"
-              className="inline-flex items-center gap-1 rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
-            >
-              <Play className="h-3.5 w-3.5" />
-              {isResuming ? 'Reprise…' : 'Reprendre'}
-            </button>
-          )}
-          {isInFlight && (
-            <button
-              onClick={() => pauseMigration(migration.id, { onError: alertOnError('Mettre en pause') })}
-              disabled={isPausing}
-              title="S’arrête à la fin du lot en cours. Reprise possible au point d’arrêt."
-              className="inline-flex items-center gap-1 rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50"
-            >
-              <Pause className="h-3.5 w-3.5" />
-              {isPausing ? 'Pause…' : 'Mettre en pause'}
-            </button>
-          )}
-          {canDelete && (
-            <button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    isAccountMode
-                      ? 'Supprimer le suivi de cette migration ?\n\nLe compte Google, sa licence et ses délégations ne sont PAS supprimés.'
-                      : 'Supprimer cette migration (pas le groupe Google) ?',
-                  )
-                )
-                  deleteMigration(migration.id)
-              }}
-              disabled={isDeleting}
-              className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-              title="Supprimer"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
-          )}
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          {isAccountMode && <StepBadge status={migration.stepLicense} label="Licence" />}
+          <StepBadge status={migration.stepMailImport} label="Mail" />
+          {isAccountMode && <StepBadge status={migration.stepDelegates} label="Délégations" />}
         </div>
-      </div>
+      </button>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-        {isAccountMode ? (
-          <>
-            <StepBadge status={migration.stepCreateAccount} label={`Compte : ${migration.stepCreateAccount}`} />
-            <StepBadge status={migration.stepLicense} label={`Licence : ${migration.stepLicense}`} />
-            <StepBadge status={migration.stepAliasSendAs} label={`Alias / send-as : ${migration.stepAliasSendAs}`} />
-            <StepBadge status={migration.stepMailImport} label={`Import mail : ${migration.stepMailImport}`} />
-            <StepBadge status={migration.stepDelegates} label={`Délégations : ${migration.stepDelegates}`} />
-          </>
-        ) : (
-          <>
-            <StepBadge status={migration.stepCreateGroup} label={`Groupe : ${migration.stepCreateGroup}`} />
-            <StepBadge status={migration.stepMailImport} label={`Import mail : ${migration.stepMailImport}`} />
-          </>
-        )}
-      </div>
-
-      {migration.mailTotal > 0 && (
-        <div className="mt-3">
-          <div className="flex justify-between text-xs text-gray-600">
-            <span>
-              {isDone ? (
-                <>{migration.mailMigrated.toLocaleString()} messages importés</>
+      {/* Détail repliable. Monté seulement à l'ouverture : les panneaux Compte,
+          Délégations et Dual delivery interrogent Google et Exchange, autant ne pas
+          le faire pour toutes les cartes de la liste. */}
+      {expanded && (
+        <div className="border-t border-gray-100 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1 text-sm text-gray-600">
+              {isAccountMode ? (
+                <>
+                  → <span className="font-mono text-xs">{migration.targetUserEmail}</span>{' '}
+                  <span className="text-gray-400">
+                    (alias <span className="font-mono">{migration.targetUserAlias}</span> — {migration.targetDisplayName})
+                  </span>
+                </>
               ) : (
                 <>
-                  {migration.mailMigrated.toLocaleString()} / {migration.mailTotal.toLocaleString()} mails
+                  → <span className="font-mono text-xs">{migration.targetGroupEmail}</span>{' '}
+                  <span className="text-gray-400">({migration.targetGroupName})</span>
                 </>
               )}
-              {migration.mailFailed > 0 && (
-                <span className="ml-2 text-red-600">({migration.mailFailed} erreurs)</span>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {migration.archived ? (
+                <button
+                  onClick={() =>
+                    unarchiveMigration(migration.id, { onError: alertOnError('Désarchiver') })
+                  }
+                  disabled={isUnarchiving}
+                  className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  <ArchiveRestore className="h-3.5 w-3.5" />
+                  Désarchiver
+                </button>
+              ) : (
+                <button
+                  onClick={() => archiveMigration(migration.id, { onError: alertOnError('Archiver') })}
+                  disabled={isArchiving || isInFlight}
+                  title={
+                    isInFlight
+                      ? 'Arrête l’import avant d’archiver'
+                      : 'Ranger dans l’historique (le compte Google et les délégations sont conservés)'
+                  }
+                  className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                  Archiver
+                </button>
               )}
-            </span>
-            {/* Une fois l'import terminé, un pourcentage n'a plus de sens : le
-                total vient du comptage Exchange, le migré du décompte réel en
-                base, et les deux ne se recouvrent jamais exactement. */}
-            <span>{isDone ? 'terminé' : isPaused ? `en pause — ${pct}%` : `${pct}%`}</span>
+              {canRun && !migration.archived && (
+                <button
+                  onClick={() => runMigration(migration.id, { onError: alertOnError('Lancer la migration') })}
+                  disabled={isRunning || runBlockedByLicense}
+                  title={
+                    runBlockedByLicense
+                      ? 'Attribue d’abord la licence Business Plus, puis clique « Licence attribuée »'
+                      : undefined
+                  }
+                  className="inline-flex items-center gap-1 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  {migration.stepMailImport === 'success' ? 'Resynchroniser' : 'Lancer'}
+                </button>
+              )}
+              {isPaused && !migration.archived && (
+                <button
+                  onClick={() => resumeMigration(migration.id, { onError: alertOnError('Reprendre l’import') })}
+                  disabled={isResuming || runBlockedByLicense}
+                  title="Repart au point d’arrêt : les messages déjà importés sont sautés, pas retéléchargés"
+                  className="inline-flex items-center gap-1 rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  {isResuming ? 'Reprise…' : 'Reprendre'}
+                </button>
+              )}
+              {isInFlight && (
+                <button
+                  onClick={() => pauseMigration(migration.id, { onError: alertOnError('Mettre en pause') })}
+                  disabled={isPausing}
+                  title="S’arrête à la fin du lot en cours. Reprise possible au point d’arrêt."
+                  className="inline-flex items-center gap-1 rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+                >
+                  <Pause className="h-3.5 w-3.5" />
+                  {isPausing ? 'Pause…' : 'Mettre en pause'}
+                </button>
+              )}
+              {canDelete && (
+                <button
+                  onClick={async () => {
+                    const res = await confirm({
+                      title: 'Supprimer le suivi',
+                      tone: 'danger',
+                      confirmLabel: 'Supprimer',
+                      message: isAccountMode
+                        ? `Supprimer le suivi de la migration de ${migration.onelaDisplayName} ?\n\n` +
+                          `Le compte Google, sa licence et ses délégations ne sont PAS supprimés.`
+                        : `Supprimer cette migration (pas le groupe Google) ?`,
+                    })
+                    if (res.confirmed) deleteMigration(migration.id)
+                  }}
+                  disabled={isDeleting}
+                  className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                  title="Supprimer"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
+            </div>
           </div>
-          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
-            <div
-              className={`h-full transition-all ${
-                isDone ? 'bg-green-500' : isPaused ? 'bg-amber-500' : 'bg-blue-500'
-              }`}
-              style={{ width: `${isDone ? 100 : pct}%` }}
-            />
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            {isAccountMode ? (
+              <>
+                <StepBadge status={migration.stepCreateAccount} label={`Compte : ${migration.stepCreateAccount}`} />
+                <StepBadge status={migration.stepLicense} label={`Licence : ${migration.stepLicense}`} />
+                <StepBadge status={migration.stepAliasSendAs} label={`Alias / send-as : ${migration.stepAliasSendAs}`} />
+                <StepBadge status={migration.stepMailImport} label={`Import mail : ${migration.stepMailImport}`} />
+                <StepBadge status={migration.stepDelegates} label={`Délégations : ${migration.stepDelegates}`} />
+              </>
+            ) : (
+              <>
+                <StepBadge status={migration.stepCreateGroup} label={`Groupe : ${migration.stepCreateGroup}`} />
+                <StepBadge status={migration.stepMailImport} label={`Import mail : ${migration.stepMailImport}`} />
+              </>
+            )}
           </div>
-          {isDone && migration.mailMigrated < migration.mailTotal && (
-            <p className="mt-1 text-[10px] text-gray-500">
-              Exchange annonçait {migration.mailTotal.toLocaleString()} messages dans les dossiers
-              visibles. L’écart porte sur des éléments que l’import ne reprend pas (dossiers
-              masqués, éléments récupérables) — à recouper avec le nombre de conversations dans la
-              boîte Gmail si le chiffre te surprend.
-            </p>
+
+          {migration.mailTotal > 0 && (
+            <div className="mt-3">
+              <div className="flex justify-between text-xs text-gray-600">
+                <span>
+                  {isDone ? (
+                    <>{migration.mailMigrated.toLocaleString()} messages importés</>
+                  ) : (
+                    <>
+                      {migration.mailMigrated.toLocaleString()} / {migration.mailTotal.toLocaleString()} mails
+                    </>
+                  )}
+                  {migration.mailFailed > 0 && (
+                    <span className="ml-2 text-red-600">({migration.mailFailed} erreurs)</span>
+                  )}
+                </span>
+                {/* Une fois l'import terminé, un pourcentage n'a plus de sens : le
+                    total vient du comptage Exchange, le migré du décompte réel en
+                    base, et les deux ne se recouvrent jamais exactement. */}
+                <span>{isDone ? 'terminé' : isPaused ? `en pause — ${pct}%` : `${pct}%`}</span>
+              </div>
+              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                <div
+                  className={`h-full transition-all ${
+                    isDone ? 'bg-green-500' : isPaused ? 'bg-amber-500' : 'bg-blue-500'
+                  }`}
+                  style={{ width: `${isDone ? 100 : pct}%` }}
+                />
+              </div>
+              {isDone && migration.mailMigrated < migration.mailTotal && (
+                <p className="mt-1 text-[10px] text-gray-500">
+                  Exchange annonçait {migration.mailTotal.toLocaleString()} messages dans les dossiers
+                  visibles. L’écart porte sur des éléments que l’import ne reprend pas (dossiers
+                  masqués, éléments récupérables) — à recouper avec le nombre de conversations dans la
+                  boîte Gmail si le chiffre te surprend.
+                </p>
+              )}
+            </div>
           )}
+
+          {/* Un import en pause n'est pas une erreur : son message passe en ambre. */}
+          {isPaused && migration.mailError && (
+            <div className="mt-3 flex items-start gap-1.5 rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <Pause className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{migration.mailError}</span>
+            </div>
+          )}
+
+          {(migration.createGroupError ||
+            migration.createAccountError ||
+            migration.licenseError ||
+            migration.aliasSendAsError ||
+            migration.delegatesError ||
+            (!isPaused && migration.mailError)) && (
+            <div className="mt-3 space-y-0.5 rounded bg-red-50 px-3 py-2 text-xs text-red-700">
+              {migration.createAccountError && <div>Compte : {migration.createAccountError}</div>}
+              {migration.licenseError && <div>Licence : {migration.licenseError}</div>}
+              {migration.aliasSendAsError && <div>Alias / send-as : {migration.aliasSendAsError}</div>}
+              {migration.createGroupError && <div>Groupe : {migration.createGroupError}</div>}
+              {!isPaused && migration.mailError && <div>Mail : {migration.mailError}</div>}
+              {migration.delegatesError && <div>Délégations : {migration.delegatesError}</div>}
+            </div>
+          )}
+
+          {migration.mailFailed > 0 && <MailErrorsPanel migration={migration} />}
+
+          {isAccountMode && <AccountPanel migration={migration} />}
+          {isAccountMode && <DelegatesPanel migration={migration} />}
+          <DualDeliveryPanel migration={migration} />
+          {!isAccountMode && <LegacyGroupPanel migration={migration} />}
         </div>
       )}
-
-      {/* Un import en pause n'est pas une erreur : son message passe en ambre. */}
-      {isPaused && migration.mailError && (
-        <div className="mt-3 flex items-start gap-1.5 rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          <Pause className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{migration.mailError}</span>
-        </div>
-      )}
-
-      {(migration.createGroupError ||
-        migration.createAccountError ||
-        migration.licenseError ||
-        migration.aliasSendAsError ||
-        migration.delegatesError ||
-        (!isPaused && migration.mailError)) && (
-        <div className="mt-3 space-y-0.5 rounded bg-red-50 px-3 py-2 text-xs text-red-700">
-          {migration.createAccountError && <div>Compte : {migration.createAccountError}</div>}
-          {migration.licenseError && <div>Licence : {migration.licenseError}</div>}
-          {migration.aliasSendAsError && <div>Alias / send-as : {migration.aliasSendAsError}</div>}
-          {migration.createGroupError && <div>Groupe : {migration.createGroupError}</div>}
-          {!isPaused && migration.mailError && <div>Mail : {migration.mailError}</div>}
-          {migration.delegatesError && <div>Délégations : {migration.delegatesError}</div>}
-        </div>
-      )}
-
-      {migration.mailFailed > 0 && <MailErrorsPanel migration={migration} />}
-
-      {isAccountMode && <AccountPanel migration={migration} />}
-      {isAccountMode && <DelegatesPanel migration={migration} />}
-      <DualDeliveryPanel migration={migration} />
-      {!isAccountMode && <LegacyGroupPanel migration={migration} />}
     </div>
   )
 }
@@ -317,6 +389,8 @@ export function SharedMailboxCard({ migration }: Props) {
 // ── Messages en erreur + reprise ciblée ─────────────────────────────────────
 
 function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { alert } = useConfirm()
   const [expanded, setExpanded] = useState(false)
   const { data, isFetching } = useSharedMigrationErrors(migration.id, expanded)
   const { mutate: retry, isPending: retrying } = useRetrySharedErrors()
@@ -347,7 +421,7 @@ function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
             onClick={() =>
               retry(migration.id, {
                 onError: alertOnError('Reprise des erreurs'),
-                onSuccess: (d) => window.alert(d.message),
+                onSuccess: (d) => void alert({ title: 'Reprise des erreurs', message: d.message }),
               })
             }
             disabled={retrying || isInFlight || isPaused || migration.archived}
@@ -404,6 +478,8 @@ function MailErrorsPanel({ migration }: { migration: SharedMigrationRecord }) {
  * saisissent une seule fois dans le panneau licences du dashboard.
  */
 function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { alert } = useConfirm()
   const { data: skus, isLoading, isError, error, refetch } = useSharedLicenseSkus(true)
   const { mutate: assign, isPending: assigning } = useAssignSharedLicense()
 
@@ -466,12 +542,13 @@ function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord })
                       {
                         onError: alertOnError(`Attribuer « ${sku.name} »`),
                         onSuccess: (d) =>
-                          window.alert(
-                            d.mailboxReady
-                              ? `Licence « ${sku.name} » attribuée. La boîte Gmail est prête : l’import démarre.`
-                              : `Licence « ${sku.name} » attribuée.\n\nGmail met quelques minutes à se provisionner : ` +
-                                `rafraîchis l’état, puis clique « Lancer » quand la boîte est prête.`,
-                          ),
+                          void alert({
+                            title: `Licence « ${sku.name} » attribuée`,
+                            message: d.mailboxReady
+                              ? `La boîte Gmail est prête : clique « Lancer » quand tu veux démarrer l’import.`
+                              : `Gmail met quelques minutes à se provisionner. Rafraîchis l’état, puis ` +
+                                `clique « Lancer » quand la boîte est prête.`,
+                          }),
                       },
                     )
                   }
@@ -497,6 +574,7 @@ function LicenseAssignBlock({ migration }: { migration: SharedMigrationRecord })
 }
 
 function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
   const accountCreated = migration.stepCreateAccount === 'success'
   const { data, isLoading, refetch } = useSharedAccountStatus(migration.id, accountCreated)
   const { mutate: ackLicense, isPending: acking } = useLicenseAck()
@@ -566,10 +644,10 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
             }
             disabled={acking}
             className="inline-flex items-center gap-1 rounded bg-green-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-50"
-            title="À cliquer une fois la licence Business Plus attribuée dans la console Google"
+            title="À cliquer si la licence a été posée dans la console Google ou par l’OU. Ne démarre pas l’import."
           >
             <BadgeCheck className="h-3 w-3" />
-            {acking ? 'Vérification…' : 'Licence déjà attribuée → lancer l’import'}
+            {acking ? 'Vérification…' : 'Licence déjà attribuée (hors app)'}
           </button>
         )}
         <button
@@ -594,8 +672,9 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
         <p className="mt-2 text-[11px] text-gray-500">
           Deux voies&nbsp;: <strong>attribuer</strong> une licence ci-dessus (elle est posée
           immédiatement via l’API Google), ou la poser hors app (OU / console Admin) puis cliquer
-          « Licence déjà attribuée » — ce bouton-là vérifie d’abord que la boîte Gmail est
-          provisionnée avant de lancer l’import.
+          « Licence déjà attribuée », qui vérifie que la boîte Gmail est bien provisionnée. Dans
+          les deux cas l’import <strong>ne démarre pas tout seul</strong>&nbsp;: c’est le bouton
+          « Lancer » qui le déclenche, au moment que tu choisis.
         </p>
       )}
     </div>
@@ -605,6 +684,8 @@ function AccountPanel({ migration }: { migration: SharedMigrationRecord }) {
 // ── Délégations Gmail ───────────────────────────────────────────────────────
 
 function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { confirm, alert } = useConfirm()
   const [showCandidates, setShowCandidates] = useState(false)
   const [search, setSearch] = useState('')
 
@@ -646,7 +727,11 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
             applyDelegates(migration.id, {
               onError: alertOnError('Appliquer les délégations'),
               onSuccess: (d) =>
-                window.alert(`Délégations : ${d.applied}/${d.total} appliquées, ${d.failed} en erreur.`),
+                void alert({
+                  title: 'Délégations réappliquées',
+                  tone: d.failed > 0 ? 'danger' : 'default',
+                  message: `${d.applied}/${d.total} appliquées, ${d.failed} en erreur.`,
+                }),
             })
           }
           disabled={applying || migration.delegates.length === 0}
@@ -698,8 +783,14 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
               <div className="flex items-center gap-2">
                 <StepBadge status={d.status} label={d.status} />
                 <button
-                  onClick={() => {
-                    if (window.confirm(`Retirer la délégation de ${d.googleEmail} ?`))
+                  onClick={async () => {
+                    const res = await confirm({
+                      title: 'Retirer la délégation',
+                      tone: 'danger',
+                      confirmLabel: 'Retirer',
+                      message: `Retirer la délégation de ${d.googleEmail} sur cette boîte ?`,
+                    })
+                    if (res.confirmed)
                       removeDelegate(
                         { id: migration.id, delegateId: d.id },
                         { onError: alertOnError('Retirer le délégué') },
@@ -821,6 +912,8 @@ function DelegatesPanel({ migration }: { migration: SharedMigrationRecord }) {
 // ── Dual delivery (commun aux deux modes) ───────────────────────────────────
 
 function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { confirm } = useConfirm()
   const targetReady =
     migration.mode === 'account'
       ? migration.stepCreateAccount === 'success'
@@ -905,10 +998,16 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
           )}
           {isActive && !wrongTarget && (
             <button
-              onClick={() => {
-                if (window.confirm('Désactiver le dual delivery (supprimer la transport rule) ?')) {
-                  disable(migration.id)
-                }
+              onClick={async () => {
+                const res = await confirm({
+                  title: 'Désactiver le dual delivery',
+                  tone: 'danger',
+                  confirmLabel: 'Désactiver',
+                  message:
+                    'Supprimer la transport rule ? La boîte Google cessera de recevoir une copie ' +
+                    'des messages arrivant sur la BAL Exchange.',
+                })
+                if (res.confirmed) disable(migration.id)
               }}
               disabled={disabling}
               className="inline-flex items-center gap-1 rounded bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
@@ -926,6 +1025,8 @@ function DualDeliveryPanel({ migration }: { migration: SharedMigrationRecord }) 
 // ── Réglages spécifiques aux anciennes migrations « Google Group » ──────────
 
 function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
+  const alertOnError = useAlertOnError()
+  const { confirm, alert } = useConfirm()
   const groupReady = migration.stepCreateGroup === 'success' && !!migration.targetGroupEmail
   const { data } = useSharedDualDeliveryStatus(migration.id, groupReady)
   const { mutate: allowExternalRaw, isPending: opening } = useAllowExternalGroupPosts()
@@ -946,10 +1047,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
   const bulkResultAlert =
     (action: string) =>
     (d: { total: number; created: number; alreadyOk: number; failed: number; failedMembers: string[] }) =>
-      window.alert(
-        `${action}\n\nMembres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}` +
+      void alert({
+        title: action,
+        tone: d.failed > 0 ? 'danger' : 'default',
+        message:
+          `Membres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}` +
           (d.failedMembers.length ? `\n\nÉchecs sur :\n- ${d.failedMembers.slice(0, 10).join('\n- ')}` : ''),
-      )
+      })
 
   return (
     <div className="mt-4 rounded border border-amber-100 bg-amber-50 p-2.5">
@@ -959,12 +1063,15 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
       <div className="flex flex-wrap gap-2">
         {!allowsExternal && (
           <button
-            onClick={() => {
-              if (
-                window.confirm(
-                  "Ouvrir le groupe à TOUS les expéditeurs externes (ANYONE_CAN_POST) ?\n\nNécessaire pour que les mails BCC arrivent dans l'archive.",
-                )
-              )
+            onClick={async () => {
+              const res = await confirm({
+                title: 'Ouvrir le groupe aux externes',
+                confirmLabel: 'Ouvrir',
+                message:
+                  "Autoriser TOUS les expéditeurs externes à poster (ANYONE_CAN_POST) ?\n\n" +
+                  "Nécessaire pour que les mails BCC arrivent dans l'archive.",
+              })
+              if (res.confirmed)
                 allowExternalRaw(migration.id, { onError: alertOnError('Ouvrir le groupe aux externes') })
             }}
             disabled={opening}
@@ -975,8 +1082,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
         )}
         {!collaborativeInboxOn && (
           <button
-            onClick={() => {
-              if (window.confirm('Activer la boîte de réception collaborative sur ce groupe ?'))
+            onClick={async () => {
+              const res = await confirm({
+                title: 'Boîte de réception collaborative',
+                confirmLabel: 'Activer',
+                message: 'Activer la boîte de réception collaborative sur ce groupe ?',
+              })
+              if (res.confirmed)
                 enableCollabRaw(migration.id, { onError: alertOnError('Activer la boîte collaborative') })
             }}
             disabled={enablingCollab}
@@ -990,7 +1102,10 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
             addAliasRaw(migration.id, {
               onError: alertOnError("Ajouter l'alias @mig.onela.com"),
               onSuccess: (d) =>
-                window.alert(d.added ? `Alias ajouté : ${d.alias}` : `Alias déjà présent : ${d.alias}`),
+                void alert({
+                  title: d.added ? 'Alias ajouté' : 'Alias déjà présent',
+                  message: d.alias,
+                }),
             })
           }
           disabled={addingAlias}
@@ -999,14 +1114,21 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {addingAlias ? 'Ajout…' : 'Ajouter alias @mig.onela.com'}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm("Passer TOUS les membres en mode silencieux (delivery_settings='NONE') ?"))
+          onClick={async () => {
+            const res = await confirm({
+              title: "Pas d'email aux membres",
+              confirmLabel: 'Appliquer',
+              message: "Passer TOUS les membres en mode silencieux (delivery_settings='NONE') ?",
+            })
+            if (res.confirmed)
               silenceRaw(migration.id, {
                 onError: alertOnError('Désactiver le fan-out membres'),
                 onSuccess: (d) =>
-                  window.alert(
-                    `Membres traités : ${d.total}\n• Mis en silencieux : ${d.updated}\n• Déjà silencieux : ${d.alreadySilent}\n• Échecs : ${d.failed}`,
-                  ),
+                  void alert({
+                    title: 'Membres passés en silencieux',
+                    tone: d.failed > 0 ? 'danger' : 'default',
+                    message: `Membres traités : ${d.total}\n• Mis en silencieux : ${d.updated}\n• Déjà silencieux : ${d.alreadySilent}\n• Échecs : ${d.failed}`,
+                  }),
               })
           }}
           disabled={silencing}
@@ -1015,8 +1137,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {silencing ? 'Application…' : "Pas d'email aux membres"}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Créer le libellé "${groupName}" dans le Gmail de tous les membres ?`))
+          onClick={async () => {
+            const res = await confirm({
+              title: 'Créer le libellé chez les membres',
+              confirmLabel: 'Créer',
+              message: `Créer le libellé « ${groupName} » dans le Gmail de tous les membres ?`,
+            })
+            if (res.confirmed)
               setupLabelRaw(migration.id, {
                 onError: alertOnError('Créer le libellé aux membres'),
                 onSuccess: bulkResultAlert('Libellé Gmail créé'),
@@ -1028,14 +1155,21 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {settingUpLabel ? 'Création…' : `Créer libellé "${groupName}"`}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Créer un filtre Gmail chez tous les membres ?\n\nCritère : to:${groupEmail}`))
+          onClick={async () => {
+            const res = await confirm({
+              title: 'Créer la règle de tri',
+              confirmLabel: 'Créer',
+              message: `Créer un filtre Gmail chez tous les membres ?\n\nCritère : to:${groupEmail}`,
+            })
+            if (res.confirmed)
               setupFilterRaw(migration.id, {
                 onError: alertOnError('Créer le filtre aux membres'),
                 onSuccess: (d) =>
-                  window.alert(
-                    `Filtre Gmail créé\n\nMembres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}\n\nMails existants reclassés : ${d.backfilledMessages}`,
-                  ),
+                  void alert({
+                    title: 'Filtre Gmail créé',
+                    tone: d.failed > 0 ? 'danger' : 'default',
+                    message: `Membres traités : ${d.total}\n• Créés : ${d.created}\n• Déjà OK : ${d.alreadyOk}\n• Échecs : ${d.failed}\n\nMails existants reclassés : ${d.backfilledMessages}`,
+                  }),
               })
           }}
           disabled={settingUpFilter}
@@ -1044,8 +1178,13 @@ function LegacyGroupPanel({ migration }: { migration: SharedMigrationRecord }) {
           {settingUpFilter ? 'Création…' : 'Créer règle de tri'}
         </button>
         <button
-          onClick={() => {
-            if (window.confirm(`Ajouter "Envoyer en tant que ${groupEmail}" chez tous les membres ?`))
+          onClick={async () => {
+            const res = await confirm({
+              title: '« Envoyer en tant que » chez les membres',
+              confirmLabel: 'Ajouter',
+              message: `Ajouter l'identité d'envoi « ${groupEmail} » dans le Gmail de tous les membres ?`,
+            })
+            if (res.confirmed)
               setupSendAsRaw(migration.id, {
                 onError: alertOnError('Ajouter "Envoyer en tant que"'),
                 onSuccess: bulkResultAlert('"Envoyer en tant que" ajouté'),
