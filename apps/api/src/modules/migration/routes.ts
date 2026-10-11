@@ -167,11 +167,11 @@ export function buildCredentialsEmail(displayName: string, gohUpn: string, tempP
   const login = escapeHtml(gohUpn)
   const pwd = escapeHtml(tempPassword)
   const base = logoBase.replace(/\/$/, '')
-  // Lien de connexion directe : identifiant pré-rempli, retour sur Gmail. Une fois
-  // connecté avec le compte géré, Chrome propose lui-même le profil professionnel
-  // séparé (règle ProfileSeparationSettings, console d'admin Google) — plus besoin
-  // de « Ajouter un profil Chrome » à la main.
-  const signInUrl = escapeHtml(`https://accounts.google.com/ServiceLogin?Email=${encodeURIComponent(gohUpn)}&continue=${encodeURIComponent('https://mail.google.com/mail/')}`)
+  // On n'affiche plus de bouton « se connecter » : la population agences (peu
+  // technique) doit d'abord apprendre à OUVRIR Google Chrome (bureau / menu
+  // Démarrer). On met donc en avant le logo Chrome + la marche à suivre. Une fois
+  // connectée dans Chrome avec le compte géré, Chrome propose lui-même le profil
+  // professionnel séparé (règle ProfileSeparationSettings, console d'admin Google).
   // Charte : ONELA violet #662D91 / magenta #E5007D · Ouihelp navy #10243E / vert #3ECF8E
   const html = `
 <div style="margin:0;padding:0;background:#f4f4f7;">
@@ -202,14 +202,15 @@ export function buildCredentialsEmail(displayName: string, gohUpn: string, tempP
             </td></tr>
           </table>
         </td></tr>
-        <tr><td style="padding:20px 32px 6px;text-align:center;">
-          <a href="${signInUrl}" style="display:inline-block;background:#3ECF8E;color:#06351f;text-decoration:none;font-weight:700;font-size:15px;padding:13px 30px;border-radius:10px;">Me connecter à ma messagerie &#8594;</a>
-          <p style="margin:10px 0 0;color:#8b8f98;font-size:12px;line-height:1.5;">Le lien s'ouvre dans un autre navigateur que Google&nbsp;Chrome&nbsp;?<br />Ouvrez Chrome et allez sur <b>mail.google.com</b>.</p>
+        <tr><td style="padding:22px 32px 4px;text-align:center;">
+          <img src="${base}/assets/logo/chrome.png" alt="Google Chrome" width="76" height="76" style="display:inline-block;width:76px;height:76px;" />
+          <p style="margin:12px 0 0;font-size:17px;font-weight:700;color:#111827;">Ouvrez <span style="color:#1A73E8;">Google&nbsp;Chrome</span></p>
+          <p style="margin:4px 0 0;color:#8b8f98;font-size:12px;line-height:1.5;">Repérez cette icône sur votre <b>bureau</b>, dans la <b>barre des tâches</b><br />ou via le <b>menu&nbsp;Démarrer</b>, puis double-cliquez dessus.</p>
         </td></tr>
-        <tr><td style="padding:14px 32px 2px;color:#374151;font-size:13px;line-height:1.7;">
+        <tr><td style="padding:16px 32px 2px;color:#374151;font-size:13px;line-height:1.7;">
           <p style="margin:0 0 8px;font-weight:700;color:#111827;">Ensuite, c'est simple&nbsp;:</p>
-          <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">1.</td><td style="padding-bottom:4px;">Cliquez sur le bouton vert&nbsp;: votre identifiant est <b>déjà rempli</b>.</td></tr>
-          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">2.</td><td style="padding-bottom:4px;">Saisissez le <b>mot de passe temporaire</b> ci-dessus, puis choisissez votre nouveau mot de passe personnel.</td></tr>
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">1.</td><td style="padding-bottom:4px;">Dans Chrome, tapez <b>mail.google.com</b> dans la barre d'adresse.</td></tr>
+          <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">2.</td><td style="padding-bottom:4px;">Connectez-vous avec l'<b>identifiant</b> et le <b>mot de passe temporaire</b> ci-dessus, puis choisissez votre nouveau mot de passe personnel.</td></tr>
           <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">3.</td><td style="padding-bottom:4px;">Chrome vous propose un <b>profil professionnel</b>&nbsp;: cliquez sur <b>«&nbsp;Continuer&nbsp;»</b> à chaque écran.</td></tr>
           <tr><td style="vertical-align:top;color:#E5007D;font-weight:bold;padding-right:8px;">4.</td><td>Votre messagerie s'ouvre. Utilisez désormais ce profil pour vos mails et vos outils ONELA.</td></tr></table>
         </td></tr>

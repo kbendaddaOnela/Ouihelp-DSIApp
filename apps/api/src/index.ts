@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { apiRouter } from './routes/index'
 import { requestLogger } from './middleware/logger'
-import { ONELA_LOGO_PNG_B64, OUIHELP_LOGO_PNG_B64 } from './modules/migration/emailAssets'
+import { ONELA_LOGO_PNG_B64, OUIHELP_LOGO_PNG_B64, CHROME_LOGO_PNG_B64 } from './modules/migration/emailAssets'
 import { SIG_BLOCK_PNG_B64, SIG_LINKEDIN_PNG_B64, SIG_FACEBOOK_PNG_B64, SIG_INSTAGRAM_PNG_B64 } from './modules/migration/signatureAssets'
 import { runMigrations } from './db/migrate'
 import { startMailWorker } from './modules/migration/mailWorker'
@@ -36,6 +36,7 @@ app.route('/api', apiRouter)
 const EMAIL_LOGOS: Record<string, string> = {
   'onela.png': ONELA_LOGO_PNG_B64,
   'ouihelp.png': OUIHELP_LOGO_PNG_B64,
+  'chrome.png': CHROME_LOGO_PNG_B64,
   // Signature ONELA (bloc marque + icônes réseaux)
   'sig-block.png': SIG_BLOCK_PNG_B64,
   'sig-linkedin.png': SIG_LINKEDIN_PNG_B64,
