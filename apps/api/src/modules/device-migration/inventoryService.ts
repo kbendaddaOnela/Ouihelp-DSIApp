@@ -29,12 +29,20 @@ const GRAPH = 'https://graph.microsoft.com/v1.0'
 // ── Graph : pagination + retry 429/5xx ───────────────────────────────────────
 
 class GraphError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
     super(message)
   }
 }
 
-async function graphGetAll<T>(token: string, url: string, label: string, headers: Record<string, string> = {}): Promise<T[]> {
+async function graphGetAll<T>(
+  token: string,
+  url: string,
+  label: string,
+  headers: Record<string, string> = {}
+): Promise<T[]> {
   const out: T[] = []
   let next: string | undefined = url
   while (next) {
@@ -127,11 +135,22 @@ function cleanGuid(id: string | null | undefined): string | null {
 // N° de série inexploitables (PC assemblés, BIOS non renseigné) : on ne s'en sert pas
 // comme clé, sinon tous ces PC fusionneraient en un seul poste.
 const JUNK_SERIALS = new Set([
-  'TO BE FILLED BY O.E.M.', 'DEFAULT STRING', 'SYSTEM SERIAL NUMBER', 'NONE', 'N/A', 'NA',
-  '0', '00000000', '0123456789', '123456789', 'INVALID', 'NOT APPLICABLE', 'NOT SPECIFIED',
+  'TO BE FILLED BY O.E.M.',
+  'DEFAULT STRING',
+  'SYSTEM SERIAL NUMBER',
+  'NONE',
+  'N/A',
+  'NA',
+  '0',
+  '00000000',
+  '0123456789',
+  '123456789',
+  'INVALID',
+  'NOT APPLICABLE',
+  'NOT SPECIFIED',
 ])
 
-function normSerial(s: string | null | undefined): string | null {
+export function normSerial(s: string | null | undefined): string | null {
   const v = (s ?? '').trim().toUpperCase()
   if (v.length < 4 || JUNK_SERIALS.has(v) || /^0+$/.test(v)) return null
   return v
@@ -181,7 +200,9 @@ export async function getLastSyncAt(): Promise<Date | null> {
 /** Lance la synchro en arrière-plan. Retourne false si une synchro tourne déjà. */
 export function startInventorySync(): boolean {
   if (syncState.running) return false
-  runInventorySync().catch((err) => console.error('[device-migration] sync error:', err instanceof Error ? err.message : err))
+  runInventorySync().catch((err) =>
+    console.error('[device-migration] sync error:', err instanceof Error ? err.message : err)
+  )
   return true
 }
 
@@ -194,7 +215,8 @@ async function optional<T>(label: string, fn: () => Promise<T[]>): Promise<T[] |
     return rows
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    const hint = err instanceof GraphError && err.status === 403 ? ' — permission applicative manquante ?' : ''
+    const hint =
+      err instanceof GraphError && err.status === 403 ? ' — permission applicative manquante ?' : ''
     syncState.warnings.push(`${label} non lu${hint} (${msg})`)
     console.warn(`[device-migration] ${label} : ${msg}`)
     return null
@@ -215,7 +237,11 @@ function draftName(d: Draft): string | null {
   return d.intune?.deviceName ?? d.entra[0]?.displayName ?? null
 }
 
-export function consolidate(entra: EntraDevice[], intune: IntuneDevice[], autopilot: AutopilotDevice[]): Draft[] {
+export function consolidate(
+  entra: EntraDevice[],
+  intune: IntuneDevice[],
+  autopilot: AutopilotDevice[]
+): Draft[] {
   const drafts: Draft[] = []
   const bySerial = new Map<string, Draft>()
   const byEntraId = new Map<string, Draft>()
@@ -240,7 +266,10 @@ export function consolidate(entra: EntraDevice[], intune: IntuneDevice[], autopi
     const existing = (serial && bySerial.get(serial)) || (aad && byEntraId.get(aad)) || null
     // Un même PC peut avoir 2 inscriptions Intune (réinscription) : on garde la plus récente
     if (existing) {
-      if ((toDate(m.lastSyncDateTime)?.getTime() ?? 0) > (toDate(existing.intune?.lastSyncDateTime)?.getTime() ?? 0)) {
+      if (
+        (toDate(m.lastSyncDateTime)?.getTime() ?? 0) >
+        (toDate(existing.intune?.lastSyncDateTime)?.getTime() ?? 0)
+      ) {
         existing.intune = m
       }
       attachEntra(existing, aad)
@@ -291,7 +320,8 @@ export function consolidate(entra: EntraDevice[], intune: IntuneDevice[], autopi
     d.entra.sort(
       (a, b) =>
         (TRUST_PRIORITY[b.trustType ?? ''] ?? 0) - (TRUST_PRIORITY[a.trustType ?? ''] ?? 0) ||
-        (toDate(b.approximateLastSignInDateTime)?.getTime() ?? 0) - (toDate(a.approximateLastSignInDateTime)?.getTime() ?? 0),
+        (toDate(b.approximateLastSignInDateTime)?.getTime() ?? 0) -
+          (toDate(a.approximateLastSignInDateTime)?.getTime() ?? 0)
     )
   }
   return drafts
@@ -324,33 +354,47 @@ export async function runInventorySync(): Promise<void> {
 
     // ── ONELA ──
     const entraAll = await optional('Entra ONELA', () =>
-      graphGetAll<EntraDevice>(olToken, `${GRAPH}/devices?$select=${ENTRA_SELECT}&$top=999`, 'Entra ONELA'),
+      graphGetAll<EntraDevice>(
+        olToken,
+        `${GRAPH}/devices?$select=${ENTRA_SELECT}&$top=999`,
+        'Entra ONELA'
+      )
     )
     const intuneAll = await optional('Intune ONELA', () =>
       graphGetAll<IntuneDevice>(
         olToken,
         `${GRAPH}/deviceManagement/managedDevices?$filter=operatingSystem eq 'Windows'&$select=${INTUNE_SELECT}&$top=999`,
-        'Intune ONELA',
-      ),
+        'Intune ONELA'
+      )
     )
-    if (!entraAll && !intuneAll) throw new Error('Ni Entra ni Intune ONELA lisibles — voir les avertissements')
+    if (!entraAll && !intuneAll)
+      throw new Error('Ni Entra ni Intune ONELA lisibles — voir les avertissements')
 
     const autopilotOl = await optional('Autopilot ONELA', () =>
-      graphGetAll<AutopilotDevice>(olToken, `${GRAPH}/deviceManagement/windowsAutopilotDeviceIdentities`, 'Autopilot ONELA'),
+      graphGetAll<AutopilotDevice>(
+        olToken,
+        `${GRAPH}/deviceManagement/windowsAutopilotDeviceIdentities`,
+        'Autopilot ONELA'
+      )
     )
     const usersOl = await optional('Utilisateurs ONELA', () =>
       graphGetAll<EntraUser>(
         olToken,
         `${GRAPH}/users?$select=userPrincipalName,displayName,officeLocation,department&$top=999`,
-        'Utilisateurs ONELA',
-      ),
+        'Utilisateurs ONELA'
+      )
     )
     // Métadonnées seules (ReadBasic) : on compte les clés par poste, sans lire leur valeur
     const bitlockerOl = await optional('Clés BitLocker ONELA', () =>
-      graphGetAll<BitlockerKeyMeta>(olToken, `${GRAPH}/informationProtection/bitlocker/recoveryKeys`, 'Clés BitLocker ONELA', {
-        'ocp-client-name': 'DSI App',
-        'ocp-client-version': '1.0',
-      }),
+      graphGetAll<BitlockerKeyMeta>(
+        olToken,
+        `${GRAPH}/informationProtection/bitlocker/recoveryKeys`,
+        'Clés BitLocker ONELA',
+        {
+          'ocp-client-name': 'DSI App',
+          'ocp-client-version': '1.0',
+        }
+      )
     )
 
     // ── Ouihelp ──
@@ -358,11 +402,15 @@ export async function runInventorySync(): Promise<void> {
       graphGetAll<IntuneDevice>(
         ohToken,
         `${GRAPH}/deviceManagement/managedDevices?$filter=operatingSystem eq 'Windows'&$select=${INTUNE_SELECT}&$top=999`,
-        'Intune Ouihelp',
-      ),
+        'Intune Ouihelp'
+      )
     )
     const autopilotOh = await optional('Autopilot Ouihelp', () =>
-      graphGetAll<AutopilotDevice>(ohToken, `${GRAPH}/deviceManagement/windowsAutopilotDeviceIdentities`, 'Autopilot Ouihelp'),
+      graphGetAll<AutopilotDevice>(
+        ohToken,
+        `${GRAPH}/deviceManagement/windowsAutopilotDeviceIdentities`,
+        'Autopilot Ouihelp'
+      )
     )
 
     syncState.step = 'Consolidation'
@@ -379,7 +427,12 @@ export async function runInventorySync(): Promise<void> {
     for (const m of intuneOh ?? []) {
       const s = normSerial(m.serialNumber)
       const prev = s ? ohIntuneBySerial.get(s) : undefined
-      if (s && (!prev || (toDate(m.lastSyncDateTime)?.getTime() ?? 0) > (toDate(prev.lastSyncDateTime)?.getTime() ?? 0))) {
+      if (
+        s &&
+        (!prev ||
+          (toDate(m.lastSyncDateTime)?.getTime() ?? 0) >
+            (toDate(prev.lastSyncDateTime)?.getTime() ?? 0))
+      ) {
         ohIntuneBySerial.set(s, m)
       }
     }
@@ -399,8 +452,16 @@ export async function runInventorySync(): Promise<void> {
     let written = 0
     for (const d of drafts) {
       const primary = d.entra[0] ?? null
-      const entraDeviceId = primary ? primary.deviceId.toLowerCase() : cleanGuid(d.intune?.azureADDeviceId ?? d.autopilot?.azureActiveDirectoryDeviceId)
-      const key = d.serial ? `sn:${d.serial}` : entraDeviceId ? `aad:${entraDeviceId}` : d.intune ? `intune:${d.intune.id}` : `autopilot:${d.autopilot!.id}`
+      const entraDeviceId = primary
+        ? primary.deviceId.toLowerCase()
+        : cleanGuid(d.intune?.azureADDeviceId ?? d.autopilot?.azureActiveDirectoryDeviceId)
+      const key = d.serial
+        ? `sn:${d.serial}`
+        : entraDeviceId
+          ? `aad:${entraDeviceId}`
+          : d.intune
+            ? `intune:${d.intune.id}`
+            : `autopilot:${d.autopilot!.id}`
       const prev =
         existingByKey.get(key) ??
         d.entra.map((e) => existingByEntra.get(e.deviceId.toLowerCase())).find(Boolean) ??
@@ -422,13 +483,19 @@ export async function runInventorySync(): Promise<void> {
         registrationDateTime: e.registrationDateTime,
         isManaged: e.isManaged,
       }))
-      const keyCount = bitlockerOl ? d.entra.reduce((n, e) => n + (keysByDevice.get(e.deviceId.toLowerCase()) ?? 0), 0) : null
+      const keyCount = bitlockerOl
+        ? d.entra.reduce((n, e) => n + (keysByDevice.get(e.deviceId.toLowerCase()) ?? 0), 0)
+        : null
 
-      const values: Omit<NewDeviceMigrationRow, 'id' | 'excluded' | 'excludeReason' | 'firstSeenAt' | 'createdAt'> = {
+      const values: Omit<
+        NewDeviceMigrationRow,
+        'id' | 'excluded' | 'excludeReason' | 'firstSeenAt' | 'createdAt'
+      > = {
         deviceKey: key,
         displayName: draftName(d),
         serialNumber: d.serial,
-        manufacturer: d.intune?.manufacturer ?? d.autopilot?.manufacturer ?? primary?.manufacturer ?? null,
+        manufacturer:
+          d.intune?.manufacturer ?? d.autopilot?.manufacturer ?? primary?.manufacturer ?? null,
         model: d.intune?.model ?? d.autopilot?.model ?? primary?.model ?? null,
         osVersion: d.intune?.osVersion ?? primary?.operatingSystemVersion ?? null,
         joinType: joinTypeOf(primary?.trustType),
@@ -449,7 +516,9 @@ export async function runInventorySync(): Promise<void> {
         totalStorageGb: gb(d.intune?.totalStorageSpaceInBytes),
         bitlockerKeysOnela: keyCount,
         ouihelpIntuneId: ohIntune?.id ?? null,
-        ouihelpEntraDeviceId: cleanGuid(ohIntune?.azureADDeviceId ?? ohAutopilot?.azureActiveDirectoryDeviceId),
+        ouihelpEntraDeviceId: cleanGuid(
+          ohIntune?.azureADDeviceId ?? ohAutopilot?.azureActiveDirectoryDeviceId
+        ),
         ouihelpAutopilotId: ohAutopilot?.id ?? null,
         ouihelpLastSync: toDate(ohIntune?.lastSyncDateTime),
         ouihelpUserUpn: ohIntune?.userPrincipalName?.toLowerCase() || null,
@@ -461,7 +530,9 @@ export async function runInventorySync(): Promise<void> {
         existingByKey.delete(prev.deviceKey)
         if (prev.onelaEntraDeviceId) existingByEntra.delete(prev.onelaEntraDeviceId)
       } else {
-        await db.insert(deviceMigrations).values({ id: randomUUID(), ...values, firstSeenAt: startedAt })
+        await db
+          .insert(deviceMigrations)
+          .values({ id: randomUUID(), ...values, firstSeenAt: startedAt })
       }
       written++
     }
@@ -476,7 +547,9 @@ export async function runInventorySync(): Promise<void> {
         .update(deviceMigrations)
         .set({
           ouihelpIntuneId: ohIntune?.id ?? null,
-          ouihelpEntraDeviceId: cleanGuid(ohIntune?.azureADDeviceId ?? ohAutopilot?.azureActiveDirectoryDeviceId),
+          ouihelpEntraDeviceId: cleanGuid(
+            ohIntune?.azureADDeviceId ?? ohAutopilot?.azureActiveDirectoryDeviceId
+          ),
           ouihelpAutopilotId: ohAutopilot?.id ?? null,
           ouihelpLastSync: toDate(ohIntune?.lastSyncDateTime),
           ouihelpUserUpn: ohIntune?.userPrincipalName?.toLowerCase() || null,
@@ -486,10 +559,29 @@ export async function runInventorySync(): Promise<void> {
 
     await db
       .insert(syncStatus)
-      .values({ id: SYNC_STATUS_ID, status: 'idle', lastSyncAt: startedAt, deviceCount: written, userCount: 0, syncStep: 'Terminé', syncProgress: 100 })
-      .onDuplicateKeyUpdate({ set: { status: 'idle', lastSyncAt: startedAt, deviceCount: written, syncStep: 'Terminé', syncProgress: 100, error: null } })
+      .values({
+        id: SYNC_STATUS_ID,
+        status: 'idle',
+        lastSyncAt: startedAt,
+        deviceCount: written,
+        userCount: 0,
+        syncStep: 'Terminé',
+        syncProgress: 100,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          status: 'idle',
+          lastSyncAt: startedAt,
+          deviceCount: written,
+          syncStep: 'Terminé',
+          syncProgress: 100,
+          error: null,
+        },
+      })
 
-    console.log(`[device-migration] sync OK : ${written} postes (${syncState.warnings.length} avertissement(s))`)
+    console.log(
+      `[device-migration] sync OK : ${written} postes (${syncState.warnings.length} avertissement(s))`
+    )
   } catch (err) {
     syncState.error = err instanceof Error ? err.message : String(err)
     console.error('[device-migration] sync failed:', syncState.error)

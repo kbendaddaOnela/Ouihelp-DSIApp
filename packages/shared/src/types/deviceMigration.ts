@@ -5,9 +5,10 @@
  * - entra_joined : AzureAd (Entra Joined, en général Intune / Autopilot)
  * - hybrid       : ServerAd (joint à l'AD local ONELA + synchronisé dans Entra)
  * - registered   : Workplace (Entra registered seul — AD local ou workgroup)
+ * - ad_only      : joint à l'AD local sans objet Entra (connu uniquement par l'agent)
  * - unknown      : vu par Intune / Autopilot sans objet Entra correspondant
  */
-export type DeviceJoinType = 'entra_joined' | 'hybrid' | 'registered' | 'unknown'
+export type DeviceJoinType = 'entra_joined' | 'hybrid' | 'registered' | 'ad_only' | 'unknown'
 
 /**
  * État dérivé pour le suivi (lot 1 — inventaire) :
@@ -55,6 +56,13 @@ export interface DeviceMigrationRecord {
   /** officeLocation de l'utilisateur ONELA principal (= agence) */
   onelaOfficeLocation: string | null
   onelaDepartment: string | null
+  /**
+   * Agence du poste : trigramme en préfixe du nom (« AIX-2023… ») rapproché de la table
+   * agencies, sinon officeLocation de l'utilisateur ONELA
+   */
+  agency: string | null
+  /** true si l'agence vient du nom du poste, false si de l'utilisateur */
+  agencyFromName: boolean
   /** Région ONELA, déduite de l'agence (table agencies) */
   region: string | null
   isEncrypted: boolean | null
@@ -73,6 +81,79 @@ export interface DeviceMigrationRecord {
   excludeReason: string | null
   firstSeenAt: string
   lastSeenAt: string
+  /** Dernier état remonté par l'agent DSI installé sur le PC (null = pas d'agent) */
+  agent: DeviceAgentSummary | null
+}
+
+// ── Agent DSI (lot 2) ────────────────────────────────────────────────────────
+
+/** Profil Windows présent sur le PC. Les tailles ne comptent que les octets présents localement. */
+export interface DeviceAgentProfile {
+  sid: string
+  /** DOMAINE\compte (AD) ou UPN (Entra) ; null si non résolu */
+  account: string | null
+  kind: 'ad' | 'entra' | 'local' | 'unknown'
+  lastUseTime: string | null
+  loaded: boolean
+  /** Bureau + Documents + Téléchargements + dossiers OneDrive, en Mo (null = non mesuré) */
+  localDataMb: number | null
+}
+
+/** Rapport envoyé par l'agent à chaque check-in (format v1). */
+export interface DeviceAgentReport {
+  agentVersion: string
+  machineGuid: string
+  hostname: string
+  serialNumber: string | null
+  manufacturer: string | null
+  model: string | null
+  os: {
+    caption: string | null
+    version: string | null
+    build: string | null
+    edition: string | null
+  }
+  domain: { partOfDomain: boolean; name: string | null }
+  /** Extrait de dsregcmd /status (section état de l'appareil) */
+  dsreg: {
+    azureAdJoined: boolean
+    domainJoined: boolean
+    workplaceJoined: boolean
+    deviceId: string | null
+    tenantId: string | null
+    tenantName: string | null
+  }
+  mdm: { enrolled: boolean; upn: string | null; gpoAutoEnroll: boolean }
+  sccmClient: boolean
+  tpm: { present: boolean; ready: boolean; version: string | null }
+  secureBoot: boolean | null
+  winreEnabled: boolean | null
+  bitlocker: { protectionOn: boolean | null; hasRecoveryPassword: boolean | null }
+  network: { ethernet: boolean; wifi: boolean; ssid: string | null; wifiProfiles: string[] }
+  disk: { freeGb: number | null; totalGb: number | null }
+  consoleUser: string | null
+  lastBoot: string | null
+  profiles: DeviceAgentProfile[]
+  /** Date de la mesure des tailles de profil (recalculées au plus 1 fois par jour) */
+  profilesMeasuredAt: string | null
+}
+
+export interface DeviceAgentSummary {
+  id: string
+  firstCheckinAt: string
+  lastCheckinAt: string
+  /** Pas de check-in depuis plus de 24 h */
+  silent: boolean
+  /** Le PC est déjà joint au tenant Ouihelp (dsregcmd) */
+  joinedToOuihelp: boolean
+  report: DeviceAgentReport
+}
+
+export interface DeviceAgentCheckinResponse {
+  agentId: string
+  /** Renvoyé uniquement au 1er enregistrement : à conserver par l'agent */
+  deviceToken?: string
+  nextCheckinMinutes: number
 }
 
 export interface DeviceMigrationSyncState {

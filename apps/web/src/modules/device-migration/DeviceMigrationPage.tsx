@@ -1,11 +1,35 @@
 import { Fragment, useMemo, useState } from 'react'
-import { Laptop, Info, RefreshCw, Search, Download, AlertTriangle, ChevronDown, ChevronRight, Lock, LockOpen } from 'lucide-react'
-import type { DeviceJoinType, DeviceMigrationRecord, DeviceMigrationState } from '@dsi-app/shared'
+import {
+  Laptop,
+  Info,
+  RefreshCw,
+  Search,
+  Download,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Lock,
+  LockOpen,
+  Radio,
+} from 'lucide-react'
+import type {
+  DeviceAgentReport,
+  DeviceJoinType,
+  DeviceMigrationRecord,
+  DeviceMigrationState,
+} from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { usePermission } from '@/hooks/usePermission'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
-import { useDeviceMigrations, useDeviceSyncState, useStartDeviceSync, useUpdateDeviceMigration } from './hooks'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
+import {
+  useDeviceMigrations,
+  useDeviceSyncState,
+  useStartDeviceSync,
+  useUpdateDeviceMigration,
+  useResetDeviceAgent,
+} from './hooks'
 
 const inputCls =
   'rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500'
@@ -22,17 +46,54 @@ const JOIN_CFG: Record<DeviceJoinType, { label: string; hint: string }> = {
   entra_joined: { label: 'Entra Joined', hint: 'Joint à Entra ONELA (Intune / Autopilot)' },
   hybrid: { label: 'Hybride', hint: 'Joint à l’AD local ONELA + synchronisé dans Entra' },
   registered: { label: 'Registered', hint: 'Entra registered seul (AD local ou workgroup)' },
+  ad_only: { label: 'AD seul', hint: 'Joint à l’AD local sans objet Entra (remonté par l’agent)' },
   unknown: { label: 'Inconnu', hint: 'Vu par Intune / Autopilot sans objet Entra' },
 }
 
 function fmtDate(d: string | null) {
   if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' })
+  return new Date(d).toLocaleDateString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+  })
 }
 
 function fmtDateTime(d: string | null) {
   if (!d) return '—'
   return new Date(d).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+/** Données locales de tous les profils non locaux (perdues à la bascule), en Mo */
+function localDataMb(r: DeviceAgentReport): number | null {
+  const sizes = r.profiles.filter((p) => p.kind !== 'local').map((p) => p.localDataMb)
+  if (sizes.length === 0) return 0
+  return sizes.some((v) => v == null) ? null : sizes.reduce<number>((a, b) => a + (b ?? 0), 0)
+}
+
+function fmtMb(mb: number | null) {
+  if (mb == null) return '?'
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} Go` : `${mb} Mo`
+}
+
+/** Points d'attention avant bascule, déduits du rapport de l'agent. */
+function agentWarnings(r: DeviceAgentReport): string[] {
+  const w: string[] = []
+  if (r.winreEnabled === false) w.push('WinRE désactivé (pas de réinstallation à distance)')
+  if (!r.tpm.present) w.push('Pas de TPM')
+  else if (!r.tpm.ready) w.push('TPM non prêt')
+  if (r.disk.freeGb != null && r.disk.freeGb < 20)
+    w.push(`Disque presque plein (${r.disk.freeGb} Go libres)`)
+  if (r.network.wifi && !r.network.ethernet)
+    w.push(`Wi-Fi uniquement${r.network.ssid ? ` (${r.network.ssid})` : ''}`)
+  if (!r.network.wifi && !r.network.ethernet)
+    w.push('Aucune carte réseau active au dernier passage')
+  const data = localDataMb(r)
+  if (data != null && data >= 500)
+    w.push(`${fmtMb(data)} de données locales (perdues à la bascule)`)
+  if (r.sccmClient) w.push('Client SCCM présent')
+  if (r.mdm.gpoAutoEnroll) w.push('Inscription Intune automatique par GPO (à neutraliser)')
+  return w
 }
 
 // ── Export CSV (séparateur « ; » pour Excel FR) ──────────────────────────────
@@ -46,7 +107,8 @@ function exportCsv(devices: DeviceMigrationRecord[]) {
     ['Jonction', (d) => JOIN_CFG[d.joinType].label],
     ['État', (d) => STATE_CFG[d.state].label],
     ['Utilisateur ONELA', (d) => d.onelaUserUpn],
-    ['Agence', (d) => d.onelaOfficeLocation],
+    ['Agence', (d) => d.agency],
+    ['Agence de l’utilisateur', (d) => d.onelaOfficeLocation],
     ['Région', (d) => d.region],
     ['Dernière activité', (d) => fmtDate(d.lastActivityAt)],
     ['Intune ONELA', (d) => (d.onelaIntuneId ? 'oui' : 'non')],
@@ -55,13 +117,36 @@ function exportCsv(devices: DeviceMigrationRecord[]) {
     ['Clés BitLocker ONELA', (d) => d.bitlockerKeysOnela],
     ['Disque libre (Go)', (d) => d.freeStorageGb],
     ['Intune Ouihelp', (d) => (d.ouihelpIntuneId ? 'oui' : 'non')],
+    ['Dernier check-in agent', (d) => (d.agent ? fmtDateTime(d.agent.lastCheckinAt) : '')],
+    [
+      'Réseau',
+      (d) =>
+        d.agent
+          ? [d.agent.report.network.ethernet && 'Ethernet', d.agent.report.network.wifi && 'Wi-Fi']
+              .filter(Boolean)
+              .join(' + ')
+          : '',
+    ],
+    ['SSID', (d) => d.agent?.report.network.ssid ?? ''],
+    [
+      'WinRE',
+      (d) =>
+        d.agent?.report.winreEnabled == null ? '' : d.agent.report.winreEnabled ? 'oui' : 'non',
+    ],
+    ['TPM', (d) => d.agent?.report.tpm.version ?? (d.agent ? 'absent' : '')],
+    ['Profils', (d) => d.agent?.report.profiles.map((p) => p.account ?? p.sid).join(', ') ?? ''],
+    ['Données locales (Mo)', (d) => (d.agent ? localDataMb(d.agent.report) : null)],
+    ['Points d’attention', (d) => (d.agent ? agentWarnings(d.agent.report).join(' | ') : '')],
     ['Motif exclusion', (d) => d.excludeReason],
   ]
   const esc = (v: string | number | null) => {
     const s = v == null ? '' : String(v)
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const lines = [cols.map(([h]) => h).join(';'), ...devices.map((d) => cols.map(([, f]) => esc(f(d))).join(';'))]
+  const lines = [
+    cols.map(([h]) => h).join(';'),
+    ...devices.map((d) => cols.map(([, f]) => esc(f(d))).join(';')),
+  ]
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -71,14 +156,26 @@ function exportCsv(devices: DeviceMigrationRecord[]) {
 }
 
 // ── Synthèse ─────────────────────────────────────────────────────────────────
-function Tile({ label, value, sub, onClick, active }: { label: string; value: number; sub?: string; onClick?: () => void; active?: boolean }) {
+function Tile({
+  label,
+  value,
+  sub,
+  onClick,
+  active,
+}: {
+  label: string
+  value: number
+  sub?: string
+  onClick?: () => void
+  active?: boolean
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-lg border bg-white p-3 text-left transition-colors hover:border-primary-300',
-        active ? 'border-primary-500 ring-1 ring-primary-500' : 'border-gray-200',
+        'hover:border-primary-300 rounded-lg border bg-white p-3 text-left transition-colors',
+        active ? 'border-primary-500 ring-primary-500 ring-1' : 'border-gray-200'
       )}
     >
       <div className="text-xs text-gray-500">{label}</div>
@@ -89,63 +186,258 @@ function Tile({ label, value, sub, onClick, active }: { label: string; value: nu
 }
 
 // ── Détail d'un poste ────────────────────────────────────────────────────────
+function AgentPanel({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boolean }) {
+  const reset = useResetDeviceAgent()
+  const { confirm } = useConfirm()
+  const a = d.agent
+  if (!a) {
+    return (
+      <div className="border-t border-gray-200 px-4 py-3 text-xs text-gray-400">
+        Agent DSI non installé ou pas encore remonté.
+      </div>
+    )
+  }
+  const r = a.report
+  const warnings = agentWarnings(r)
+  return (
+    <div className="space-y-3 border-t border-gray-200 px-4 py-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="font-semibold text-gray-700">
+          Agent v{r.agentVersion} · dernier passage {fmtDateTime(a.lastCheckinAt)}
+          {a.silent && <span className="ml-2 text-amber-600">silencieux depuis plus de 24 h</span>}
+        </div>
+        {canWrite && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={reset.isPending}
+            onClick={async () => {
+              const res = await confirm({
+                title: 'Réinitialiser l’agent ?',
+                message:
+                  'Son jeton est effacé : au prochain passage, l’agent devra se ré-enrôler avec la clé commune. À utiliser si le poste répond « déjà enregistré » (409).',
+                confirmLabel: 'Réinitialiser',
+              })
+              if (res.confirmed) reset.mutate(d.id)
+            }}
+          >
+            Réinitialiser l’agent
+          </Button>
+        )}
+      </div>
+      {warnings.length > 0 && (
+        <ul className="space-y-0.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+          {warnings.map((w) => (
+            <li key={w}>⚠ {w}</li>
+          ))}
+        </ul>
+      )}
+      <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <span className="text-gray-400">Windows :</span> {r.os.edition ?? '?'}{' '}
+          {r.os.version ?? ''} ({r.os.build ?? '?'})
+        </div>
+        <div>
+          <span className="text-gray-400">Domaine :</span>{' '}
+          {r.domain.partOfDomain ? r.domain.name : 'aucun (workgroup)'}
+        </div>
+        <div>
+          <span className="text-gray-400">Entra :</span>{' '}
+          {r.dsreg.azureAdJoined
+            ? `joint · ${r.dsreg.tenantName ?? r.dsreg.tenantId ?? '?'}`
+            : r.dsreg.workplaceJoined
+              ? 'registered'
+              : 'non joint'}
+        </div>
+        <div>
+          <span className="text-gray-400">MDM :</span>{' '}
+          {r.mdm.enrolled ? (r.mdm.upn ?? 'inscrit') : 'non inscrit'}
+          {r.sccmClient ? ' · SCCM' : ''}
+        </div>
+        <div>
+          <span className="text-gray-400">TPM :</span>{' '}
+          {r.tpm.present ? `${r.tpm.version ?? '?'}${r.tpm.ready ? '' : ' (non prêt)'}` : 'absent'}{' '}
+          · Secure Boot {r.secureBoot == null ? '?' : r.secureBoot ? 'oui' : 'non'}
+        </div>
+        <div>
+          <span className="text-gray-400">WinRE :</span>{' '}
+          {r.winreEnabled == null ? '?' : r.winreEnabled ? 'activé' : 'désactivé'}
+        </div>
+        <div>
+          <span className="text-gray-400">BitLocker :</span>{' '}
+          {r.bitlocker.protectionOn == null ? '?' : r.bitlocker.protectionOn ? 'actif' : 'inactif'}
+          {r.bitlocker.hasRecoveryPassword ? ' · mot de passe de récupération' : ''}
+        </div>
+        <div>
+          <span className="text-gray-400">Réseau :</span>{' '}
+          {[
+            r.network.ethernet && 'Ethernet',
+            r.network.wifi && `Wi-Fi${r.network.ssid ? ` (${r.network.ssid})` : ''}`,
+          ]
+            .filter(Boolean)
+            .join(' + ') || 'aucun'}
+        </div>
+        <div>
+          <span className="text-gray-400">Disque :</span> {r.disk.freeGb ?? '?'} Go libres /{' '}
+          {r.disk.totalGb ?? '?'} Go
+        </div>
+        <div className="sm:col-span-2 lg:col-span-3">
+          <span className="text-gray-400">Profils Wi-Fi :</span>{' '}
+          {r.network.wifiProfiles.join(', ') || '—'}
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 font-semibold text-gray-700">
+          Profils Windows ({r.profiles.length}) — mesurés le {fmtDateTime(r.profilesMeasuredAt)}
+        </div>
+        <table className="w-full">
+          <thead className="text-left text-gray-400">
+            <tr>
+              <th className="py-1 pr-3 font-medium">Compte</th>
+              <th className="py-1 pr-3 font-medium">Type</th>
+              <th className="py-1 pr-3 font-medium">Dernière utilisation</th>
+              <th className="py-1 font-medium">Données locales</th>
+            </tr>
+          </thead>
+          <tbody>
+            {r.profiles.map((p) => (
+              <tr key={p.sid}>
+                <td className="py-0.5 pr-3 font-mono text-gray-700">
+                  {p.account ?? p.sid}
+                  {p.loaded && <span className="ml-1 font-sans text-green-600">(connecté)</span>}
+                </td>
+                <td className="py-0.5 pr-3 text-gray-500">
+                  {p.kind === 'ad'
+                    ? 'AD'
+                    : p.kind === 'entra'
+                      ? 'Entra'
+                      : p.kind === 'local'
+                        ? 'local'
+                        : '?'}
+                </td>
+                <td className="py-0.5 pr-3 text-gray-500">{fmtDate(p.lastUseTime)}</td>
+                <td
+                  className={cn(
+                    'py-0.5',
+                    (p.localDataMb ?? 0) >= 500 ? 'font-medium text-amber-700' : 'text-gray-500'
+                  )}
+                >
+                  {fmtMb(p.localDataMb)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {reset.error && <p className="text-red-600">{(reset.error as Error).message}</p>}
+    </div>
+  )
+}
+
 function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boolean }) {
   const update = useUpdateDeviceMigration()
   const [reason, setReason] = useState(d.excludeReason ?? '')
 
   return (
-    <div className="grid gap-4 bg-gray-50 px-4 py-3 text-xs lg:grid-cols-3">
-      <div className="space-y-1">
-        <div className="font-semibold text-gray-700">ONELA</div>
-        <div><span className="text-gray-400">Intune :</span> {d.onelaIntuneId ? `${d.onelaManagementAgent ?? '?'} · synchro ${fmtDateTime(d.onelaIntuneLastSync)}` : 'non inscrit'}</div>
-        <div><span className="text-gray-400">Autopilot :</span> {d.onelaAutopilotId ? `oui${d.onelaAutopilotGroupTag ? ` (tag ${d.onelaAutopilotGroupTag})` : ''}` : 'non'}</div>
-        <div><span className="text-gray-400">Service :</span> {d.onelaDepartment ?? '—'}</div>
-        <div><span className="text-gray-400">Disque :</span> {d.freeStorageGb != null ? `${d.freeStorageGb} Go libres / ${d.totalStorageGb ?? '?'} Go` : '—'}</div>
-        <div><span className="text-gray-400">Clés BitLocker séquestrées :</span> {d.bitlockerKeysOnela ?? 'non lu'}</div>
-      </div>
-      <div className="space-y-1">
-        <div className="font-semibold text-gray-700">Objets Entra ONELA ({d.onelaEntraObjects.length})</div>
-        {d.onelaEntraObjects.length === 0 ? (
-          <div className="text-gray-400">Aucun</div>
-        ) : (
-          d.onelaEntraObjects.map((o) => (
-            <div key={o.objectId} className="font-mono text-[11px] text-gray-600">
-              {o.trustType ?? '?'} · {o.deviceId.slice(0, 8)}… · {o.accountEnabled ? 'actif' : 'désactivé'} · vu {fmtDate(o.approximateLastSignInDateTime)}
-            </div>
-          ))
-        )}
-        <div className="pt-2 font-semibold text-gray-700">Ouihelp</div>
-        <div><span className="text-gray-400">Intune :</span> {d.ouihelpIntuneId ? `oui · ${d.ouihelpUserUpn ?? 'sans utilisateur'} · synchro ${fmtDateTime(d.ouihelpLastSync)}` : 'non'}</div>
-        <div><span className="text-gray-400">Autopilot :</span> {d.ouihelpAutopilotId ? 'oui' : 'non'}</div>
-      </div>
-      <div className="space-y-2">
-        <div className="font-semibold text-gray-700">Périmètre</div>
-        <div className="text-gray-400">Vu pour la 1ʳᵉ fois le {fmtDate(d.firstSeenAt)}, dernière fois le {fmtDate(d.lastSeenAt)}.</div>
-        {canWrite && (
-          d.excluded ? (
-            <div className="space-y-1">
-              <div className="text-gray-600">Exclu : {d.excludeReason ?? 'sans motif'}</div>
-              <Button size="sm" variant="outline" disabled={update.isPending} onClick={() => update.mutate({ id: d.id, excluded: false })}>
-                Réintégrer dans le périmètre
-              </Button>
-            </div>
+    <div className="bg-gray-50">
+      <div className="grid gap-4 px-4 py-3 text-xs lg:grid-cols-3">
+        <div className="space-y-1">
+          <div className="font-semibold text-gray-700">ONELA</div>
+          <div>
+            <span className="text-gray-400">Intune :</span>{' '}
+            {d.onelaIntuneId
+              ? `${d.onelaManagementAgent ?? '?'} · synchro ${fmtDateTime(d.onelaIntuneLastSync)}`
+              : 'non inscrit'}
+          </div>
+          <div>
+            <span className="text-gray-400">Autopilot :</span>{' '}
+            {d.onelaAutopilotId
+              ? `oui${d.onelaAutopilotGroupTag ? ` (tag ${d.onelaAutopilotGroupTag})` : ''}`
+              : 'non'}
+          </div>
+          <div>
+            <span className="text-gray-400">Service :</span> {d.onelaDepartment ?? '—'}
+          </div>
+          <div>
+            <span className="text-gray-400">Disque :</span>{' '}
+            {d.freeStorageGb != null
+              ? `${d.freeStorageGb} Go libres / ${d.totalStorageGb ?? '?'} Go`
+              : '—'}
+          </div>
+          <div>
+            <span className="text-gray-400">Clés BitLocker séquestrées :</span>{' '}
+            {d.bitlockerKeysOnela ?? 'non lu'}
+          </div>
+        </div>
+        <div className="space-y-1">
+          <div className="font-semibold text-gray-700">
+            Objets Entra ONELA ({d.onelaEntraObjects.length})
+          </div>
+          {d.onelaEntraObjects.length === 0 ? (
+            <div className="text-gray-400">Aucun</div>
           ) : (
-            <div className="flex gap-2">
-              <input
-                className={cn(inputCls, 'min-w-0 flex-1 text-xs')}
-                placeholder="Motif (rebut, prêt, hors périmètre…)"
-                value={reason}
-                maxLength={255}
-                onChange={(e) => setReason(e.target.value)}
-              />
-              <Button size="sm" variant="outline" disabled={update.isPending} onClick={() => update.mutate({ id: d.id, excluded: true, excludeReason: reason })}>
-                Exclure
-              </Button>
-            </div>
-          )
-        )}
-        {update.error && <p className="text-red-600">{(update.error as Error).message}</p>}
+            d.onelaEntraObjects.map((o) => (
+              <div key={o.objectId} className="font-mono text-[11px] text-gray-600">
+                {o.trustType ?? '?'} · {o.deviceId.slice(0, 8)}… ·{' '}
+                {o.accountEnabled ? 'actif' : 'désactivé'} · vu{' '}
+                {fmtDate(o.approximateLastSignInDateTime)}
+              </div>
+            ))
+          )}
+          <div className="pt-2 font-semibold text-gray-700">Ouihelp</div>
+          <div>
+            <span className="text-gray-400">Intune :</span>{' '}
+            {d.ouihelpIntuneId
+              ? `oui · ${d.ouihelpUserUpn ?? 'sans utilisateur'} · synchro ${fmtDateTime(d.ouihelpLastSync)}`
+              : 'non'}
+          </div>
+          <div>
+            <span className="text-gray-400">Autopilot :</span>{' '}
+            {d.ouihelpAutopilotId ? 'oui' : 'non'}
+          </div>
+        </div>
+        <div className="space-y-2">
+          <div className="font-semibold text-gray-700">Périmètre</div>
+          <div className="text-gray-400">
+            Vu pour la 1ʳᵉ fois le {fmtDate(d.firstSeenAt)}, dernière fois le{' '}
+            {fmtDate(d.lastSeenAt)}.
+          </div>
+          {canWrite &&
+            (d.excluded ? (
+              <div className="space-y-1">
+                <div className="text-gray-600">Exclu : {d.excludeReason ?? 'sans motif'}</div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={update.isPending}
+                  onClick={() => update.mutate({ id: d.id, excluded: false })}
+                >
+                  Réintégrer dans le périmètre
+                </Button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  className={cn(inputCls, 'min-w-0 flex-1 text-xs')}
+                  placeholder="Motif (rebut, prêt, hors périmètre…)"
+                  value={reason}
+                  maxLength={255}
+                  onChange={(e) => setReason(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={update.isPending}
+                  onClick={() => update.mutate({ id: d.id, excluded: true, excludeReason: reason })}
+                >
+                  Exclure
+                </Button>
+              </div>
+            ))}
+          {update.error && <p className="text-red-600">{(update.error as Error).message}</p>}
+        </div>
       </div>
+      <AgentPanel d={d} canWrite={canWrite} />
     </div>
   )
 }
@@ -161,6 +453,8 @@ export default function DeviceMigrationPage() {
   const [state, setState] = useState<DeviceMigrationState | ''>('')
   const [join, setJoin] = useState<DeviceJoinType | ''>('')
   const [region, setRegion] = useState('')
+  const [intune, setIntune] = useState<'' | 'in' | 'out'>('')
+  const [agentFilter, setAgentFilter] = useState<'' | 'with' | 'without' | 'warnings'>('')
   const [open, setOpen] = useState<string | null>(null)
 
   const sync = syncData?.sync ?? data?.sync
@@ -169,17 +463,33 @@ export default function DeviceMigrationPage() {
 
   const regions = useMemo(
     () => [...new Set(devices.map((d) => d.region).filter((r): r is string => !!r))].sort(),
-    [devices],
+    [devices]
   )
 
   const counts = useMemo(() => {
-    const byState: Record<DeviceMigrationState, number> = { to_migrate: 0, migrated: 0, stale: 0, excluded: 0, gone: 0 }
-    const byJoin: Record<DeviceJoinType, number> = { entra_joined: 0, hybrid: 0, registered: 0, unknown: 0 }
+    const byState: Record<DeviceMigrationState, number> = {
+      to_migrate: 0,
+      migrated: 0,
+      stale: 0,
+      excluded: 0,
+      gone: 0,
+    }
+    const byJoin: Record<DeviceJoinType, number> = {
+      entra_joined: 0,
+      hybrid: 0,
+      registered: 0,
+      ad_only: 0,
+      unknown: 0,
+    }
+    let withAgent = 0
     for (const d of devices) {
       byState[d.state]++
-      if (d.state === 'to_migrate') byJoin[d.joinType]++
+      if (d.state === 'to_migrate') {
+        byJoin[d.joinType]++
+        if (d.agent && !d.agent.silent) withAgent++
+      }
     }
-    return { byState, byJoin }
+    return { byState, byJoin, withAgent }
   }, [devices])
 
   const filtered = useMemo(() => {
@@ -189,30 +499,51 @@ export default function DeviceMigrationPage() {
         (!state || d.state === state) &&
         (!join || d.joinType === join) &&
         (!region || d.region === region) &&
+        (!intune || (intune === 'in') === !!d.onelaIntuneId) &&
+        (!agentFilter ||
+          (agentFilter === 'with' && !!d.agent) ||
+          (agentFilter === 'without' && !d.agent) ||
+          (agentFilter === 'warnings' && !!d.agent && agentWarnings(d.agent.report).length > 0)) &&
         (!needle ||
-          [d.displayName, d.serialNumber, d.onelaUserUpn, d.onelaUserName, d.onelaOfficeLocation, d.model]
-            .some((v) => v?.toLowerCase().includes(needle))),
+          [
+            d.displayName,
+            d.serialNumber,
+            d.onelaUserUpn,
+            d.onelaUserName,
+            d.onelaOfficeLocation,
+            d.agency,
+            d.model,
+            d.agent?.report.network.ssid,
+          ].some((v) => v?.toLowerCase().includes(needle)))
     )
-  }, [devices, q, state, join, region])
+  }, [devices, q, state, join, region, agentFilter, intune])
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 py-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-50">
-            <Laptop className="h-5 w-5 text-primary-600" />
+            <Laptop className="text-primary-600 h-5 w-5" />
           </div>
           <div>
             <h1 className="text-xl font-semibold text-gray-900">Migration des postes</h1>
-            <p className="text-sm text-gray-500">PC ONELA → tenant Ouihelp (Entra + Intune) avant l’arrêt du tenant ONELA au 31/12</p>
+            <p className="text-sm text-gray-500">
+              PC ONELA → tenant Ouihelp (Entra + Intune) avant l’arrêt du tenant ONELA au 31/12
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">
-            {sync?.running ? `Synchro : ${sync.step ?? '…'}` : `Dernière synchro : ${fmtDateTime(lastSyncAt)}`}
+            {sync?.running
+              ? `Synchro : ${sync.step ?? '…'}`
+              : `Dernière synchro : ${fmtDateTime(lastSyncAt)}`}
           </span>
           {canWrite && (
-            <Button size="sm" onClick={() => startSync.mutate()} disabled={sync?.running || startSync.isPending}>
+            <Button
+              size="sm"
+              onClick={() => startSync.mutate()}
+              disabled={sync?.running || startSync.isPending}
+            >
               <RefreshCw className={cn('mr-1.5 h-4 w-4', sync?.running && 'animate-spin')} />
               Synchroniser
             </Button>
@@ -223,9 +554,10 @@ export default function DeviceMigrationPage() {
       <div className="flex gap-2 rounded-lg border border-blue-100 bg-blue-50/50 p-3 text-xs text-blue-900">
         <Info className="h-4 w-4 shrink-0 text-blue-500" />
         <p>
-          Lot 1 — inventaire en lecture seule : objets Entra, Intune et Autopilot ONELA, rapprochés par n° de série avec
-          Intune / Autopilot Ouihelp. Les PC <strong>uniquement dans l’AD local</strong> (sans objet Entra) n’apparaissent
-          pas ici : ils remonteront avec l’agent de migration (lot 2).
+          Inventaire en lecture seule : objets Entra, Intune et Autopilot ONELA rapprochés par n° de
+          série avec Intune / Autopilot Ouihelp, complétés par l’<strong>agent DSI</strong> installé
+          sur les PC (réseau, TPM, WinRE, profils et données locales). Les PC{' '}
+          <strong>uniquement dans l’AD local</strong> apparaissent dès que leur agent remonte.
         </p>
       </div>
 
@@ -233,23 +565,33 @@ export default function DeviceMigrationPage() {
         <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="h-4 w-4 text-amber-500" />
-            {sync?.error ? `Dernière synchro en échec : ${sync.error}` : 'Synchro partielle — sources non lues :'}
+            {sync?.error
+              ? `Dernière synchro en échec : ${sync.error}`
+              : 'Synchro partielle — sources non lues :'}
           </div>
-          {sync?.warnings.map((w) => <div key={w} className="break-all pl-6">{w}</div>)}
+          {sync?.warnings.map((w) => (
+            <div key={w} className="break-all pl-6">
+              {w}
+            </div>
+          ))}
         </div>
       )}
 
       {isLoading ? (
-        <div className="flex justify-center py-12"><Spinner /></div>
+        <div className="flex justify-center py-12">
+          <Spinner />
+        </div>
       ) : error ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{(error as Error).message}</div>
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {(error as Error).message}
+        </div>
       ) : devices.length === 0 ? (
         <p className="rounded-lg border border-dashed border-gray-200 py-12 text-center text-sm text-gray-400">
           Aucun poste en base. Lancez une première synchronisation.
         </p>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <Tile
               label="À migrer"
               value={counts.byState.to_migrate}
@@ -257,24 +599,92 @@ export default function DeviceMigrationPage() {
               active={state === 'to_migrate'}
               onClick={() => setState(state === 'to_migrate' ? '' : 'to_migrate')}
             />
-            <Tile label="Chez Ouihelp" value={counts.byState.migrated} active={state === 'migrated'} onClick={() => setState(state === 'migrated' ? '' : 'migrated')} />
-            <Tile label="Inactifs > 90 j" value={counts.byState.stale} sub="à nettoyer plutôt qu’à migrer" active={state === 'stale'} onClick={() => setState(state === 'stale' ? '' : 'stale')} />
-            <Tile label="Exclus" value={counts.byState.excluded} active={state === 'excluded'} onClick={() => setState(state === 'excluded' ? '' : 'excluded')} />
-            <Tile label="Disparus d’ONELA" value={counts.byState.gone} sub="absents de la dernière synchro" active={state === 'gone'} onClick={() => setState(state === 'gone' ? '' : 'gone')} />
+            <Tile
+              label="Chez Ouihelp"
+              value={counts.byState.migrated}
+              active={state === 'migrated'}
+              onClick={() => setState(state === 'migrated' ? '' : 'migrated')}
+            />
+            <Tile
+              label="Inactifs > 90 j"
+              value={counts.byState.stale}
+              sub="à nettoyer plutôt qu’à migrer"
+              active={state === 'stale'}
+              onClick={() => setState(state === 'stale' ? '' : 'stale')}
+            />
+            <Tile
+              label="Exclus"
+              value={counts.byState.excluded}
+              active={state === 'excluded'}
+              onClick={() => setState(state === 'excluded' ? '' : 'excluded')}
+            />
+            <Tile
+              label="Agent actif (à migrer)"
+              value={counts.withAgent}
+              sub={`sur ${counts.byState.to_migrate} — ${counts.byState.to_migrate - counts.withAgent} sans agent`}
+              active={agentFilter === 'without'}
+              onClick={() => {
+                setState('to_migrate')
+                setAgentFilter(agentFilter === 'without' ? '' : 'without')
+              }}
+            />
+            <Tile
+              label="Disparus d’ONELA"
+              value={counts.byState.gone}
+              sub="absents de la dernière synchro"
+              active={state === 'gone'}
+              onClick={() => setState(state === 'gone' ? '' : 'gone')}
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[16rem] flex-1">
               <Search className="absolute left-2.5 top-2 h-4 w-4 text-gray-400" />
-              <input className={cn(inputCls, 'w-full pl-8')} placeholder="Nom, n° de série, utilisateur, agence, modèle…" value={q} onChange={(e) => setQ(e.target.value)} />
+              <input
+                className={cn(inputCls, 'w-full pl-8')}
+                placeholder="Nom, n° de série, utilisateur, agence, modèle…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
             </div>
-            <select className={inputCls} value={join} onChange={(e) => setJoin(e.target.value as DeviceJoinType | '')}>
+            <select
+              className={inputCls}
+              value={join}
+              onChange={(e) => setJoin(e.target.value as DeviceJoinType | '')}
+            >
               <option value="">Toutes jonctions</option>
-              {(Object.keys(JOIN_CFG) as DeviceJoinType[]).map((k) => <option key={k} value={k}>{JOIN_CFG[k].label}</option>)}
+              {(Object.keys(JOIN_CFG) as DeviceJoinType[]).map((k) => (
+                <option key={k} value={k}>
+                  {JOIN_CFG[k].label}
+                </option>
+              ))}
             </select>
             <select className={inputCls} value={region} onChange={(e) => setRegion(e.target.value)}>
               <option value="">Toutes régions</option>
-              {regions.map((r) => <option key={r} value={r}>{r}</option>)}
+              {regions.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <select
+              className={inputCls}
+              value={intune}
+              onChange={(e) => setIntune(e.target.value as typeof intune)}
+            >
+              <option value="">Intune : tous</option>
+              <option value="in">Dans Intune ONELA</option>
+              <option value="out">Hors Intune</option>
+            </select>
+            <select
+              className={inputCls}
+              value={agentFilter}
+              onChange={(e) => setAgentFilter(e.target.value as typeof agentFilter)}
+            >
+              <option value="">Agent : tous</option>
+              <option value="with">Avec agent</option>
+              <option value="without">Sans agent</option>
+              <option value="warnings">Points d’attention</option>
             </select>
             <Button size="sm" variant="outline" onClick={() => exportCsv(filtered)}>
               <Download className="mr-1.5 h-4 w-4" /> CSV ({filtered.length})
@@ -291,55 +701,117 @@ export default function DeviceMigrationPage() {
                   <th className="px-3 py-2 font-medium">Utilisateur ONELA</th>
                   <th className="px-3 py-2 font-medium">Agence</th>
                   <th className="px-3 py-2 font-medium">Activité</th>
-                  <th className="px-3 py-2 font-medium" title="Chiffrement BitLocker / clés séquestrées dans Entra ONELA">BitLocker</th>
+                  <th
+                    className="px-3 py-2 font-medium"
+                    title="Chiffrement BitLocker / clés séquestrées dans Entra ONELA"
+                  >
+                    BitLocker
+                  </th>
+                  <th className="px-3 py-2 font-medium">Agent</th>
                   <th className="px-3 py-2 font-medium">État</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filtered.map((d) => (
                   <Fragment key={d.id}>
-                    <tr className="cursor-pointer align-top hover:bg-gray-50" onClick={() => setOpen(open === d.id ? null : d.id)}>
+                    <tr
+                      className="cursor-pointer align-top hover:bg-gray-50"
+                      onClick={() => setOpen(open === d.id ? null : d.id)}
+                    >
                       <td className="px-2 py-2 text-gray-400">
-                        {open === d.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                        {open === d.id ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <div className="font-medium text-gray-900">{d.displayName ?? '—'}</div>
                         <div className="text-[11px] text-gray-400">
                           {[d.manufacturer, d.model].filter(Boolean).join(' ') || '—'}
-                          {d.serialNumber && <span className="ml-1 font-mono">· {d.serialNumber}</span>}
+                          {d.serialNumber && (
+                            <span className="ml-1 font-mono">· {d.serialNumber}</span>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-2" title={JOIN_CFG[d.joinType].hint}>
                         <div className="text-gray-700">{JOIN_CFG[d.joinType].label}</div>
-                        <div className="text-[11px] text-gray-400">{d.onelaIntuneId ? 'Intune' : 'hors Intune'}</div>
+                        <div className="text-[11px] text-gray-400">
+                          {d.onelaIntuneId ? 'Intune' : 'hors Intune'}
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         <div className="text-gray-700">{d.onelaUserName ?? '—'}</div>
-                        {d.onelaUserUpn && <div className="font-mono text-[11px] text-gray-400">{d.onelaUserUpn}</div>}
+                        {d.onelaUserUpn && (
+                          <div className="font-mono text-[11px] text-gray-400">
+                            {d.onelaUserUpn}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-2">
-                        <div className="text-gray-700">{d.onelaOfficeLocation ?? '—'}</div>
+                        <div
+                          className="text-gray-700"
+                          title={
+                            d.agencyFromName
+                              ? 'Déduite du nom du poste'
+                              : 'Agence de l’utilisateur ONELA'
+                          }
+                        >
+                          {d.agency ?? '—'}
+                        </div>
                         {d.region && <div className="text-[11px] text-gray-400">{d.region}</div>}
                       </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-gray-500">{fmtDate(d.lastActivityAt)}</td>
+                      <td className="whitespace-nowrap px-3 py-2 text-gray-500">
+                        {fmtDate(d.lastActivityAt)}
+                      </td>
                       <td className="whitespace-nowrap px-3 py-2">
                         {d.isEncrypted == null ? (
                           <span className="text-gray-300">—</span>
                         ) : d.isEncrypted ? (
-                          <span className="inline-flex items-center gap-1 text-gray-700"><Lock className="h-3.5 w-3.5" />{d.bitlockerKeysOnela ?? '?'} clé(s)</span>
+                          <span className="inline-flex items-center gap-1 text-gray-700">
+                            <Lock className="h-3.5 w-3.5" />
+                            {d.bitlockerKeysOnela ?? '?'} clé(s)
+                          </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-gray-400"><LockOpen className="h-3.5 w-3.5" />non chiffré</span>
+                          <span className="inline-flex items-center gap-1 text-gray-400">
+                            <LockOpen className="h-3.5 w-3.5" />
+                            non chiffré
+                          </span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2">
+                        {d.agent ? (
+                          <span
+                            className={cn(
+                              'inline-flex items-center gap-1',
+                              d.agent.silent ? 'text-amber-600' : 'text-emerald-600'
+                            )}
+                            title={`Dernier passage ${fmtDateTime(d.agent.lastCheckinAt)}`}
+                          >
+                            <Radio className="h-3.5 w-3.5" />
+                            {fmtDate(d.agent.lastCheckinAt)}
+                            {agentWarnings(d.agent.report).length > 0 && (
+                              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
                         )}
                       </td>
                       <td className="px-3 py-2">
-                        <span className={cn('whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium', STATE_CFG[d.state].cls)}>
+                        <span
+                          className={cn(
+                            'whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium',
+                            STATE_CFG[d.state].cls
+                          )}
+                        >
                           {STATE_CFG[d.state].label}
                         </span>
                       </td>
                     </tr>
                     {open === d.id && (
                       <tr>
-                        <td colSpan={8} className="p-0">
+                        <td colSpan={9} className="p-0">
                           <DeviceDetail key={d.id} d={d} canWrite={canWrite} />
                         </td>
                       </tr>
@@ -348,7 +820,11 @@ export default function DeviceMigrationPage() {
                 ))}
               </tbody>
             </table>
-            {filtered.length === 0 && <p className="py-8 text-center text-sm text-gray-400">Aucun poste ne correspond aux filtres.</p>}
+            {filtered.length === 0 && (
+              <p className="py-8 text-center text-sm text-gray-400">
+                Aucun poste ne correspond aux filtres.
+              </p>
+            )}
           </div>
         </>
       )}

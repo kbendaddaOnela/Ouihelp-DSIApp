@@ -11,6 +11,7 @@ import { onelaContactsRouter } from '../modules/onela-contacts/routes'
 import { accountsRouter } from '../modules/accounts/routes'
 import { offboardingRouter } from '../modules/offboarding/routes'
 import { deviceMigrationRouter } from '../modules/device-migration/routes'
+import { deviceAgentRouter } from '../modules/device-migration/agentRoutes'
 
 export const apiRouter = new Hono()
 
@@ -26,6 +27,8 @@ apiRouter.route('/onela-contacts', onelaContactsRouter)
 apiRouter.route('/accounts', accountsRouter)
 apiRouter.route('/offboarding', offboardingRouter)
 apiRouter.route('/device-migration', deviceMigrationRouter)
+// Appelé par l'agent installé sur les PC : authentification propre (clé d'enrôlement + jeton par poste)
+apiRouter.route('/device-agent', deviceAgentRouter)
 
 // Route de santé — accessible sans authentification
 apiRouter.get('/health', (c) => {

@@ -248,6 +248,14 @@ async function ensureSchemaPatches() {
         `ALTER TABLE \`shared_migrations\` MODIFY COLUMN \`step_mail_import\` ` +
         `enum('pending','running','success','error','skipped','paused') NOT NULL DEFAULT 'pending'`,
     },
+    {
+      table: 'device_migrations',
+      column: 'join_type',
+      value: 'ad_only',
+      ddl:
+        `ALTER TABLE \`device_migrations\` MODIFY COLUMN \`join_type\` ` +
+        `enum('entra_joined','hybrid','registered','ad_only','unknown') NOT NULL DEFAULT 'unknown'`,
+    },
   ]
   for (const p of enumValuePatches) {
     try {
@@ -751,7 +759,7 @@ async function ensureSchemaPatches() {
         \`manufacturer\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`model\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`os_version\` varchar(100),
-        \`join_type\` enum('entra_joined','hybrid','registered','unknown') NOT NULL DEFAULT 'unknown',
+        \`join_type\` enum('entra_joined','hybrid','registered','ad_only','unknown') NOT NULL DEFAULT 'unknown',
         \`onela_entra_device_id\` varchar(36),
         \`onela_entra_objects\` text,
         \`onela_entra_last_sign_in\` timestamp NULL,
@@ -783,6 +791,25 @@ async function ensureSchemaPatches() {
         UNIQUE KEY \`uq_device_migrations_key\` (\`device_key\`),
         KEY \`idx_device_migrations_serial\` (\`serial_number\`),
         KEY \`idx_device_migrations_entra\` (\`onela_entra_device_id\`)
+      )`,
+    },
+    {
+      table: 'device_agents',
+      ddl: `CREATE TABLE \`device_agents\` (
+        \`id\` varchar(36) NOT NULL,
+        \`machine_guid\` varchar(64) NOT NULL,
+        \`device_migration_id\` varchar(36),
+        \`token_hash\` varchar(64),
+        \`hostname\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`serial_number\` varchar(100),
+        \`agent_version\` varchar(20),
+        \`report\` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`remote_ip\` varchar(64),
+        \`first_checkin_at\` timestamp NOT NULL DEFAULT (now()),
+        \`last_checkin_at\` timestamp NOT NULL DEFAULT (now()),
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`uq_device_agents_machine\` (\`machine_guid\`),
+        KEY \`idx_device_agents_device\` (\`device_migration_id\`)
       )`,
     },
   ]

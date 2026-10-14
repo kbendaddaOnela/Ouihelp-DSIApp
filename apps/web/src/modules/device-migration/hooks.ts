@@ -38,7 +38,16 @@ export function useStartDeviceSync() {
 export function useUpdateDeviceMigration() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...req }: UpdateDeviceMigrationRequest & { id: string }) => deviceMigrationApi.update(id, req),
+    mutationFn: ({ id, ...req }: UpdateDeviceMigrationRequest & { id: string }) =>
+      deviceMigrationApi.update(id, req),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}
+
+export function useResetDeviceAgent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: deviceMigrationApi.resetAgent,
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
 }

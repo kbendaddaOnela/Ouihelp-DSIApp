@@ -120,4 +120,8 @@ export type {
   DeviceMigrationSyncState,
   DeviceMigrationListResponse,
   UpdateDeviceMigrationRequest,
+  DeviceAgentProfile,
+  DeviceAgentReport,
+  DeviceAgentSummary,
+  DeviceAgentCheckinResponse,
 } from './types/deviceMigration'
