@@ -453,6 +453,7 @@ export default function DeviceMigrationPage() {
   const [state, setState] = useState<DeviceMigrationState | ''>('')
   const [join, setJoin] = useState<DeviceJoinType | ''>('')
   const [region, setRegion] = useState('')
+  const [agency, setAgency] = useState('')
   const [intune, setIntune] = useState<'' | 'in' | 'out'>('')
   const [agentFilter, setAgentFilter] = useState<'' | 'with' | 'without' | 'warnings'>('')
   const [open, setOpen] = useState<string | null>(null)
@@ -460,6 +461,16 @@ export default function DeviceMigrationPage() {
   const sync = syncData?.sync ?? data?.sync
   const lastSyncAt = syncData?.lastSyncAt ?? data?.lastSyncAt ?? null
   const devices = data?.devices ?? []
+
+  // Agences proposées : celles de la région choisie, sinon toutes (avec le nombre de postes)
+  const agencies = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const d of devices) {
+      if (!d.agency || (region && d.region !== region)) continue
+      counts.set(d.agency, (counts.get(d.agency) ?? 0) + 1)
+    }
+    return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b, 'fr'))
+  }, [devices, region])
 
   const regions = useMemo(
     () => [...new Set(devices.map((d) => d.region).filter((r): r is string => !!r))].sort(),
@@ -499,6 +510,7 @@ export default function DeviceMigrationPage() {
         (!state || d.state === state) &&
         (!join || d.joinType === join) &&
         (!region || d.region === region) &&
+        (!agency || d.agency === agency) &&
         (!intune || (intune === 'in') === !!d.onelaIntuneId) &&
         (!agentFilter ||
           (agentFilter === 'with' && !!d.agent) ||
@@ -516,7 +528,7 @@ export default function DeviceMigrationPage() {
             d.agent?.report.network.ssid,
           ].some((v) => v?.toLowerCase().includes(needle)))
     )
-  }, [devices, q, state, join, region, agentFilter, intune])
+  }, [devices, q, state, join, region, agency, agentFilter, intune])
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 py-6">
@@ -659,11 +671,26 @@ export default function DeviceMigrationPage() {
                 </option>
               ))}
             </select>
-            <select className={inputCls} value={region} onChange={(e) => setRegion(e.target.value)}>
+            <select
+              className={inputCls}
+              value={region}
+              onChange={(e) => {
+                setRegion(e.target.value)
+                setAgency('')
+              }}
+            >
               <option value="">Toutes régions</option>
               {regions.map((r) => (
                 <option key={r} value={r}>
                   {r}
+                </option>
+              ))}
+            </select>
+            <select className={inputCls} value={agency} onChange={(e) => setAgency(e.target.value)}>
+              <option value="">Toutes agences</option>
+              {agencies.map(([a, n]) => (
+                <option key={a} value={a}>
+                  {a} ({n})
                 </option>
               ))}
             </select>
