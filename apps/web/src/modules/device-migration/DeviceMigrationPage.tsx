@@ -497,7 +497,7 @@ export default function DeviceMigrationPage() {
       byState[d.state]++
       if (d.state === 'to_migrate') {
         byJoin[d.joinType]++
-        if (d.agent && !d.agent.silent) withAgent++
+        if (d.agent) withAgent++
       }
     }
     return { byState, byJoin, withAgent }
@@ -631,13 +631,14 @@ export default function DeviceMigrationPage() {
               onClick={() => setState(state === 'excluded' ? '' : 'excluded')}
             />
             <Tile
-              label="Agent actif (à migrer)"
+              label="Avec agent (à migrer)"
               value={counts.withAgent}
               sub={`sur ${counts.byState.to_migrate} — ${counts.byState.to_migrate - counts.withAgent} sans agent`}
-              active={agentFilter === 'without'}
+              active={state === 'to_migrate' && agentFilter === 'with'}
               onClick={() => {
-                setState('to_migrate')
-                setAgentFilter(agentFilter === 'without' ? '' : 'without')
+                const on = state === 'to_migrate' && agentFilter === 'with'
+                setState(on ? '' : 'to_migrate')
+                setAgentFilter(on ? '' : 'with')
               }}
             />
             <Tile
