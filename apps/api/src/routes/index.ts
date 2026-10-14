@@ -10,6 +10,7 @@ import { ximiMigrationRouter } from '../modules/sharepoint-ximi/routes'
 import { onelaContactsRouter } from '../modules/onela-contacts/routes'
 import { accountsRouter } from '../modules/accounts/routes'
 import { offboardingRouter } from '../modules/offboarding/routes'
+import { deviceMigrationRouter } from '../modules/device-migration/routes'
 
 export const apiRouter = new Hono()
 
@@ -24,6 +25,7 @@ apiRouter.route('/sharepoint-ximi', ximiMigrationRouter)
 apiRouter.route('/onela-contacts', onelaContactsRouter)
 apiRouter.route('/accounts', accountsRouter)
 apiRouter.route('/offboarding', offboardingRouter)
+apiRouter.route('/device-migration', deviceMigrationRouter)
 
 // Route de santé — accessible sans authentification
 apiRouter.get('/health', (c) => {

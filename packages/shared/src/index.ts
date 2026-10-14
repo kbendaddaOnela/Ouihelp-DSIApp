@@ -111,3 +111,13 @@ export type {
   OffboardingDelegatedMailbox,
   OffboardingDelegationsResponse,
 } from './types/offboarding'
+
+export type {
+  DeviceJoinType,
+  DeviceMigrationState,
+  DeviceEntraObject,
+  DeviceMigrationRecord,
+  DeviceMigrationSyncState,
+  DeviceMigrationListResponse,
+  UpdateDeviceMigrationRequest,
+} from './types/deviceMigration'

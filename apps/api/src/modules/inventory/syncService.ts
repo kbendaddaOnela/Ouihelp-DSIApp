@@ -10,7 +10,7 @@ const ADMIN_DIRECTORY_SCOPE = 'https://www.googleapis.com/auth/admin.directory.u
 
 const msTokenCache = new Map<string, { token: string; expiresAt: number }>()
 
-async function getMsToken(tenantId: string, clientId: string, clientSecret: string): Promise<string> {
+export async function getMsToken(tenantId: string, clientId: string, clientSecret: string): Promise<string> {
   const key = `${tenantId}|${clientId}`
   const cached = msTokenCache.get(key)
   if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token
@@ -31,7 +31,7 @@ async function getMsToken(tenantId: string, clientId: string, clientSecret: stri
   return data.access_token
 }
 
-function ouihelpCreds() {
+export function ouihelpCreds() {
   const tid = process.env['AZURE_TENANT_ID']
   const cid = process.env['AZURE_CLIENT_ID']
   const sec = process.env['AZURE_CLIENT_SECRET']
@@ -39,7 +39,7 @@ function ouihelpCreds() {
   return { tid, cid, sec }
 }
 
-function onelaCreds() {
+export function onelaCreds() {
   const tid = process.env['ONELA_TENANT_ID']
   const cid = process.env['ONELA_CLIENT_ID']
   const sec = process.env['ONELA_CLIENT_SECRET']

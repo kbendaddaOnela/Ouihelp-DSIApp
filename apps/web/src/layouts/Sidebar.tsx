@@ -13,6 +13,7 @@ import {
   Mail,
   HardDriveDownload,
   Network,
+  Laptop,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAnyPermission } from '@/hooks/usePermission'
@@ -49,6 +50,12 @@ const NAV_ITEMS: NavItem[] = [
     path: '/sharepoint-ximi',
     label: 'Migration SharePoint Ximi',
     icon: Network,
+    requiredPermissions: ['migration:read'],
+  },
+  {
+    path: '/device-migration',
+    label: 'Migration des postes',
+    icon: Laptop,
     requiredPermissions: ['migration:read'],
   },
   {
