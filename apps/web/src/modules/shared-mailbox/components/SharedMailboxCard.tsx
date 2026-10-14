@@ -55,6 +55,20 @@ export function SharedMailboxCard({ migration }: Props) {
   const runBlockedByLicense = isAccountMode && migration.stepLicense !== 'success'
   const isDone = migration.stepMailImport === 'success'
 
+  // Un passage complet sur la boîte est allé au bout : le worker ne pose
+  // mailLastSyncAt qu'à la fin naturelle d'un run, après mailStartedAt. Une
+  // reprise d'erreurs ne touche à aucun des deux ; un run interrompu (plantage,
+  // pause) repose mailStartedAt sans avancer mailLastSyncAt.
+  // Sans ce test, la barre passait de « terminé 100 % » à « 60 % » dès qu'il
+  // restait quelques messages en erreur : en statut 'error', elle retombait sur
+  // le ratio importés / total Exchange, deux chiffres qui ne se recouvrent jamais.
+  const passComplete =
+    isDone ||
+    (migration.stepMailImport === 'error' &&
+      !!migration.mailLastSyncAt &&
+      !!migration.mailStartedAt &&
+      new Date(migration.mailLastSyncAt) >= new Date(migration.mailStartedAt))
+
   const [expanded, setExpanded] = useState(false)
 
   const hasError =
@@ -245,7 +259,7 @@ export function SharedMailboxCard({ migration }: Props) {
             <div className="mt-3">
               <div className="flex justify-between text-xs text-gray-600">
                 <span>
-                  {isDone ? (
+                  {passComplete ? (
                     <>{migration.mailMigrated.toLocaleString()} messages importés</>
                   ) : (
                     <>
@@ -259,17 +273,31 @@ export function SharedMailboxCard({ migration }: Props) {
                 {/* Une fois l'import terminé, un pourcentage n'a plus de sens : le
                     total vient du comptage Exchange, le migré du décompte réel en
                     base, et les deux ne se recouvrent jamais exactement. */}
-                <span>{isDone ? 'terminé' : isPaused ? `en pause — ${pct}%` : `${pct}%`}</span>
+                <span>
+                  {passComplete
+                    ? migration.mailFailed > 0
+                      ? 'terminé, avec erreurs'
+                      : 'terminé'
+                    : isPaused
+                      ? `en pause — ${pct}%`
+                      : `${pct}%`}
+                </span>
               </div>
               <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
                 <div
                   className={`h-full transition-all ${
-                    isDone ? 'bg-green-500' : isPaused ? 'bg-amber-500' : 'bg-blue-500'
+                    passComplete
+                      ? migration.mailFailed > 0
+                        ? 'bg-red-400'
+                        : 'bg-green-500'
+                      : isPaused
+                        ? 'bg-amber-500'
+                        : 'bg-blue-500'
                   }`}
-                  style={{ width: `${isDone ? 100 : pct}%` }}
+                  style={{ width: `${passComplete ? 100 : pct}%` }}
                 />
               </div>
-              {isDone && migration.mailMigrated < migration.mailTotal && (
+              {passComplete && migration.mailMigrated < migration.mailTotal && (
                 <p className="mt-1 text-[10px] text-gray-500">
                   Exchange annonçait {migration.mailTotal.toLocaleString()} messages dans les dossiers
                   visibles. L’écart porte sur des éléments que l’import ne reprend pas (dossiers
