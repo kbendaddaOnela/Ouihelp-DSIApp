@@ -21,12 +21,19 @@ function normaliseHeader(h: string): string {
   return h.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
-function parseCSV(text: string): Record<string, string>[] {
+interface TargetCsvRow {
+  onelaUpn: string
+  displayName: string
+  department: string
+  office: string
+}
+
+function parseCSV(text: string): TargetCsvRow[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim())
-  if (lines.length < 2) return []
-  const rawHeaders = lines[0].split(';').length > 1
-    ? lines[0].split(';')
-    : lines[0].split(',')
+  const headerLine = lines[0]
+  if (lines.length < 2 || headerLine === undefined) return []
+  const sep = headerLine.split(';').length > 1 ? ';' : ','
+  const rawHeaders = headerLine.split(sep)
   const headers = rawHeaders.map(normaliseHeader)
 
   const col = (keys: string[]): number =>
@@ -39,7 +46,6 @@ function parseCSV(text: string): Record<string, string>[] {
 
   if (upnIdx === -1 || nameIdx === -1) return []
 
-  const sep = lines[0].split(';').length > 1 ? ';' : ','
   return lines.slice(1).map((line) => {
     const cells = line.split(sep).map((c) => c.trim().replace(/^"|"$/g, ''))
     return {

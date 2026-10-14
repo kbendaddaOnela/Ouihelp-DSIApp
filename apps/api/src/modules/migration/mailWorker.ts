@@ -20,7 +20,6 @@ import { countOnelaEvents, iterateOnelaEvents, googleCalendarImportEvent } from 
 import { countOnelaContacts, iterateOnelaContacts, googlePeopleCreateContact } from './contactsService'
 
 // Supprime les caractères hors BMP (emojis 4-bytes) pour éviter les erreurs MySQL utf8
-// eslint-disable-next-line no-control-regex
 const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
   s ? s.replace(/[\u{10000}-\u{10FFFF}]/gu, '').slice(0, maxLen) || null : null
 
@@ -180,7 +179,7 @@ async function pollAndProcess() {
         })
         .where(and(eq(migrations.id, job.id), eq(migrations[stepCol], 'pending')))
 
-      if (updateResult && (updateResult as any).affectedRows === 1) {
+      if (updateResult?.affectedRows === 1) {
         locked = true
       }
     } catch (err) {
@@ -505,7 +504,6 @@ async function processUserCalendar(job: Migration) {
       .from(migratedEvents)
       .where(eq(migratedEvents.migrationId, job.id))
     const skipSet = new Set(alreadyCal.filter((r) => r.status === 'success' || r.status === 'skipped').map((r) => r.graphEventId))
-    const calErrorSet = new Set(alreadyCal.filter((r) => r.status === 'error').map((r) => r.graphEventId))
     const isDeltaCal = !!job.calLastSyncAt
     const calSuccessCount = alreadyCal.filter((r) => r.status === 'success').length
 

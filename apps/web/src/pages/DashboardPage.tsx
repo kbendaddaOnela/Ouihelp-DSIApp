@@ -123,7 +123,7 @@ function SyncProgressBar({ step, progress }: { step: string | null; progress: nu
 
 // ── Cartes stats ──────────────────────────────────────────────────────────────
 function StatCards() {
-  const { data: stats, isFetching } = useInventoryStats()
+  const { data: stats } = useInventoryStats()
   const { mutate: triggerSync, isPending: isSyncing } = useInventorySync()
 
   const userTotal = stats?.userCounts.reduce((s, r) => s + Number(r.count), 0) ?? null

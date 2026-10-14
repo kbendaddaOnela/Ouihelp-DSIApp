@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, and, like, or, asc, gte, lte } from 'drizzle-orm'
+import { eq, and, like, or, asc, gte, lte, sql } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -14,15 +14,16 @@ budgetRouter.use('*', authMiddleware, loadUserRole)
 budgetRouter.get('/stats', requirePermission('budget:read'), async (c) => {
   const db = getDb()
   const today = new Date().toISOString().slice(0, 10)
-  const in30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)
   const in90 = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10)
 
   const active = await db.select().from(budgetItems).where(eq(budgetItems.status, 'active'))
   const expiringSoon = await db.select().from(budgetItems)
     .where(and(
       or(eq(budgetItems.status, 'active'), eq(budgetItems.status, 'expiring_soon')),
-      gte(budgetItems.contractEnd, today),
-      lte(budgetItems.contractEnd, in90)
+      // Colonne DATE typée `Date` côté Drizzle : on lie la chaîne AAAA-MM-JJ telle
+      // quelle (même SQL qu'avant), sans passer par le type de la colonne.
+      gte(budgetItems.contractEnd, sql`${today}`),
+      lte(budgetItems.contractEnd, sql`${in90}`)
     ))
   const expired = await db.select().from(budgetItems).where(eq(budgetItems.status, 'expired'))
 
@@ -50,7 +51,10 @@ budgetRouter.get('/stats', requirePermission('budget:read'), async (c) => {
   }
 
   // Contrats expirant dans 30j
-  const expiring30 = expiringSoon.filter(i => i.contractEnd && i.contractEnd <= in30)
+  // contractEnd est un Date (mapping Drizzle) : le comparer à une chaîne AAAA-MM-JJ
+  // donnait toujours false (Date vs chaîne → NaN), d'où un compteur toujours à 0.
+  const in30Ms = Date.now() + 30 * 864e5
+  const expiring30 = expiringSoon.filter(i => i.contractEnd && i.contractEnd.getTime() <= in30Ms)
 
   return c.json({
     totalAnnual: Math.round(totalAnnual * 100) / 100,

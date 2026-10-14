@@ -9,7 +9,6 @@ import {
   type CreateAccountRequest,
 } from '@dsi-app/shared'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
 import {
   useCreateAccount,
   useSearchManagers,
@@ -194,7 +193,6 @@ export function AccountForm({ onCreated }: { onCreated: () => void }) {
   const relevantKey = relevantMailboxes.map((m) => m.delegateEmail).sort().join(',')
   useEffect(() => {
     setDelegateMailboxes(relevantKey ? relevantKey.split(',') : [])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [relevantKey])
 
   const toggleMailbox = (email: string) =>

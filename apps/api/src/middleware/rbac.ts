@@ -22,7 +22,7 @@ export function requirePermission(permission: Permission) {
       return c.json({ error: 'Forbidden', message: `Permission manquante : ${permission}` }, 403)
     }
 
-    await next()
+    return next()
   })
 }
 
@@ -58,5 +58,5 @@ export const loadUserRole = createMiddleware<{ Variables: RbacVariables }>(async
   c.set('userRole', user.role)
   c.set('dbUser', user)
 
-  await next()
+  return next()
 })

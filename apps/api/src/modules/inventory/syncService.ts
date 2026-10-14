@@ -160,7 +160,7 @@ const SYNC_STEPS = [
   { key: 'users-google',   label: 'Utilisateurs Google',   progress: 50 },
   { key: 'devices-ouihelp',label: 'Appareils Ouihelp',     progress: 70 },
   { key: 'devices-onela',  label: 'Appareils ONELA',       progress: 90 },
-]
+] as const
 
 async function setStep(step: string, progress: number) {
   await db.insert(syncStatus)
@@ -174,7 +174,7 @@ async function collectAll<T>(gen: AsyncGenerator<T>): Promise<T[]> {
   return items
 }
 
-async function insertBatched<T extends object>(rows: T[], inserter: (batch: T[]) => Promise<void>, batchSize = 200) {
+async function insertBatched<T extends object>(rows: T[], inserter: (batch: T[]) => Promise<unknown>, batchSize = 200) {
   for (let i = 0; i < rows.length; i += batchSize) {
     await inserter(rows.slice(i, i + batchSize))
   }
@@ -256,15 +256,18 @@ export async function runSync(): Promise<{ users: number; devices: number }> {
     }))
 
     // ── Écriture atomique ──────────────────────────────────────
+    // Dans une transaction : sans elle, l'inventaire restait vide pendant
+    // l'écriture, et un échec en cours de route laissait un cache partiel.
     await setStep('Enregistrement…', 95)
-    await db.delete(cachedUsers)
-    await db.delete(cachedDevices)
-
     const allUsers = [...ohUsersRows, ...olUsersRows, ...gUsersRows]
     const allDevices = [...ohDevicesRows, ...olDevicesRows]
 
-    if (allUsers.length) await insertBatched(allUsers, (b) => db.insert(cachedUsers).values(b))
-    if (allDevices.length) await insertBatched(allDevices, (b) => db.insert(cachedDevices).values(b))
+    await db.transaction(async (tx) => {
+      await tx.delete(cachedUsers)
+      await tx.delete(cachedDevices)
+      if (allUsers.length) await insertBatched(allUsers, (b) => tx.insert(cachedUsers).values(b))
+      if (allDevices.length) await insertBatched(allDevices, (b) => tx.insert(cachedDevices).values(b))
+    })
 
     await db.insert(syncStatus)
       .values({ id: 'main', status: 'idle', userCount: allUsers.length, deviceCount: allDevices.length, lastSyncAt: new Date(), syncStep: 'Terminé', syncProgress: 100 })

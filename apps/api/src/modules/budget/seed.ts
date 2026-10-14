@@ -5,6 +5,7 @@
  */
 import 'dotenv/config'
 import { randomUUID } from 'crypto'
+import { sql } from 'drizzle-orm'
 import { db, pool } from '../../db/index'
 import { budgetItems } from './schema'
 
@@ -898,6 +899,12 @@ const ITEMS: SeedItem[] = [
   },
 ]
 
+// Colonnes DATE typées `Date` côté Drizzle : on lie la chaîne AAAA-MM-JJ telle
+// quelle (aucune conversion de fuseau horaire), comme le fait le SQL.
+function dateParam(d: string | null) {
+  return d === null ? null : sql`${d}`
+}
+
 async function seed() {
   console.log(`Insertion de ${ITEMS.length} lignes budget…`)
   let ok = 0
@@ -914,8 +921,8 @@ async function seed() {
         amount: item.amount,
         currency: 'EUR',
         billingCycle: item.billingCycle,
-        contractStart: item.contractStart,
-        contractEnd: item.contractEnd,
+        contractStart: dateParam(item.contractStart),
+        contractEnd: dateParam(item.contractEnd),
         autoRenewal: 0,
         renewalAlertDays: 60,
         status: computeStatus(item.contractEnd),

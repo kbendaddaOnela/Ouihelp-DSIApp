@@ -85,7 +85,7 @@ export const authMiddleware = createMiddleware<{ Variables: AuthVariables }>(asy
     c.set('userId', jwtPayload.oid)
     c.set('userTenantId', jwtPayload.tid)
 
-    await next()
+    return await next()
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Token invalide'
     // Panne transitoire (JWKS injoignable) → 503 : le client réessaie au lieu de

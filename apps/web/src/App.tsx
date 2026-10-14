@@ -8,7 +8,6 @@ import LoginPage from '@/pages/LoginPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 import DashboardPage from '@/pages/DashboardPage'
 import { Spinner } from '@/components/ui/spinner'
-import { apiLoginRequest } from '@/lib/auth'
 
 // Chargement différé des pages pour optimiser le bundle initial
 const TicketingPage = lazy(() => import('@/modules/ticketing/TicketingPage'))

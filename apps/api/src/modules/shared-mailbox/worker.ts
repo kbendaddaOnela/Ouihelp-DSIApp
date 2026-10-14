@@ -44,7 +44,6 @@ import {
   waitForMailboxSetup,
 } from './googleUserService'
 
-// eslint-disable-next-line no-control-regex
 const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
   s ? s.replace(/[\u{10000}-\u{10FFFF}]/gu, '').slice(0, maxLen) || null : null
 

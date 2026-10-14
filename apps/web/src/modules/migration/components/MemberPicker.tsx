@@ -48,7 +48,7 @@ export function MemberPicker({ groupId, title, subtitle, onLaunched }: {
 
   const selectable = (members ?? []).filter((m) => m.migrationStatus === 'none')
   const toggle = (id: string) =>
-    setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+    setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const allSelected = selectable.length > 0 && selectable.every((m) => selected.has(m.id))
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(selectable.map((m) => m.id)))
 
