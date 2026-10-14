@@ -8,37 +8,75 @@ import path from 'path'
 
 // Hotfix : applique les changements de schéma critiques manquants au cas où Drizzle
 // les aurait marqués comme appliqués sans que le SQL soit réellement exécuté.
+//
+// Instantané du schéma : UNE requête INFORMATION_SCHEMA pour toutes les colonnes
+// (et une pour les tables) au lieu d'une par patch (~120 à chaque démarrage, les
+// workers n'étant lancés qu'après). Invalidé après chaque DDL appliqué, pour que
+// les contrôles suivants voient les colonnes ajoutées dans le même passage.
+interface ColumnInfo {
+  nullable: boolean
+  /** Type SQL complet, ex. "enum('pending','running')" */
+  type: string
+  charset: string | null
+}
+interface SchemaSnapshot {
+  columns: Map<string, ColumnInfo>
+  tables: Set<string>
+}
+let schemaSnapshot: SchemaSnapshot | null = null
+
+async function getSchemaSnapshot(): Promise<SchemaSnapshot> {
+  if (schemaSnapshot) return schemaSnapshot
+  const [colRows] = (await pool.query(
+    `SELECT TABLE_NAME, COLUMN_NAME, IS_NULLABLE, COLUMN_TYPE, CHARACTER_SET_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE()`,
+  )) as [
+    Array<{ TABLE_NAME: string; COLUMN_NAME: string; IS_NULLABLE: string; COLUMN_TYPE: string; CHARACTER_SET_NAME: string | null }>,
+    unknown,
+  ]
+  const [tableRows] = (await pool.query(
+    `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
+  )) as [Array<{ TABLE_NAME: string }>, unknown]
+  const columns = new Map<string, ColumnInfo>()
+  for (const r of colRows) {
+    columns.set(`${r.TABLE_NAME}.${r.COLUMN_NAME}`, {
+      nullable: r.IS_NULLABLE === 'YES',
+      type: r.COLUMN_TYPE,
+      charset: r.CHARACTER_SET_NAME,
+    })
+  }
+  schemaSnapshot = { columns, tables: new Set(tableRows.map((r) => r.TABLE_NAME)) }
+  return schemaSnapshot
+}
+
+/** Exécute un DDL et invalide l'instantané du schéma. */
+async function runDdl(ddl: string): Promise<void> {
+  try {
+    await db.execute(sql.raw(ddl))
+  } finally {
+    schemaSnapshot = null
+  }
+}
+
+async function columnInfo(table: string, column: string): Promise<ColumnInfo | undefined> {
+  return (await getSchemaSnapshot()).columns.get(`${table}.${column}`)
+}
+
 async function columnExists(table: string, column: string): Promise<boolean> {
-  const [rows] = (await pool.query(
-    `SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
-    [table, column]
-  )) as [Array<unknown>, unknown]
-  return rows.length > 0
+  return (await columnInfo(table, column)) !== undefined
 }
 
 async function columnIsNullable(table: string, column: string): Promise<boolean> {
-  const [rows] = (await pool.query(
-    `SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
-    [table, column]
-  )) as [Array<{ IS_NULLABLE: string }>, unknown]
-  return rows[0]?.IS_NULLABLE === 'YES'
+  return (await columnInfo(table, column))?.nullable === true
 }
 
 /** Type SQL complet d'une colonne, ex. "enum('pending','running')". */
 async function columnType(table: string, column: string): Promise<string | null> {
-  const [rows] = (await pool.query(
-    `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
-    [table, column]
-  )) as [Array<{ COLUMN_TYPE: string }>, unknown]
-  return rows[0]?.COLUMN_TYPE ?? null
+  return (await columnInfo(table, column))?.type ?? null
 }
 
 async function tableExists(table: string): Promise<boolean> {
-  const [rows] = (await pool.query(
-    `SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
-    [table]
-  )) as [Array<unknown>, unknown]
-  return rows.length > 0
+  return (await getSchemaSnapshot()).tables.has(table)
 }
 
 async function ensureSchemaPatches() {
@@ -174,7 +212,7 @@ async function ensureSchemaPatches() {
         console.log(`[migrate] Patch skipped (column exists): ${p.table}.${p.column}`)
         continue
       }
-      await db.execute(sql.raw(p.ddl))
+      await runDdl(p.ddl)
       console.log(`[migrate] Patch OK: ${p.table}.${p.column}`)
     } catch (err) {
       console.error(`[migrate] Patch failed: ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
@@ -192,7 +230,7 @@ async function ensureSchemaPatches() {
     try {
       if (!(await columnExists(p.table, p.column))) continue
       if (await columnIsNullable(p.table, p.column)) continue
-      await db.execute(sql.raw(p.ddl))
+      await runDdl(p.ddl)
       console.log(`[migrate] Patch OK (nullable): ${p.table}.${p.column}`)
     } catch (err) {
       console.error(`[migrate] Patch failed (nullable): ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
@@ -216,7 +254,7 @@ async function ensureSchemaPatches() {
       const type = await columnType(p.table, p.column)
       if (!type) continue
       if (type.includes(`'${p.value}'`)) continue
-      await db.execute(sql.raw(p.ddl))
+      await runDdl(p.ddl)
       console.log(`[migrate] Patch OK (enum +${p.value}): ${p.table}.${p.column}`)
     } catch (err) {
       console.error(`[migrate] Patch failed (enum +${p.value}): ${p.table}.${p.column} →`, err instanceof Error ? err.message : String(err))
@@ -240,13 +278,18 @@ async function ensureSchemaPatches() {
   }
 
   // Conversions charset pour supporter les emojis (utf8mb4)
-  const charsetPatches: Array<{ desc: string; ddl: string }> = [
-    { desc: 'migrated_messages.subject → utf8mb4', ddl: `ALTER TABLE \`migrated_messages\` MODIFY COLUMN \`subject\` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
-    { desc: 'migrated_messages.error_details → utf8mb4', ddl: `ALTER TABLE \`migrated_messages\` MODIFY COLUMN \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
+  // Rejoués jusqu'ici à CHAQUE démarrage : un MODIFY COLUMN sur migrated_messages
+  // (la plus grosse table) pour rien. On ne l'applique plus que si la colonne
+  // n'est pas encore en utf8mb4.
+  const charsetPatches: Array<{ desc: string; table: string; column: string; ddl: string }> = [
+    { desc: 'migrated_messages.subject → utf8mb4', table: 'migrated_messages', column: 'subject', ddl: `ALTER TABLE \`migrated_messages\` MODIFY COLUMN \`subject\` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
+    { desc: 'migrated_messages.error_details → utf8mb4', table: 'migrated_messages', column: 'error_details', ddl: `ALTER TABLE \`migrated_messages\` MODIFY COLUMN \`error_details\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
   ]
   for (const p of charsetPatches) {
     try {
-      await db.execute(sql.raw(p.ddl))
+      const info = await columnInfo(p.table, p.column)
+      if (!info || info.charset === 'utf8mb4') continue
+      await runDdl(p.ddl)
       console.log(`[migrate] Charset patch OK: ${p.desc}`)
     } catch (err) {
       console.error(`[migrate] Charset patch failed: ${p.desc} →`, err instanceof Error ? err.message : String(err))
@@ -705,7 +748,7 @@ async function ensureSchemaPatches() {
         console.log(`[migrate] Patch skipped (table exists): ${p.table}`)
         continue
       }
-      await db.execute(sql.raw(p.ddl))
+      await runDdl(p.ddl)
       console.log(`[migrate] Patch OK: table ${p.table}`)
     } catch (err) {
       console.error(`[migrate] Patch failed: table ${p.table} →`, err instanceof Error ? err.message : String(err))
