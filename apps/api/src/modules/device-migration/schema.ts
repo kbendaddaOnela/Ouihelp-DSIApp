@@ -1,6 +1,16 @@
-import { mysqlTable, varchar, mysqlEnum, timestamp, int, text, index, uniqueIndex } from 'drizzle-orm/mysql-core'
+import {
+  mysqlTable,
+  varchar,
+  mysqlEnum,
+  timestamp,
+  int,
+  text,
+  mediumtext,
+  index,
+  uniqueIndex,
+} from 'drizzle-orm/mysql-core'
 
-const joinType = ['entra_joined', 'hybrid', 'registered', 'unknown'] as const
+const joinType = ['entra_joined', 'hybrid', 'registered', 'ad_only', 'unknown'] as const
 
 /**
  * Un poste physique ONELA à basculer vers le tenant Ouihelp.
@@ -65,3 +75,35 @@ export const deviceMigrations = mysqlTable(
 
 export type DeviceMigrationRow = typeof deviceMigrations.$inferSelect
 export type NewDeviceMigrationRow = typeof deviceMigrations.$inferInsert
+
+/**
+ * Agent DSI installé sur un PC (tâche planifiée SYSTEM, lot 2).
+ *
+ * Identifié par le MachineGuid Windows (stable jusqu'à la réinstallation). Au 1er
+ * check-in, authentifié par la clé d'enrôlement commune, l'agent reçoit un jeton
+ * propre au poste ; seul son hash SHA-256 est stocké. Un 2e enregistrement du même
+ * MachineGuid est refusé tant que la DSI n'a pas réinitialisé l'agent (token_hash NULL).
+ */
+export const deviceAgents = mysqlTable(
+  'device_agents',
+  {
+    id: varchar('id', { length: 36 }).primaryKey(),
+    machineGuid: varchar('machine_guid', { length: 64 }).notNull(),
+    deviceMigrationId: varchar('device_migration_id', { length: 36 }),
+    tokenHash: varchar('token_hash', { length: 64 }),
+    hostname: varchar('hostname', { length: 255 }),
+    serialNumber: varchar('serial_number', { length: 100 }),
+    agentVersion: varchar('agent_version', { length: 20 }),
+    /** JSON DeviceAgentReport — dernier rapport reçu */
+    report: mediumtext('report'),
+    remoteIp: varchar('remote_ip', { length: 64 }),
+    firstCheckinAt: timestamp('first_checkin_at').defaultNow().notNull(),
+    lastCheckinAt: timestamp('last_checkin_at').defaultNow().notNull(),
+  },
+  (t) => ({
+    uqMachine: uniqueIndex('uq_device_agents_machine').on(t.machineGuid),
+    idxDevice: index('idx_device_agents_device').on(t.deviceMigrationId),
+  })
+)
+
+export type DeviceAgentRow = typeof deviceAgents.$inferSelect

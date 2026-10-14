@@ -18,4 +18,7 @@ export const deviceMigrationApi = {
 
   update: (id: string, req: UpdateDeviceMigrationRequest) =>
     apiClient.patch(`/device-migration/devices/${id}`, req).then((r) => r.data),
+
+  resetAgent: (id: string) =>
+    apiClient.post(`/device-migration/devices/${id}/agent/reset`).then((r) => r.data),
 }
