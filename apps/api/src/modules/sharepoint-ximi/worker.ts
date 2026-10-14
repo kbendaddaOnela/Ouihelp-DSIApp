@@ -51,6 +51,7 @@ import {
   targetSiteUrlFor,
 } from './sharepointAdminService'
 import { findGroupByExactName } from './graphService'
+import { withMem, MEM_BUDGET_BYTES } from '../../lib/memoryBudget'
 
 const POLL_INTERVAL_MS = 5000
 const HEARTBEAT_MS = 60_000
@@ -63,28 +64,10 @@ const BATCH_SIZE = Math.min(
   Math.max(1, Number(process.env['XIMI_BATCH_SIZE'] ?? process.env['SHAREPOINT_BATCH_SIZE'] ?? 4)),
 )
 const MAX_FILE_BYTES = Number(process.env['SHAREPOINT_MAX_FILE_MB'] ?? 5120) * 1024 * 1024
-const MEM_BUDGET_BYTES = Number(process.env['SHAREPOINT_MEM_BUDGET_MB'] ?? 250) * 1024 * 1024
 const STREAM_THRESHOLD_BYTES =
   Number(process.env['SHAREPOINT_STREAM_THRESHOLD_MB'] ?? 64) * 1024 * 1024
 /** Coût mémoire réservé pour un transfert streamé (≈ 2 morceaux en vol). */
 const CHUNK_MEM_COST = 24 * 1024 * 1024
-
-let memInFlight = 0
-
-/** Réserve `bytes` du budget mémoire (attend si nécessaire). Un fichier plus
- *  gros que le budget passe quand même, mais seul. */
-async function withMem<T>(bytes: number, fn: () => Promise<T>): Promise<T> {
-  const reserved = Math.max(0, bytes)
-  while (memInFlight > 0 && memInFlight + reserved > MEM_BUDGET_BYTES) {
-    await new Promise((r) => setTimeout(r, 250))
-  }
-  memInFlight += reserved
-  try {
-    return await fn()
-  } finally {
-    memInFlight = Math.max(0, memInFlight - reserved)
-  }
-}
 
 const RUNNING = new Set<string>()
 const STOP_SIGNALS = new Set<string>()
@@ -100,7 +83,7 @@ export function startXimiMigrationWorker() {
   if (workerStarted) return
   workerStarted = true
   console.log(
-    `[ximi-worker] started — batch=${BATCH_SIZE}, budget mém=${Math.round(MEM_BUDGET_BYTES / 1024 / 1024)} Mo, ` +
+    `[ximi-worker] started — batch=${BATCH_SIZE}, budget mém=${Math.round(MEM_BUDGET_BYTES / 1024 / 1024)} Mo (partagé), ` +
       `seuil flux=${Math.round(STREAM_THRESHOLD_BYTES / 1024 / 1024)} Mo`,
   )
   setInterval(() => {

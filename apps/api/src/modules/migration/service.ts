@@ -76,9 +76,19 @@ export async function getOnelaToken(): Promise<string> {
   return getAccessToken(tid, cid, sec)
 }
 
+/**
+ * Filtre OData « commence par » sur nom / UPN / mail. Le `'` doit être doublé :
+ * sans ça, « D'Almeida » ou « N'Diaye » fermait la chaîne OData et Graph
+ * répondait 400 au lieu de renvoyer les résultats.
+ */
+function startsWithFilter(query: string): string {
+  const q = query.replace(/'/g, "''")
+  return `startsWith(displayName,'${q}') or startsWith(userPrincipalName,'${q}') or startsWith(mail,'${q}')`
+}
+
 export async function searchOnelaUsers(query: string): Promise<GraphUser[]> {
   const token = await getOnelaToken()
-  const filter = `startsWith(displayName,'${query}') or startsWith(userPrincipalName,'${query}') or startsWith(mail,'${query}')`
+  const filter = startsWithFilter(query)
   const res = await graphRequest<{ value: GraphUser[] }>(
     token, 'GET',
     `/users?$filter=${encodeURIComponent(filter)}&$select=${USER_SELECT}&$top=20`
@@ -376,7 +386,7 @@ export async function setGohUserManager(userId: string, managerUpn: string): Pro
 /** Recherche des utilisateurs dans le tenant GOH (autocomplétion manager). */
 export async function searchGohUsers(query: string): Promise<GraphUser[]> {
   const token = await gohToken()
-  const filter = `startsWith(displayName,'${query}') or startsWith(userPrincipalName,'${query}') or startsWith(mail,'${query}')`
+  const filter = startsWithFilter(query)
   const res = await graphRequest<{ value: GraphUser[] }>(
     token, 'GET',
     `/users?$filter=${encodeURIComponent(filter)}&$select=${USER_SELECT}&$top=20`

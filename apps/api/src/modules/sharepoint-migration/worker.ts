@@ -44,6 +44,7 @@ import {
 } from './googleDriveService'
 import { migrations } from '../migration/schema'
 import { isNotNull } from 'drizzle-orm'
+import { withMem, MEM_BUDGET_BYTES } from '../../lib/memoryBudget'
 
 interface AuthorMaps {
   byEmail: Map<string, string>
@@ -133,17 +134,7 @@ const BATCH_SIZE = Math.min(10, Math.max(1, Number(process.env['SHAREPOINT_BATCH
 // contre les transferts absurdement longs.
 const MAX_FILE_BYTES = Number(process.env['SHAREPOINT_MAX_FILE_MB'] ?? 5120) * 1024 * 1024
 
-/**
- * Budget mémoire global pour les contenus en vol.
- *
- * Les fichiers sont bufferisés en RAM (Buffer rejouable). Sans plafond, 3 gros
- * fichiers en parallèle (3 × 300 Mo) suffisent à faire tuer le conteneur Azure
- * par l'OOM killer — l'API redémarre et la migration est interrompue. On réserve
- * donc la taille avant de télécharger : un gros fichier passe SEUL au lieu de
- * s'additionner aux autres.
- */
-const MEM_BUDGET_BYTES = Number(process.env['SHAREPOINT_MEM_BUDGET_MB'] ?? 250) * 1024 * 1024
-let memInFlight = 0
+// Budget mémoire : partagé avec le worker Ximi, voir lib/memoryBudget.ts
 
 /**
  * Au-delà de ce seuil, le fichier est transféré EN FLUX (morceaux de 16 Mo)
@@ -162,29 +153,6 @@ const CHUNK_MEM_COST = 48 * 1024 * 1024
  */
 const FALLBACK_REF_MARGIN_MS = 30 * 60 * 1000
 
-/** Réserve `bytes` du budget (attend si nécessaire). Un fichier plus gros que le
- *  budget passe quand même, mais seul — sinon on bloquerait indéfiniment. */
-async function acquireMem(bytes: number): Promise<void> {
-  while (memInFlight > 0 && memInFlight + bytes > MEM_BUDGET_BYTES) {
-    await new Promise((r) => setTimeout(r, 250))
-  }
-  memInFlight += bytes
-}
-
-function releaseMem(bytes: number): void {
-  memInFlight = Math.max(0, memInFlight - bytes)
-}
-
-/** Exécute `fn` en réservant `bytes` du budget mémoire pour toute sa durée. */
-async function withMem<T>(bytes: number, fn: () => Promise<T>): Promise<T> {
-  const reserved = Math.max(0, bytes)
-  await acquireMem(reserved)
-  try {
-    return await fn()
-  } finally {
-    releaseMem(reserved)
-  }
-}
 const HEARTBEAT_MS = 60_000
 const ORPHAN_STALE_MS = 15 * 60 * 1000
 
@@ -202,7 +170,7 @@ export function startSharepointMigrationWorker() {
   if (workerStarted) return
   workerStarted = true
   console.log(
-    `[sharepoint-worker] started — batch=${BATCH_SIZE}, budget mém=${Math.round(MEM_BUDGET_BYTES / 1024 / 1024)} Mo, ` +
+    `[sharepoint-worker] started — batch=${BATCH_SIZE}, budget mém=${Math.round(MEM_BUDGET_BYTES / 1024 / 1024)} Mo (partagé), ` +
       `seuil flux=${Math.round(STREAM_THRESHOLD_BYTES / 1024 / 1024)} Mo, taille max=${Math.round(MAX_FILE_BYTES / 1024 / 1024)} Mo`,
   )
   setInterval(() => {
