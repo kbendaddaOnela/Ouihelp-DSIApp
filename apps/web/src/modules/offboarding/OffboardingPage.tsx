@@ -5,6 +5,7 @@ import { usePermission } from '@/hooks/usePermission'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { CopyButton } from '@/modules/migration/components/CopyButton'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import {
   useOffboardingSearch,
   useOffboardingUser,
@@ -153,11 +154,23 @@ function PasswordPanel({ detail, canWrite }: { detail: OffboardingUserDetail; ca
   const [revoke, setRevoke] = useState(true)
   const [result, setResult] = useState<ResetPasswordResponse | null>(null)
   const reset = useResetPassword()
+  const { confirm } = useConfirm()
 
   const disabled = !canWrite || !detail.entra || reset.isPending || (mode === 'custom' && custom.length < 8)
 
-  const submit = () => {
-    if (!window.confirm(`Changer le mot de passe Entra GOH de ${detail.google.displayName} ?`)) return
+  const submit = async () => {
+    const res = await confirm({
+      title: `Changer le mot de passe de ${detail.google.displayName} ?`,
+      message: (
+        <>
+          Le mot de passe Entra GOH de <b>{detail.google.primaryEmail}</b> sera remplacé
+          {revoke ? ' et ses sessions en cours seront fermées' : ''} : le compte perd l’accès à Google.
+        </>
+      ),
+      confirmLabel: 'Changer le mot de passe',
+      tone: 'danger',
+    })
+    if (!res.confirmed) return
     setResult(null)
     reset.mutate(
       {
@@ -238,10 +251,16 @@ function PasswordPanel({ detail, canWrite }: { detail: OffboardingUserDetail; ca
 function DelegationPanel({ detail, canWrite }: { detail: OffboardingUserDetail; canWrite: boolean }) {
   const add = useAddOffboardingDelegate()
   const remove = useRemoveOffboardingDelegate()
+  const { confirm } = useConfirm()
   const email = detail.google.primaryEmail
 
-  const onSelect = (u: OffboardingGoogleUser) => {
-    if (!window.confirm(`Donner à ${u.displayName} (${u.primaryEmail}) l’accès à la boîte de ${detail.google.displayName} ?`)) return
+  const onSelect = async (u: OffboardingGoogleUser) => {
+    const res = await confirm({
+      title: 'Déléguer la boîte ?',
+      message: `Donner à ${u.displayName} (${u.primaryEmail}) l’accès à la boîte de ${detail.google.displayName} ?`,
+      confirmLabel: 'Déléguer',
+    })
+    if (!res.confirmed) return
     add.mutate({ email, delegateEmail: u.primaryEmail })
   }
 
@@ -271,9 +290,9 @@ function DelegationPanel({ detail, canWrite }: { detail: OffboardingUserDetail; 
               </div>
               {canWrite && (
                 <button
-                  onClick={() => {
-                    if (window.confirm(`Retirer la délégation de ${d.delegateEmail} ?`))
-                      remove.mutate({ email, delegate: d.delegateEmail })
+                  onClick={async () => {
+                    const res = await confirm({ title: `Retirer la délégation de ${d.delegateEmail} ?`, confirmLabel: 'Retirer', tone: 'danger' })
+                    if (res.confirmed) remove.mutate({ email, delegate: d.delegateEmail })
                   }}
                   disabled={remove.isPending}
                   className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
@@ -316,6 +335,7 @@ function DelegationPanel({ detail, canWrite }: { detail: OffboardingUserDetail; 
 function ActiveDelegations({ canWrite, onOpen }: { canWrite: boolean; onOpen: (email: string) => void }) {
   const { data, isLoading } = useOffboardingDelegations()
   const remove = useRemoveOffboardingDelegate()
+  const { confirm } = useConfirm()
 
   return (
     <div className="space-y-2">
@@ -357,9 +377,14 @@ function ActiveDelegations({ canWrite, onOpen }: { canWrite: boolean; onOpen: (e
                       </span>
                       {canWrite && (
                         <button
-                          onClick={() => {
-                            if (window.confirm(`Retirer l’accès de ${d.delegateEmail} à la boîte ${mb.email} ?`))
-                              remove.mutate({ email: mb.email, delegate: d.delegateEmail })
+                          onClick={async () => {
+                            const res = await confirm({
+                              title: `Retirer l’accès de ${d.delegateEmail} ?`,
+                              message: `Ce compte ne pourra plus ouvrir la boîte ${mb.email}.`,
+                              confirmLabel: 'Retirer',
+                              tone: 'danger',
+                            })
+                            if (res.confirmed) remove.mutate({ email: mb.email, delegate: d.delegateEmail })
                           }}
                           disabled={remove.isPending}
                           className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"

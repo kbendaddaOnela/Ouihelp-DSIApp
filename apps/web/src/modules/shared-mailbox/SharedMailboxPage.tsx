@@ -8,7 +8,6 @@ import {
   useCreateSharedMigration,
 } from './hooks/useSharedMailbox'
 import { SharedMailboxCard } from './components/SharedMailboxCard'
-import { ConfirmProvider } from '@/components/ui/ConfirmDialog'
 
 /** Domaine de transition utilisé pour l'adresse primaire du compte Google. */
 const TRANSITION_PREFIX = 'mig'
@@ -115,7 +114,6 @@ export default function SharedMailboxPage() {
   }
 
   return (
-    <ConfirmProvider>
     <div className="mx-auto max-w-5xl space-y-6 p-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-bold text-gray-900">Migration Shared Mailbox</h1>
@@ -296,6 +294,5 @@ export default function SharedMailboxPage() {
         )}
       </section>
     </div>
-    </ConfirmProvider>
   )
 }

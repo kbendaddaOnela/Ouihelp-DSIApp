@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { MigrationRecord, MigrateUsersRequest, MigrateExistingRequest } from '@dsi-app/shared'
 import { migrationApi, migrationTargetsApi } from '../api'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 
 export function useMigrationSearch(query: string) {
   return useQuery({
@@ -55,6 +56,7 @@ export function useMigratedUpns() {
 
 export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => void) {
   const queryClient = useQueryClient()
+  const { alert: showAlert } = useConfirm()
   return useMutation({
     mutationFn: (req: MigrateUsersRequest) => migrationApi.run(req),
     onSuccess: (data) => {
@@ -71,8 +73,18 @@ export function useRunMigration(onSuccess: (migrations: MigrationRecord[]) => vo
       }
       // Alerter pour les comptes ignorés (idempotency)
       if (data.skipped && data.skipped.length > 0) {
-        const lines = data.skipped.map((s) => `• ${s.onelaUpn} — ${s.reason}`).join('\n')
-        alert(`${data.skipped.length} compte(s) ignoré(s) :\n\n${lines}`)
+        void showAlert({
+          title: `${data.skipped.length} compte(s) ignoré(s)`,
+          message: (
+            <ul className="list-disc space-y-1 pl-5">
+              {data.skipped.map((s) => (
+                <li key={s.onelaUpn}>
+                  <span className="font-mono">{s.onelaUpn}</span> — {s.reason}
+                </li>
+              ))}
+            </ul>
+          ),
+        })
       }
     },
   })

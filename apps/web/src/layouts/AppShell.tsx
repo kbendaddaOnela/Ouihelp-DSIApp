@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar'
 import { Header } from './Header'
 import { Spinner } from '@/components/ui/spinner'
 import { useAuth } from '@/hooks/useAuth'
+import { ConfirmProvider } from '@/components/ui/ConfirmDialog'
 
 // Shell applicatif principal — wraps toutes les pages authentifiées
 export const AppShell = () => {
@@ -32,7 +33,10 @@ export const AppShell = () => {
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onOpenNav={() => setMobileNavOpen(true)} />
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <Outlet />
+          {/* Dialogues de confirmation de l'app, disponibles sur toutes les pages */}
+          <ConfirmProvider>
+            <Outlet />
+          </ConfirmProvider>
         </main>
       </div>
     </div>

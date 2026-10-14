@@ -4,6 +4,7 @@ import type { AccountCreationRecord, AccountStepStatus } from '@dsi-app/shared'
 import { StepBadge } from '@/modules/migration/components/StepBadge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import {
   useFinalizeGoogle,
   useRetryAccount,
@@ -54,6 +55,7 @@ function CopyChip({ value }: { value: string }) {
 
 export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const [open, setOpen] = useState(false)
+  const { confirm } = useConfirm()
   const finalize = useFinalizeGoogle()
   const retry = useRetryAccount()
   const del = useDeleteAccount()
@@ -193,11 +195,19 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
               size="sm"
               variant="ghost"
               className="text-red-600 hover:bg-red-50 hover:text-red-700"
-              onClick={() => {
-                const purge = window.confirm(
-                  'Supprimer le suivi de cet onboarding.\n\nOK = supprimer AUSSI le MailUser de routage sur Exchange ONELA.\nAnnuler = garder le routage (supprimer seulement le suivi).',
-                )
-                del.mutate({ id: account.id, purgeRouting: purge })
+              onClick={async () => {
+                // Avec window.confirm, « Annuler » supprimait quand même le suivi
+                // (en gardant le routage) : impossible de renoncer. Ici, Annuler
+                // n'efface rien, et la purge du routage est un choix explicite.
+                const res = await confirm({
+                  title: 'Supprimer le suivi de cet onboarding ?',
+                  message: 'Le compte Google et le compte Entra ne sont pas supprimés.',
+                  confirmLabel: 'Supprimer',
+                  tone: 'danger',
+                  checkbox: { label: 'Supprimer aussi le MailUser de routage sur Exchange ONELA', defaultChecked: true },
+                })
+                if (!res.confirmed) return
+                del.mutate({ id: account.id, purgeRouting: res.checked })
               }}
               disabled={del.isPending}
             >

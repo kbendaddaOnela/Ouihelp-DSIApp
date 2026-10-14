@@ -3,6 +3,7 @@ import { Search, Pencil, Trash2, Plus, Check, X, Loader2 } from 'lucide-react'
 import { ONELA_REGIONS, type Agency, type AgencyInput } from '@dsi-app/shared'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { useAgencies, useCreateAgency, useUpdateAgency, useDeleteAgency } from '../hooks/useAccounts'
 
 const inputCls =
@@ -58,6 +59,7 @@ function EditRow({
 }
 
 export function AgenciesManager() {
+  const { confirm } = useConfirm()
   const { data, isLoading } = useAgencies()
   const createAgency = useCreateAgency()
   const updateAgency = useUpdateAgency()
@@ -152,7 +154,10 @@ export function AgenciesManager() {
                       </button>
                       <button
                         className="inline-flex rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600"
-                        onClick={() => { if (window.confirm(`Supprimer l'agence « ${a.name} » ?`)) deleteAgency.mutate(a.id) }}
+                        onClick={async () => {
+                          const res = await confirm({ title: `Supprimer l'agence « ${a.name} » ?`, confirmLabel: 'Supprimer', tone: 'danger' })
+                          if (res.confirmed) deleteAgency.mutate(a.id)
+                        }}
                         title="Supprimer"
                       >
                         <Trash2 className="h-4 w-4" />
