@@ -29,7 +29,12 @@ import {
   type GoogleUser,
 } from '../shared-mailbox/googleUserService'
 import { normalizeDelegateEmail } from '../shared-mailbox/delegateService'
-import { findGohUserByEmails, resetGohUserPassword, revokeGohUserSessions } from '../migration/service'
+import {
+  findGohUserByEmails,
+  resetGohUserPassword,
+  revokeGohUserSessions,
+  listGohUserDirectoryRoles,
+} from '../migration/service'
 import type {
   OffboardingActionType,
   OffboardingGoogleUser,
@@ -168,6 +173,47 @@ offboardingRouter.get('/user', requirePermission('offboarding:read'), async (c) 
   })
 })
 
+/**
+ * Contrôles avant réinitialisation du mot de passe d'un compte :
+ *  - pas son propre compte (l'opérateur se couperait l'accès à l'app) ;
+ *  - pas un admin de la console Google (super-admin ou admin délégué) ;
+ *  - pas un compte détenant un rôle d'annuaire Entra GOH.
+ * Le dernier contrôle exige Directory.Read.All sur l'app GOH. S'il échoue, on
+ * laisse passer (pour ne pas bloquer tout l'offboarding sur une permission
+ * manquante) mais on le trace : Graph refuse de toute façon de réinitialiser
+ * un administrateur tant que l'app n'a pas elle-même un rôle privilégié.
+ */
+export async function checkResetAllowed(
+  initiatedBy: string,
+  target: GoogleUser,
+  entra: { id: string; userPrincipalName: string },
+): Promise<{ refused: true; reason: string } | { refused: false; rolesUnchecked: boolean }> {
+  const caller = initiatedBy.trim().toLowerCase()
+  const targetAddresses = [target.primaryEmail, ...target.aliases, entra.userPrincipalName].map((e) => e.toLowerCase())
+  if (caller && targetAddresses.includes(caller)) {
+    return { refused: true, reason: 'Impossible de réinitialiser ton propre mot de passe depuis l’app.' }
+  }
+  if (target.isAdmin) {
+    return {
+      refused: true,
+      reason: `${target.primaryEmail} est administrateur de la console Google : réinitialisation refusée depuis l’app.`,
+    }
+  }
+  try {
+    const roles = await listGohUserDirectoryRoles(entra.id)
+    if (roles.length > 0) {
+      return {
+        refused: true,
+        reason: `${entra.userPrincipalName} détient un rôle d’administration Entra (${roles.join(', ')}) : réinitialisation refusée depuis l’app.`,
+      }
+    }
+    return { refused: false, rolesUnchecked: false }
+  } catch (err) {
+    console.warn(`[offboarding] rôles Entra non vérifiables pour ${entra.userPrincipalName}: ${errMsg(err)}`)
+    return { refused: false, rolesUnchecked: true }
+  }
+}
+
 // ── Changement du mot de passe Entra GOH ─────────────────────────────────────
 offboardingRouter.post('/reset-password', requirePermission('offboarding:write'), async (c) => {
   const initiatedBy = c.get('dbUser').email
@@ -189,6 +235,23 @@ offboardingRouter.post('/reset-password', requirePermission('offboarding:write')
     const entra = await findGohUserByEmails([target.primaryEmail, ...target.aliases])
     if (!entra) throw new Error(`Aucun compte Entra GOH trouvé pour ${target.primaryEmail}`)
     entraUpn = entra.userPrincipalName
+
+    // Garde-fous : un compte d'administration ou le compte de l'opérateur lui-même
+    // ne se réinitialise pas depuis l'app (escalade de privilèges / blocage de soi).
+    const refusal = await checkResetAllowed(initiatedBy, target, entra)
+    if (refusal.refused) {
+      await logAction({
+        targetEmail: target.primaryEmail,
+        targetDisplayName: target.displayName,
+        action: 'reset_password',
+        detail: `Entra GOH ${entraUpn} — refusé`,
+        status: 'error',
+        errorDetails: refusal.reason,
+        initiatedBy,
+      })
+      return c.json({ error: 'Forbidden', message: refusal.reason }, 403)
+    }
+
     await resetGohUserPassword(entra.id, password)
 
     let revokeError: string | null = null
@@ -204,7 +267,9 @@ offboardingRouter.post('/reset-password', requirePermission('offboarding:write')
       targetEmail: target.primaryEmail,
       targetDisplayName: target.displayName,
       action: 'reset_password',
-      detail: `Entra GOH ${entraUpn}${revoke ? (revokeError ? ' — révocation sessions échouée' : ' + sessions révoquées') : ''}`,
+      detail:
+        `Entra GOH ${entraUpn}${revoke ? (revokeError ? ' — révocation sessions échouée' : ' + sessions révoquées') : ''}` +
+        (refusal.rolesUnchecked ? ' — rôles Entra non vérifiés' : ''),
       status: 'success',
       errorDetails: revokeError,
       initiatedBy,

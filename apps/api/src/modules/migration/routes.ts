@@ -335,7 +335,7 @@ migrationRouter.get('/search', requirePermission('migration:read'), async (c) =>
 // Stratégie : on insère TOUS les records en pending immédiatement (synchrone, rapide),
 // on répond 202 au front, puis on traite les étapes Graph en background (par user, en
 // parallèle limité). Évite le timeout HTTP Azure (~230s) sur les gros lots.
-migrationRouter.post('/run', requirePermission('migration:read'), async (c) => {
+migrationRouter.post('/run', requirePermission('migration:write'), async (c) => {
   const body = await c.req.json<MigrateUsersRequest>()
   const initiatedBy = c.get('dbUser').email
   const db = getDb()
@@ -572,7 +572,7 @@ migrationRouter.post('/:id/retry-provisioning', requirePermission('migration:wri
 })
 
 // ── Migration vers compte Google existant (sans création Entra GOH) ──────────
-migrationRouter.post('/run-existing', requirePermission('migration:read'), async (c) => {
+migrationRouter.post('/run-existing', requirePermission('migration:write'), async (c) => {
   const body = await c.req.json<MigrateExistingRequest>()
   const initiatedBy = c.get('dbUser').email
   const db = getDb()
@@ -743,7 +743,7 @@ migrationRouter.post('/:id/activate-new-format', requirePermission('migration:wr
 })
 
 // ── Ajouter l'alias Google (manuel, après SCIM sync) ─────────────────────────
-migrationRouter.post('/:id/google-alias', requirePermission('migration:read'), async (c) => {
+migrationRouter.post('/:id/google-alias', requirePermission('migration:write'), async (c) => {
   const db = getDb()
   const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
   if (!row) return c.json({ error: 'Not Found' }, 404)
@@ -784,7 +784,7 @@ migrationRouter.post('/:id/google-alias', requirePermission('migration:read'), a
 })
 
 // ── Déplacer le compte Google vers l'OU ONELA ────────────────────────────────
-migrationRouter.post('/:id/move-ou', requirePermission('migration:read'), async (c) => {
+migrationRouter.post('/:id/move-ou', requirePermission('migration:write'), async (c) => {
   const db = getDb()
   const [row] = await db.select().from(migrations).where(eq(migrations.id, c.req.param('id')))
   if (!row) return c.json({ error: 'Not Found' }, 404)

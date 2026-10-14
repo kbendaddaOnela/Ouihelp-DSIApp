@@ -58,6 +58,8 @@ export interface GoogleUser {
   /** false tant que la boîte Gmail n'est pas provisionnée (licence absente / création récente) */
   isMailboxSetup: boolean
   aliases: string[]
+  /** Super-admin ou admin délégué de la console Google */
+  isAdmin: boolean
 }
 
 interface DirectoryUserPayload {
@@ -68,6 +70,8 @@ interface DirectoryUserPayload {
   orgUnitPath?: string
   isMailboxSetup?: boolean
   aliases?: string[]
+  isAdmin?: boolean
+  isDelegatedAdmin?: boolean
 }
 
 function toGoogleUser(u: DirectoryUserPayload): GoogleUser {
@@ -79,6 +83,7 @@ function toGoogleUser(u: DirectoryUserPayload): GoogleUser {
     orgUnitPath: u.orgUnitPath ?? '/',
     isMailboxSetup: u.isMailboxSetup ?? false,
     aliases: u.aliases ?? [],
+    isAdmin: (u.isAdmin ?? false) || (u.isDelegatedAdmin ?? false),
   }
 }
 

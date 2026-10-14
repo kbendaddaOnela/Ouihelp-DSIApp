@@ -460,6 +460,21 @@ export async function resetGohUserPassword(
   })
 }
 
+/**
+ * Rôles d'annuaire Entra (Administrateur général, Administrateur des
+ * utilisateurs…) détenus par le compte GOH, y compris via un groupe.
+ * Nécessite Directory.Read.All (ou RoleManagement.Read.Directory) : l'appelant
+ * gère l'échec, la permission n'étant pas forcément accordée à l'app GOH.
+ */
+export async function listGohUserDirectoryRoles(userId: string): Promise<string[]> {
+  const token = await gohToken()
+  const res = await graphRequest<{ value: Array<{ displayName?: string | null }> }>(
+    token, 'GET',
+    `/users/${encodeURIComponent(userId)}/transitiveMemberOf/microsoft.graph.directoryRole?$select=displayName`,
+  )
+  return res.value.map((r) => r.displayName ?? '(rôle sans nom)')
+}
+
 /** Invalide les refresh tokens / cookies de session du compte GOH (User.RevokeSessions.All). */
 export async function revokeGohUserSessions(userId: string): Promise<void> {
   const token = await gohToken()

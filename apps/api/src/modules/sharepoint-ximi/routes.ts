@@ -463,9 +463,16 @@ ximiMigrationRouter.get('/mapping', requirePermission('migration:read'), async (
   })
 })
 
-/** Échappement CSV : guillemets doublés, champ cité dès qu'il contient un séparateur. */
+/**
+ * Échappement CSV : guillemets doublés, champ cité dès qu'il contient un séparateur.
+ * Un texte commençant par = + - @ (ou tabulation / retour chariot) serait évalué
+ * comme une formule par Excel à l'ouverture : le fichier part chez un tiers
+ * (Ximi), on neutralise donc ces cellules en les préfixant d'une apostrophe.
+ * Les nombres ne sont pas concernés.
+ */
 function csvCell(value: string | number | null): string {
-  const s = value === null || value === undefined ? '' : String(value)
+  let s = value === null || value === undefined ? '' : String(value)
+  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`
   return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 
