@@ -33,7 +33,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.0.1'
+$AgentVersion = '1.0.2'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -172,26 +172,53 @@ function Get-BitlockerState {
   }
 }
 
+# netsh mélange les encodages : libellés dans la page de code OEM de la console (« État »),
+# SSID en UTF-8 brut (« Siège »). On lit les octets sans passer par la console et on
+# décode chaque ligne en UTF-8 strict, à défaut en OEM.
+function Invoke-NetshLines([string]$Arguments) {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = Join-Path $env:SystemRoot 'System32\netsh.exe'
+  $psi.Arguments = $Arguments
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.CreateNoWindow = $true
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $buffer = New-Object System.IO.MemoryStream
+  $proc.StandardOutput.BaseStream.CopyTo($buffer)
+  $proc.WaitForExit()
+  $bytes = $buffer.ToArray()
+
+  $utf8 = New-Object System.Text.UTF8Encoding($false, $true)   # lève une exception si invalide
+  $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+  $lines = @()
+  $start = 0
+  for ($i = 0; $i -le $bytes.Length; $i++) {
+    if ($i -lt $bytes.Length -and $bytes[$i] -ne 10) { continue }
+    $count = $i - $start
+    if ($count -gt 0) {
+      try { $line = $utf8.GetString($bytes, $start, $count) } catch { $line = $oem.GetString($bytes, $start, $count) }
+      $lines += $line.TrimEnd("`r")
+    }
+    $start = $i + 1
+  }
+  return ,$lines
+}
+
 function Get-NetworkState {
   $ethernet = $false; $wifi = $false
   foreach ($a in (Safe 'netadapter' { Get-NetAdapter -Physical | Where-Object Status -eq 'Up' } @())) {
     if ($a.PhysicalMediaType -match '802\.11') { $wifi = $true }
     elseif ($a.PhysicalMediaType -match '802\.3') { $ethernet = $true }
   }
-  # netsh écrit les SSID en UTF-8 : sans ça, PowerShell les décode avec la page de code
-  # de la console (« Siège » devient « Si├¿ge »)
-  $previousEncoding = [Console]::OutputEncoding
-  try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
   $ssid = $null
-  foreach ($line in (& netsh.exe wlan show interfaces 2>$null)) {
+  foreach ($line in (Safe 'netshInterfaces' { Invoke-NetshLines 'wlan show interfaces' } @())) {
     if ($line -match '^\s*SSID\s*:\s*(.+?)\s*$') { $ssid = $Matches[1]; break }
   }
   # Libellés localisés (« All User Profile » / « Profil Tous les utilisateurs ») : on prend la valeur après « : »
   $profiles = @()
-  foreach ($line in (& netsh.exe wlan show profiles 2>$null)) {
+  foreach ($line in (Safe 'netshProfiles' { Invoke-NetshLines 'wlan show profiles' } @())) {
     if ($line -match '(?i)profil.*?:\s*(.+?)\s*$') { $profiles += $Matches[1] }
   }
-  try { [Console]::OutputEncoding = $previousEncoding } catch { }
   [ordered]@{ ethernet = $ethernet; wifi = $wifi; ssid = $ssid; wifiProfiles = @($profiles | Select-Object -Unique) }
 }
 
