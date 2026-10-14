@@ -13,6 +13,7 @@
 // fois (les BAL partagées sont peu nombreuses, pas besoin de concurrence).
 
 import { and, eq } from 'drizzle-orm'
+import { startPollingLoop, startHeartbeat as startJobHeartbeat, isOrphaned } from '../../lib/workerRuntime'
 import { db } from '../../db/index'
 import {
   sharedMigrations,
@@ -47,13 +48,10 @@ import {
 const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
   s ? s.replace(/[\u{10000}-\u{10FFFF}]/gu, '').slice(0, maxLen) || null : null
 
-const POLL_INTERVAL_MS = 5000
 /** Mode group : la Groups Migration API throttle très vite. */
 const GROUP_BATCH_SIZE = 2
 /** Mode account : même concurrence que la migration d'un utilisateur nominatif. */
 const ACCOUNT_BATCH_SIZE = 4
-const HEARTBEAT_MS = 60_000
-const ORPHAN_STALE_MS = 15 * 60 * 1000
 
 const RUNNING = new Set<string>()
 const STOP_SIGNALS = new Set<string>()
@@ -88,24 +86,13 @@ export function startSharedMailboxWorker() {
   if (workerStarted) return
   workerStarted = true
   console.log('[shared-mailbox-worker] started')
-  setInterval(() => {
-    pollAndProcess().catch((err) =>
-      console.error('[shared-mailbox-worker] tick error:', err),
-    )
-  }, POLL_INTERVAL_MS)
+  startPollingLoop('shared-mailbox-worker', pollAndProcess)
 }
 
 function startHeartbeat(id: string): () => void {
-  const timer = setInterval(() => {
-    void db
-      .update(sharedMigrations)
-      .set({ updatedAt: new Date() })
-      .where(eq(sharedMigrations.id, id))
-      .catch((err) =>
-        console.warn(`[shared-heartbeat] ${id}:`, err instanceof Error ? err.message : err),
-      )
-  }, HEARTBEAT_MS)
-  return () => clearInterval(timer)
+  return startJobHeartbeat('shared-heartbeat', id, () =>
+    db.update(sharedMigrations).set({ updatedAt: new Date() }).where(eq(sharedMigrations.id, id)),
+  )
 }
 
 async function pollAndProcess() {
@@ -116,8 +103,7 @@ async function pollAndProcess() {
   // Détection d'orphelins : si 'running' mais pas dans RUNNING et updatedAt > 15min → reset
   for (const job of all) {
     if (job.stepMailImport === 'running' && !RUNNING.has(job.id)) {
-      const stale = Date.now() - new Date(job.updatedAt).getTime() > ORPHAN_STALE_MS
-      if (stale) {
+      if (isOrphaned(job.updatedAt)) {
         console.warn(
           `[shared-mailbox-worker] orphan detected: ${job.id} (inactive since ${job.updatedAt}) — resetting to 'pending'`,
         )

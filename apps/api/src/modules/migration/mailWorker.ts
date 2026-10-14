@@ -1,8 +1,9 @@
 // Worker in-process pour migrer mail + calendrier + contacts (Exchange → Google)
 // - Polling 5s sur step_*_migration='pending'
-// - Max 3 jobs simultanés (toutes phases confondues)
+// - Max 6 jobs simultanés toutes phases confondues, dont 2 en mail
 
-import { eq, and } from 'drizzle-orm'
+import { eq, and, or, inArray } from 'drizzle-orm'
+import { startPollingLoop, startHeartbeat as startJobHeartbeat, isOrphaned } from '../../lib/workerRuntime'
 import { db } from '../../db/index'
 import { migrations, migratedMessages, migratedEvents, migratedContacts, type Migration } from './schema'
 import {
@@ -24,7 +25,6 @@ const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
   s ? s.replace(/[\u{10000}-\u{10FFFF}]/gu, '').slice(0, maxLen) || null : null
 
 const MAX_CONCURRENT = 6
-const POLL_INTERVAL_MS = 5000
 const RUNNING = new Map<string, 'mail' | 'calendar' | 'contacts'>()
 
 // Signaux d'arrêt : quand l'utilisateur clique "Arrêter", on ajoute la clé ici
@@ -43,25 +43,11 @@ function clearStopSignal(migrationId: string, phase: 'mail' | 'calendar' | 'cont
   STOP_SIGNALS.delete(`${migrationId}-${phase}`)
 }
 
-// Heartbeat : un job actif mais lent (ex. un resume qui re-scanne des milliers de
-// messages déjà migrés, ou un gros téléchargement) doit rafraîchir son updatedAt
-// régulièrement. Sinon le détecteur d'orphelins le croit mort, le remet en
-// 'pending' et le relance → livelock (la tâche redémarre sans jamais finir).
-const HEARTBEAT_MS = 60_000
-// Seuil d'inactivité avant de considérer un job 'running' comme orphelin.
-// Avec le heartbeat ci-dessus (toutes les 60s), 15 min laisse une grande marge :
-// on ne relance que si la tâche est vraiment morte (process crashé/recyclé).
-const ORPHAN_STALE_MS = 15 * 60 * 1000
-
+// Battement de cœur et seuil d'orphelin : voir lib/workerRuntime.ts
 function startHeartbeat(migrationId: string): () => void {
-  const timer = setInterval(() => {
-    void db
-      .update(migrations)
-      .set({ updatedAt: new Date() })
-      .where(eq(migrations.id, migrationId))
-      .catch((err) => console.warn(`[heartbeat] ${migrationId}:`, err instanceof Error ? err.message : err))
-  }, HEARTBEAT_MS)
-  return () => clearInterval(timer)
+  return startJobHeartbeat('heartbeat', migrationId, () =>
+    db.update(migrations).set({ updatedAt: new Date() }).where(eq(migrations.id, migrationId)),
+  )
 }
 
 // Nombre d'items traités en parallèle dans chaque phase
@@ -98,18 +84,25 @@ export function startMailWorker() {
   if (workerStarted) return
   workerStarted = true
   console.log('[migration-worker] started')
-  setInterval(() => {
-    pollAndProcess().catch((err) => console.error('[migration-worker] tick error:', err))
-  }, POLL_INTERVAL_MS)
-  pollAndProcess().catch((err) => console.error('[migration-worker] initial tick error:', err))
+  startPollingLoop('migration-worker', pollAndProcess, { runImmediately: true })
 }
 
 async function pollAndProcess() {
   if (RUNNING.size >= MAX_CONCURRENT) return
   const slots = MAX_CONCURRENT - RUNNING.size
 
-  // On cherche tous les jobs pending sur n'importe laquelle des 3 phases
-  const candidates = await db.select().from(migrations)
+  // On cherche tous les jobs pending sur n'importe laquelle des 3 phases. Seules
+  // les lignes avec une phase 'pending' (à lancer) ou 'running' (orphelin
+  // potentiel) comptent : on filtre en SQL au lieu de relire toute la table
+  // (colonnes TEXT comprises) toutes les 5 s.
+  const active: Array<'pending' | 'running'> = ['pending', 'running']
+  const candidates = await db.select().from(migrations).where(
+    or(
+      inArray(migrations.stepMailMigration, active),
+      inArray(migrations.stepCalendarMigration, active),
+      inArray(migrations.stepContactsMigration, active),
+    ),
+  )
   const pending: Array<{ job: Migration; phase: 'mail' | 'calendar' | 'contacts' }> = []
 
   for (const job of candidates) {
@@ -123,9 +116,7 @@ async function pollAndProcess() {
     ] as const) {
       const key = `${job.id}-${phase}`
       if (job[stepCol] === 'running' && !RUNNING.has(key)) {
-        const updatedAtTime = new Date(job.updatedAt).getTime()
-        const isStale = Date.now() - updatedAtTime > ORPHAN_STALE_MS
-        if (isStale) {
+        if (isOrphaned(job.updatedAt)) {
           console.warn(`[migration-worker] orphan detected: ${key} is 'running' (inactive since ${job.updatedAt}) and not in local RUNNING map — resetting to 'pending'`)
           if (phase === 'mail') {
             await db.update(migrations).set({ stepMailMigration: 'pending' }).where(eq(migrations.id, job.id))

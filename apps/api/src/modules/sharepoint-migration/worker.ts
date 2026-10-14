@@ -45,6 +45,7 @@ import {
 import { migrations } from '../migration/schema'
 import { isNotNull } from 'drizzle-orm'
 import { withMem, MEM_BUDGET_BYTES } from '../../lib/memoryBudget'
+import { startPollingLoop, startHeartbeat as startJobHeartbeat, isOrphaned } from '../../lib/workerRuntime'
 
 interface AuthorMaps {
   byEmail: Map<string, string>
@@ -121,7 +122,6 @@ function spMeta(item: SpItem): ItemMeta {
   }
 }
 
-const POLL_INTERVAL_MS = 5000
 // Fichiers transférés en parallèle par dossier. Ajustable sans redéploiement
 // (SHAREPOINT_BATCH_SIZE) pour exploiter un App Service plus costaud — borné à
 // 10 : au-delà, Graph throttle (429) et le débit BAISSE au lieu de monter.
@@ -153,8 +153,6 @@ const CHUNK_MEM_COST = 48 * 1024 * 1024
  */
 const FALLBACK_REF_MARGIN_MS = 30 * 60 * 1000
 
-const HEARTBEAT_MS = 60_000
-const ORPHAN_STALE_MS = 15 * 60 * 1000
 
 const RUNNING = new Set<string>()
 const STOP_SIGNALS = new Set<string>()
@@ -173,22 +171,13 @@ export function startSharepointMigrationWorker() {
     `[sharepoint-worker] started — batch=${BATCH_SIZE}, budget mém=${Math.round(MEM_BUDGET_BYTES / 1024 / 1024)} Mo (partagé), ` +
       `seuil flux=${Math.round(STREAM_THRESHOLD_BYTES / 1024 / 1024)} Mo, taille max=${Math.round(MAX_FILE_BYTES / 1024 / 1024)} Mo`,
   )
-  setInterval(() => {
-    pollAndProcess().catch((err) => console.error('[sharepoint-worker] tick error:', err))
-  }, POLL_INTERVAL_MS)
+  startPollingLoop('sharepoint-worker', pollAndProcess)
 }
 
 function startHeartbeat(id: string): () => void {
-  const timer = setInterval(() => {
-    void db
-      .update(sharepointMigrations)
-      .set({ updatedAt: new Date() })
-      .where(eq(sharepointMigrations.id, id))
-      .catch((err) =>
-        console.warn(`[sharepoint-heartbeat] ${id}:`, err instanceof Error ? err.message : err),
-      )
-  }, HEARTBEAT_MS)
-  return () => clearInterval(timer)
+  return startJobHeartbeat('sharepoint-heartbeat', id, () =>
+    db.update(sharepointMigrations).set({ updatedAt: new Date() }).where(eq(sharepointMigrations.id, id)),
+  )
 }
 
 async function pollAndProcess() {
@@ -202,8 +191,7 @@ async function pollAndProcess() {
   // Détection d'orphelins : 'running' mais pas dans RUNNING et inactif > 15min → reset
   for (const job of all) {
     if (job.status === 'running' && !RUNNING.has(job.id)) {
-      const stale = Date.now() - new Date(job.updatedAt).getTime() > ORPHAN_STALE_MS
-      if (stale) {
+      if (isOrphaned(job.updatedAt)) {
         console.warn(
           `[sharepoint-worker] orphan detected: ${job.id} (inactif depuis ${job.updatedAt}) — reset 'pending'`,
         )

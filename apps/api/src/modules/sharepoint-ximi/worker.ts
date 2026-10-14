@@ -52,10 +52,8 @@ import {
 } from './sharepointAdminService'
 import { findGroupByExactName } from './graphService'
 import { withMem, MEM_BUDGET_BYTES } from '../../lib/memoryBudget'
+import { startPollingLoop, startHeartbeat as startJobHeartbeat, isOrphaned } from '../../lib/workerRuntime'
 
-const POLL_INTERVAL_MS = 5000
-const HEARTBEAT_MS = 60_000
-const ORPHAN_STALE_MS = 15 * 60 * 1000
 
 /** Fichiers transférés en parallèle. Même plafond que le module Drive : au-delà
  *  de 10, Graph throttle et le débit BAISSE au lieu de monter. */
@@ -86,22 +84,13 @@ export function startXimiMigrationWorker() {
     `[ximi-worker] started — batch=${BATCH_SIZE}, budget mém=${Math.round(MEM_BUDGET_BYTES / 1024 / 1024)} Mo (partagé), ` +
       `seuil flux=${Math.round(STREAM_THRESHOLD_BYTES / 1024 / 1024)} Mo`,
   )
-  setInterval(() => {
-    pollAndProcess().catch((err) => console.error('[ximi-worker] tick error:', err))
-  }, POLL_INTERVAL_MS)
+  startPollingLoop('ximi-worker', pollAndProcess)
 }
 
 function startHeartbeat(id: string): () => void {
-  const timer = setInterval(() => {
-    void db
-      .update(ximiMigrations)
-      .set({ updatedAt: new Date() })
-      .where(eq(ximiMigrations.id, id))
-      .catch((err) =>
-        console.warn(`[ximi-heartbeat] ${id}:`, err instanceof Error ? err.message : err),
-      )
-  }, HEARTBEAT_MS)
-  return () => clearInterval(timer)
+  return startJobHeartbeat('ximi-heartbeat', id, () =>
+    db.update(ximiMigrations).set({ updatedAt: new Date() }).where(eq(ximiMigrations.id, id)),
+  )
 }
 
 async function pollAndProcess() {
@@ -110,8 +99,7 @@ async function pollAndProcess() {
   // Orphelins : 'running' sans worker vivant et inactif > 15 min → remis en file.
   for (const job of all) {
     if (job.status === 'running' && !RUNNING.has(job.id)) {
-      const stale = Date.now() - new Date(job.updatedAt).getTime() > ORPHAN_STALE_MS
-      if (stale) {
+      if (isOrphaned(job.updatedAt)) {
         console.warn(`[ximi-worker] orphan detected: ${job.id} — reset 'pending'`)
         await db
           .update(ximiMigrations)
