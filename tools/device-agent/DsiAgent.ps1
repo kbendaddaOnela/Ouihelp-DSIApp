@@ -33,7 +33,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.0.0'
+$AgentVersion = '1.0.1'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -178,6 +178,10 @@ function Get-NetworkState {
     if ($a.PhysicalMediaType -match '802\.11') { $wifi = $true }
     elseif ($a.PhysicalMediaType -match '802\.3') { $ethernet = $true }
   }
+  # netsh écrit les SSID en UTF-8 : sans ça, PowerShell les décode avec la page de code
+  # de la console (« Siège » devient « Si├¿ge »)
+  $previousEncoding = [Console]::OutputEncoding
+  try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
   $ssid = $null
   foreach ($line in (& netsh.exe wlan show interfaces 2>$null)) {
     if ($line -match '^\s*SSID\s*:\s*(.+?)\s*$') { $ssid = $Matches[1]; break }
@@ -187,6 +191,7 @@ function Get-NetworkState {
   foreach ($line in (& netsh.exe wlan show profiles 2>$null)) {
     if ($line -match '(?i)profil.*?:\s*(.+?)\s*$') { $profiles += $Matches[1] }
   }
+  try { [Console]::OutputEncoding = $previousEncoding } catch { }
   [ordered]@{ ethernet = $ethernet; wifi = $wifi; ssid = $ssid; wifiProfiles = @($profiles | Select-Object -Unique) }
 }
 
