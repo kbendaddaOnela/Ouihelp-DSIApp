@@ -13,6 +13,7 @@ import { Spinner } from '@/components/ui/spinner'
 const TicketingPage = lazy(() => import('@/modules/ticketing/TicketingPage'))
 const AccountsPage = lazy(() => import('@/modules/accounts/AccountsPage'))
 const OffboardingPage = lazy(() => import('@/modules/offboarding/OffboardingPage'))
+const DeviceMigrationPage = lazy(() => import('@/modules/device-migration/DeviceMigrationPage'))
 const InventoryPage = lazy(() => import('@/modules/inventory/InventoryPage'))
 const AppsInventoryPage = lazy(() => import('@/modules/apps-inventory/AppsInventoryPage'))
 const LicensesPage = lazy(() => import('@/modules/licenses/LicensesPage'))
@@ -73,6 +74,14 @@ export function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <OffboardingPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path="device-migration"
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <DeviceMigrationPage />
                   </Suspense>
                 }
               />
