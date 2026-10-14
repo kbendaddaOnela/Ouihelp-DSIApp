@@ -18,6 +18,7 @@ import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
 import type { RbacVariables } from '../../middleware/rbac'
 import { getDb } from '../../db/index'
+import { mapLimit } from '../../lib/mapLimit'
 import { offboardingActions } from './schema'
 import {
   getGoogleUser,
@@ -325,6 +326,8 @@ offboardingRouter.delete('/delegates', requirePermission('offboarding:write'), a
   }
 })
 
+const DELEGATIONS_CONCURRENCY = 5
+
 // ── Délégations actives ──────────────────────────────────────────────────────
 // Boîtes concernées = celles sur lesquelles le journal montre au moins une
 // délégation ajoutée. Pour chacune, l'état est relu EN DIRECT dans Gmail (la
@@ -348,8 +351,12 @@ offboardingRouter.get('/delegations', requirePermission('offboarding:read'), asy
     mailboxes.set(key, mb)
   }
 
-  const result: OffboardingDelegationsResponse['mailboxes'] = await Promise.all(
-    [...mailboxes.entries()].map(async ([email, mb]) => {
+  // Concurrence bornée : la liste grossit à chaque départ, et un appel Gmail par
+  // boîte lancé d'un coup finirait par se faire throttler (429).
+  const result: OffboardingDelegationsResponse['mailboxes'] = await mapLimit(
+    [...mailboxes.entries()],
+    DELEGATIONS_CONCURRENCY,
+    async ([email, mb]) => {
       try {
         const live = await listGmailDelegates(email)
         return {
@@ -368,7 +375,7 @@ offboardingRouter.get('/delegations', requirePermission('offboarding:read'), asy
           error: `Lecture Gmail impossible, état issu du journal : ${errMsg(err)}`,
         }
       }
-    }),
+    },
   )
 
   return c.json<OffboardingDelegationsResponse>({

@@ -37,6 +37,7 @@ import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googl
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'
 import { gmailDedupeMailbox, fetchOnelaMessageMime, gmailImportMime } from './mailService'
+import { mapLimit } from '../../lib/mapLimit'
 import type {
   SearchOnelaUsersResponse,
   MigrateUsersRequest,
@@ -62,27 +63,14 @@ function normalizeNamePart(s: string): string {
     .replace(/^-|-$/g, '')
 }
 
-// Exécute `fn` sur `items` avec au plus `limit` appels en parallèle (évite de
-// saturer / faire throttler Graph quand on interroge des dizaines de groupes).
-async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length)
-  let i = 0
-  async function worker(): Promise<void> {
-    while (i < items.length) {
-      const idx = i++
-      out[idx] = await fn(items[idx]!)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return out
-}
-
 // Cache mémoire de l'appartenance agence → région (calculée en direct via Graph :
 // les membres d'une agence appartiennent tous à une seule Direction Régionale).
 // Coûteux (≈70 appels) → mis en cache ; les compteurs de statut sont recalculés
 // à chaque requête depuis la BDD (donc toujours frais).
 interface AgencyMembership { code: string; name: string; groupId: string; regionLabel: string; upns: string[]; mails: string[] }
-let membershipCache: { at: number; agencies: AgencyMembership[]; errors: string[] } | null = null
+type MembershipSnapshot = { at: number; agencies: AgencyMembership[]; errors: string[] }
+let membershipCache: MembershipSnapshot | null = null
+let membershipInFlight: Promise<MembershipSnapshot> | null = null
 const MEMBERSHIP_TTL = 5 * 60_000
 const NO_REGION = 'Sans région'
 
@@ -109,6 +97,41 @@ async function buildAgencyMembership(): Promise<{ agencies: AgencyMembership[]; 
     })
   }
   return { agencies: built, errors }
+}
+
+/**
+ * Appartenance agences → régions, depuis le cache si frais. Point d'entrée unique
+ * (arbre agences, envois groupés, signatures) : une reconstruction déjà en cours
+ * est partagée, au lieu que deux requêtes simultanées lancent chacune ~70 appels
+ * Graph. `fresh` force le recalcul (bouton « Rafraîchir » de l'arbre).
+ */
+async function getAgencyMembership(fresh = false): Promise<MembershipSnapshot> {
+  if (!fresh && membershipCache && Date.now() - membershipCache.at <= MEMBERSHIP_TTL) return membershipCache
+  if (membershipInFlight) return membershipInFlight
+  const pending: Promise<MembershipSnapshot> = buildAgencyMembership()
+    .then((built) => (membershipCache = { at: Date.now(), ...built }))
+    .finally(() => {
+      if (membershipInFlight === pending) membershipInFlight = null
+    })
+  membershipInFlight = pending
+  return pending
+}
+
+/**
+ * UPN (minuscules) ciblés par un envoi groupé : membres d'une agence ou de toutes
+ * les agences d'une région. Renvoie null si aucune cible n'est précisée.
+ */
+async function resolveBulkTargetUpns(body: { agencyGroupId?: string; region?: string }): Promise<Set<string> | null> {
+  const targetUpns = new Set<string>()
+  if (body.agencyGroupId) {
+    for (const m of await getOnelaGroupMembers(body.agencyGroupId)) targetUpns.add(m.upn)
+  } else if (body.region) {
+    const { agencies } = await getAgencyMembership()
+    for (const a of agencies) if (a.regionLabel === body.region) for (const u of a.upns) targetUpns.add(u)
+  } else {
+    return null
+  }
+  return targetUpns
 }
 
 // ── Statut de migration par utilisateur (source autoritaire : table `migrations`) ─
@@ -936,15 +959,12 @@ migrationRouter.get('/service-group-counts', requirePermission('migration:read')
 migrationRouter.get('/agencies-tree', requirePermission('migration:read'), async (c) => {
   const db = getDb()
   const fresh = ['1', 'true'].includes(c.req.query('fresh') ?? '')
-  if (fresh || !membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
-    try {
-      const built = await buildAgencyMembership()
-      membershipCache = { at: Date.now(), ...built }
-    } catch (err) {
-      return c.json({ error: 'ONELA groups', message: err instanceof Error ? err.message : String(err) }, 502)
-    }
+  let cache: MembershipSnapshot
+  try {
+    cache = await getAgencyMembership(fresh)
+  } catch (err) {
+    return c.json({ error: 'ONELA groups', message: err instanceof Error ? err.message : String(err) }, 502)
   }
-  const cache = membershipCache
 
   const { byKey } = await loadUserStatus(db)
 
@@ -1053,21 +1073,11 @@ migrationRouter.post('/send-credentials-bulk', requirePermission('migration:writ
   const body = await c.req.json<{ agencyGroupId?: string; region?: string; force?: boolean }>().catch(() => ({} as { agencyGroupId?: string; region?: string; force?: boolean }))
 
   // Ensemble des UPN ciblés (minuscule)
-  const targetUpns = new Set<string>()
+  let targetUpns: Set<string>
   try {
-    if (body.agencyGroupId) {
-      for (const m of await getOnelaGroupMembers(body.agencyGroupId)) targetUpns.add(m.upn)
-    } else if (body.region) {
-      if (!membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
-        const built = await buildAgencyMembership()
-        membershipCache = { at: Date.now(), ...built }
-      }
-      for (const a of membershipCache.agencies) {
-        if (a.regionLabel === body.region) for (const u of a.upns) targetUpns.add(u)
-      }
-    } else {
-      return c.json({ error: 'agencyGroupId ou region requis' }, 400)
-    }
+    const resolved = await resolveBulkTargetUpns(body)
+    if (!resolved) return c.json({ error: 'agencyGroupId ou region requis' }, 400)
+    targetUpns = resolved
   } catch (err) {
     return c.json({ error: 'Lecture groupe ONELA échouée', message: err instanceof Error ? err.message : String(err) }, 502)
   }
@@ -1109,12 +1119,9 @@ migrationRouter.post('/send-credentials-bulk', requirePermission('migration:writ
 // le CSV, siège = Montrouge sans tél), la pose sur le send-as prenom.nom@onela.com
 // et en fait l'adresse par défaut. Trace signatureAppliedAt.
 async function agencyCodeByUpnMap(): Promise<Map<string, string>> {
-  if (!membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
-    const built = await buildAgencyMembership()
-    membershipCache = { at: Date.now(), ...built }
-  }
+  const { agencies } = await getAgencyMembership()
   const map = new Map<string, string>()
-  for (const a of membershipCache.agencies) {
+  for (const a of agencies) {
     for (const upn of a.upns) map.set(upn, a.code)
     for (const mail of a.mails) if (mail) map.set(mail.toLowerCase(), a.code)
   }
@@ -1177,19 +1184,11 @@ migrationRouter.post('/apply-signature-bulk', requirePermission('migration:write
   const db = getDb()
   const body = await c.req.json<{ agencyGroupId?: string; region?: string; force?: boolean }>().catch(() => ({} as { agencyGroupId?: string; region?: string; force?: boolean }))
 
-  const targetUpns = new Set<string>()
+  let targetUpns: Set<string>
   try {
-    if (body.agencyGroupId) {
-      for (const m of await getOnelaGroupMembers(body.agencyGroupId)) targetUpns.add(m.upn)
-    } else if (body.region) {
-      if (!membershipCache || Date.now() - membershipCache.at > MEMBERSHIP_TTL) {
-        const built = await buildAgencyMembership()
-        membershipCache = { at: Date.now(), ...built }
-      }
-      for (const a of membershipCache.agencies) if (a.regionLabel === body.region) for (const u of a.upns) targetUpns.add(u)
-    } else {
-      return c.json({ error: 'agencyGroupId ou region requis' }, 400)
-    }
+    const resolved = await resolveBulkTargetUpns(body)
+    if (!resolved) return c.json({ error: 'agencyGroupId ou region requis' }, 400)
+    targetUpns = resolved
   } catch (err) {
     return c.json({ error: 'Lecture groupe ONELA échouée', message: err instanceof Error ? err.message : String(err) }, 502)
   }
@@ -1853,6 +1852,6 @@ function serializeMigration(m: typeof migrations.$inferSelect) {
 // ne lit jamais. La garder dans /history alourdissait chaque poll (toutes les 5 s
 // pendant une migration) sans rien afficher. Elle reste servie par /migration/:id.
 function serializeMigrationLight(m: typeof migrations.$inferSelect) {
-  const { exchangePsScript: _omit, ...rest } = serializeMigration(m)
-  return rest
+  // `undefined` est omis par JSON.stringify : la clé n'apparaît pas dans la réponse.
+  return { ...serializeMigration(m), exchangePsScript: undefined }
 }

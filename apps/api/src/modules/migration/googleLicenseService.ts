@@ -87,7 +87,9 @@ async function* iterateAssignments(productId: string, token: string): AsyncGener
 }
 
 // Découvre les licences EN USAGE et le nombre assigné à chacune (utilisé seulement).
-export async function listLicenseSkusWithUsage(): Promise<LicenseSkuUsage[]> {
+// Parcourt TOUTES les attributions du tenant (pages de 1000) : coûteux, d'où le
+// cache ci-dessous.
+async function scanLicenseSkusWithUsage(): Promise<LicenseSkuUsage[]> {
   const adminEmail = process.env['GOOGLE_ADMIN_EMAIL']
   if (!adminEmail) throw new Error('GOOGLE_ADMIN_EMAIL manquant')
   const token = await getGoogleAccessTokenForUser(adminEmail, LICENSING_SCOPE)
@@ -105,9 +107,54 @@ export async function listLicenseSkusWithUsage(): Promise<LicenseSkuUsage[]> {
   return [...byKey.values()].sort((x, y) => y.used - x.used)
 }
 
+
+// ── Cache du décompte des licences ───────────────────────────────────────────
+// `/license-skus` et `/live-stats` le demandent tous les deux à l'ouverture de la
+// page migration : sans cache, deux scans complets du tenant à chaque chargement.
+// TTL court (le décompte bouge peu) + partage de la requête en cours. Toute
+// attribution invalide le cache pour que « restantes » se mette à jour aussitôt.
+const USAGE_TTL_MS = 60_000
+let usageCache: { at: number; value: LicenseSkuUsage[] } | null = null
+let usageInFlight: Promise<LicenseSkuUsage[]> | null = null
+// Incrémenté à chaque invalidation : un scan lancé AVANT une attribution ne doit
+// pas réécrire le cache avec un décompte périmé en se terminant après elle.
+let usageGeneration = 0
+
+export function invalidateLicenseUsageCache(): void {
+  usageGeneration++
+  usageCache = null
+  usageInFlight = null
+}
+
+export async function listLicenseSkusWithUsage(): Promise<LicenseSkuUsage[]> {
+  if (usageCache && Date.now() - usageCache.at < USAGE_TTL_MS) return usageCache.value
+  if (usageInFlight) return usageInFlight
+  const generation = usageGeneration
+  const pending = scanLicenseSkusWithUsage()
+    .then((value) => {
+      if (generation === usageGeneration) usageCache = { at: Date.now(), value }
+      return value
+    })
+    .finally(() => {
+      if (usageInFlight === pending) usageInFlight = null
+    })
+  usageInFlight = pending
+  return pending
+}
+
 // Assigne une licence (productId + skuId) à un utilisateur. Idempotent : un
-// assignment déjà existant (409) est traité comme un succès.
+// assignment déjà existant (409) est traité comme un succès. Le cache du
+// décompte est invalidé dans tous les cas (même en échec : un 412 a pu basculer
+// le SKU avant que la suite échoue).
 export async function assignLicense(userEmail: string, productId: string, skuId: string): Promise<void> {
+  try {
+    await assignLicenseUncached(userEmail, productId, skuId)
+  } finally {
+    invalidateLicenseUsageCache()
+  }
+}
+
+async function assignLicenseUncached(userEmail: string, productId: string, skuId: string): Promise<void> {
   const adminEmail = process.env['GOOGLE_ADMIN_EMAIL']
   if (!adminEmail) throw new Error('GOOGLE_ADMIN_EMAIL manquant')
   const token = await getGoogleAccessTokenForUser(adminEmail, LICENSING_SCOPE)
