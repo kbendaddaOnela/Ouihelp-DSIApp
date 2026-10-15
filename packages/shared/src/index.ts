@@ -124,4 +124,5 @@ export type {
   DeviceAgentReport,
   DeviceAgentSummary,
   DeviceAgentCheckinResponse,
+  DeviceLogon,
 } from './types/deviceMigration'

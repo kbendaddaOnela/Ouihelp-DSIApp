@@ -108,10 +108,17 @@ interface AutopilotDevice {
 }
 
 interface EntraUser {
+  id: string
   userPrincipalName: string
   displayName: string | null
   officeLocation: string | null
   department: string | null
+}
+
+/** Graph beta uniquement : derniers utilisateurs connectés à un PC Intune */
+interface IntuneLogons {
+  id: string
+  usersLoggedOn?: Array<{ userId: string; lastLogOnDateTime: string | null }>
 }
 
 interface BitlockerKeyMeta {
@@ -331,6 +338,13 @@ function gb(bytes: number | null | undefined): number | null {
   return bytes && bytes > 0 ? Math.round(bytes / 1024 ** 3) : null
 }
 
+/** Connexion Intune stockée en JSON dans device_migrations.intune_logons */
+export interface StoredLogon {
+  upn: string
+  name: string | null
+  at: string | null
+}
+
 // ── Synchro ──────────────────────────────────────────────────────────────────
 
 export async function runInventorySync(): Promise<void> {
@@ -380,8 +394,17 @@ export async function runInventorySync(): Promise<void> {
     const usersOl = await optional('Utilisateurs ONELA', () =>
       graphGetAll<EntraUser>(
         olToken,
-        `${GRAPH}/users?$select=userPrincipalName,displayName,officeLocation,department&$top=999`,
+        `${GRAPH}/users?$select=id,userPrincipalName,displayName,officeLocation,department&$top=999`,
         'Utilisateurs ONELA'
+      )
+    )
+    // L'utilisateur principal Intune est celui qui a inscrit le PC : pour savoir qui s'en
+    // sert vraiment, on lit les dernières connexions (propriété beta, même permission)
+    const logonsOl = await optional('Connexions Intune ONELA', () =>
+      graphGetAll<IntuneLogons>(
+        olToken,
+        `https://graph.microsoft.com/beta/deviceManagement/managedDevices?$filter=operatingSystem eq 'Windows'&$select=id,usersLoggedOn&$top=999`,
+        'Connexions Intune ONELA'
       )
     )
     // Métadonnées seules (ReadBasic) : on compte les clés par poste, sans lire leur valeur
@@ -418,6 +441,22 @@ export async function runInventorySync(): Promise<void> {
     const drafts = consolidate(entra, intuneAll ?? [], autopilotOl ?? [])
 
     const userByUpn = new Map((usersOl ?? []).map((u) => [u.userPrincipalName.toLowerCase(), u]))
+    const userById = new Map((usersOl ?? []).map((u) => [u.id, u]))
+    const logonsByIntuneId = new Map<string, StoredLogon[]>()
+    for (const d of logonsOl ?? []) {
+      const logons = (d.usersLoggedOn ?? [])
+        .map((l) => {
+          const u = userById.get(l.userId)
+          return {
+            upn: u?.userPrincipalName.toLowerCase() ?? l.userId,
+            name: u?.displayName ?? null,
+            at: toDate(l.lastLogOnDateTime)?.toISOString() ?? null,
+          }
+        })
+        .sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''))
+        .slice(0, 10)
+      if (logons.length) logonsByIntuneId.set(d.id, logons)
+    }
     const keysByDevice = new Map<string, number>()
     for (const k of bitlockerOl ?? []) {
       const id = cleanGuid(k.deviceId)
@@ -511,6 +550,14 @@ export async function runInventorySync(): Promise<void> {
         onelaUserName: user?.displayName ?? d.intune?.userDisplayName ?? null,
         onelaOfficeLocation: user?.officeLocation ?? null,
         onelaDepartment: user?.department ?? null,
+        // null = source non lue (on garde alors la valeur précédente)
+        ...(logonsOl
+          ? {
+              intuneLogons: JSON.stringify(
+                d.intune ? (logonsByIntuneId.get(d.intune.id) ?? []) : []
+              ),
+            }
+          : {}),
         isEncrypted: d.intune?.isEncrypted == null ? null : d.intune.isEncrypted ? 1 : 0,
         freeStorageGb: gb(d.intune?.freeStorageSpaceInBytes),
         totalStorageGb: gb(d.intune?.totalStorageSpaceInBytes),

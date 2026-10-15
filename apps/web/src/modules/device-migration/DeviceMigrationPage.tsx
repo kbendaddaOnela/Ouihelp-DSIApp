@@ -106,7 +106,10 @@ function exportCsv(devices: DeviceMigrationRecord[]) {
     ['Version OS', (d) => d.osVersion],
     ['Jonction', (d) => JOIN_CFG[d.joinType].label],
     ['État', (d) => STATE_CFG[d.state].label],
-    ['Utilisateur ONELA', (d) => d.onelaUserUpn],
+    ['Dernier utilisateur', (d) => d.lastUser?.account ?? null],
+    ['Nom du dernier utilisateur', (d) => d.lastUser?.name ?? null],
+    ['Dernière connexion', (d) => fmtDateTime(d.lastUser?.at ?? null)],
+    ['Utilisateur principal Intune', (d) => d.onelaUserUpn],
     ['Agence', (d) => d.agency],
     ['Agence de l’utilisateur', (d) => d.onelaOfficeLocation],
     ['Région', (d) => d.region],
@@ -334,6 +337,45 @@ function AgentPanel({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boole
   )
 }
 
+function sameAccount(a: string | null | undefined, b: string | null | undefined) {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase()
+}
+
+/** Dernier utilisateur réel ; l'utilisateur principal Intune n'est rappelé que s'il diffère. */
+function LastUserCell({ d }: { d: DeviceMigrationRecord }) {
+  const last = d.lastUser
+  const primaryDiffers = d.onelaUserUpn && !sameAccount(d.onelaUserUpn, last?.account)
+  if (!last) {
+    return (
+      <>
+        <div className="text-gray-400">{d.onelaUserName ?? '—'}</div>
+        {d.onelaUserUpn && (
+          <div className="text-[11px] text-gray-400">
+            inscrit par {d.onelaUserUpn} · pas de connexion connue
+          </div>
+        )}
+      </>
+    )
+  }
+  return (
+    <>
+      <div className="text-gray-700">{last.name ?? last.account}</div>
+      <div className="font-mono text-[11px] text-gray-400">
+        {last.name ? `${last.account} · ` : ''}
+        {fmtDate(last.at)}
+      </div>
+      {primaryDiffers && (
+        <div
+          className="text-[11px] text-amber-600"
+          title="Utilisateur principal Intune (celui qui a inscrit le PC)"
+        >
+          inscrit par {d.onelaUserName ?? d.onelaUserUpn}
+        </div>
+      )}
+    </>
+  )
+}
+
 function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boolean }) {
   const update = useUpdateDeviceMigration()
   const [reason, setReason] = useState(d.excludeReason ?? '')
@@ -356,7 +398,26 @@ function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boo
               : 'non'}
           </div>
           <div>
-            <span className="text-gray-400">Service :</span> {d.onelaDepartment ?? '—'}
+            <span className="text-gray-400">Utilisateur principal Intune :</span>{' '}
+            {d.onelaUserUpn ? `${d.onelaUserName ?? ''} (${d.onelaUserUpn})` : '—'}
+            {d.onelaDepartment ? ` · ${d.onelaDepartment}` : ''}
+          </div>
+          <div className="pt-1">
+            <div className="text-gray-400">Dernières connexions (support / admin exclus) :</div>
+            {d.recentLogons.length === 0 ? (
+              <div className="text-gray-400">aucune connue</div>
+            ) : (
+              d.recentLogons.slice(0, 6).map((l) => (
+                <div key={`${l.source}-${l.account}`} className="flex justify-between gap-2">
+                  <span className="truncate text-gray-700" title={l.account}>
+                    {l.name ?? l.account}
+                  </span>
+                  <span className="shrink-0 text-gray-400">
+                    {fmtDateTime(l.at)} · {l.source === 'intune' ? 'Intune' : 'agent'}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
           <div>
             <span className="text-gray-400">Disque :</span>{' '}
@@ -522,6 +583,7 @@ export default function DeviceMigrationPage() {
             d.serialNumber,
             d.onelaUserUpn,
             d.onelaUserName,
+            ...d.recentLogons.flatMap((l) => [l.account, l.name]),
             d.onelaOfficeLocation,
             d.agency,
             d.model,
@@ -726,7 +788,12 @@ export default function DeviceMigrationPage() {
                   <th className="w-6 px-2 py-2" />
                   <th className="px-3 py-2 font-medium">Poste</th>
                   <th className="px-3 py-2 font-medium">Jonction</th>
-                  <th className="px-3 py-2 font-medium">Utilisateur ONELA</th>
+                  <th
+                    className="px-3 py-2 font-medium"
+                    title="Dernière personne connectée (Intune + agent), comptes support/admin exclus"
+                  >
+                    Dernier utilisateur
+                  </th>
                   <th className="px-3 py-2 font-medium">Agence</th>
                   <th className="px-3 py-2 font-medium">Activité</th>
                   <th
@@ -769,12 +836,7 @@ export default function DeviceMigrationPage() {
                         </div>
                       </td>
                       <td className="px-3 py-2">
-                        <div className="text-gray-700">{d.onelaUserName ?? '—'}</div>
-                        {d.onelaUserUpn && (
-                          <div className="font-mono text-[11px] text-gray-400">
-                            {d.onelaUserUpn}
-                          </div>
-                        )}
+                        <LastUserCell d={d} />
                       </td>
                       <td className="px-3 py-2">
                         <div

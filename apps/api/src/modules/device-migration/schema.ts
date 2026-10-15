@@ -48,6 +48,8 @@ export const deviceMigrations = mysqlTable(
     onelaUserName: varchar('onela_user_name', { length: 255 }),
     onelaOfficeLocation: varchar('onela_office_location', { length: 255 }),
     onelaDepartment: varchar('onela_department', { length: 255 }),
+    /** JSON StoredLogon[] — derniers utilisateurs connectés selon Intune (Graph beta usersLoggedOn) */
+    intuneLogons: text('intune_logons'),
     isEncrypted: int('is_encrypted'),
     freeStorageGb: int('free_storage_gb'),
     totalStorageGb: int('total_storage_gb'),

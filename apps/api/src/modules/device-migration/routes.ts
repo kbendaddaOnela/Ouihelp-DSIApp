@@ -4,6 +4,7 @@ import type {
   DeviceAgentReport,
   DeviceAgentSummary,
   DeviceEntraObject,
+  DeviceLogon,
   DeviceMigrationListResponse,
   DeviceMigrationRecord,
   DeviceMigrationState,
@@ -14,13 +15,19 @@ import { loadUserRole, requirePermission } from '../../middleware/rbac'
 import type { RbacVariables } from '../../middleware/rbac'
 import { db } from '../../db/index'
 import { agencies } from '../accounts/schema'
+import { cachedUsers } from '../inventory/schema'
 import {
   deviceAgents,
   deviceMigrations,
   type DeviceAgentRow,
   type DeviceMigrationRow,
 } from './schema'
-import { getLastSyncAt, getSyncState, startInventorySync } from './inventoryService'
+import {
+  getLastSyncAt,
+  getSyncState,
+  startInventorySync,
+  type StoredLogon,
+} from './inventoryService'
 
 export const deviceMigrationRouter = new Hono<{ Variables: RbacVariables }>()
 deviceMigrationRouter.use('*', authMiddleware, loadUserRole)
@@ -87,13 +94,65 @@ function toAgentSummary(a: DeviceAgentRow | undefined): DeviceAgentSummary | nul
   }
 }
 
+// Comptes techniques (support, admin) : ils se connectent pour dépanner, ce ne sont pas
+// les utilisateurs du poste. Testé sur la partie compte (après « \ », avant « @ »).
+const TECHNICAL_ACCOUNT = /^(admin|adm[._-]|administrat|support)/i
+
+function isTechnical(account: string): boolean {
+  const local = account.split('\\').pop()!.split('@')[0]!
+  return TECHNICAL_ACCOUNT.test(local)
+}
+
+/**
+ * Connexions récentes du poste, toutes sources : Intune (usersLoggedOn) et agent (date de
+ * chargement de chaque profil). Dédoublonnées par compte, la plus récente gagne.
+ */
+function buildLogons(
+  r: DeviceMigrationRow,
+  agent: DeviceAgentSummary | null,
+  nameByUpn: Map<string, string>
+): DeviceLogon[] {
+  const all: DeviceLogon[] = []
+  if (r.intuneLogons) {
+    try {
+      for (const l of JSON.parse(r.intuneLogons) as StoredLogon[]) {
+        all.push({ account: l.upn, name: l.name, at: l.at, source: 'intune' })
+      }
+    } catch {
+      // JSON illisible : on ignore la source
+    }
+  }
+  for (const p of agent?.report.profiles ?? []) {
+    if (p.kind === 'local' || !p.lastLogonTime) continue
+    const account = p.upn?.toLowerCase() || p.account
+    if (!account) continue
+    all.push({
+      account,
+      name: nameByUpn.get(account.toLowerCase()) ?? null,
+      at: p.lastLogonTime,
+      source: 'agent',
+    })
+  }
+  const byAccount = new Map<string, DeviceLogon>()
+  for (const l of all) {
+    if (isTechnical(l.account)) continue
+    const key = l.account.toLowerCase()
+    const prev = byAccount.get(key)
+    if (!prev || (l.at ?? '') > (prev.at ?? ''))
+      byAccount.set(key, { ...l, name: l.name ?? prev?.name ?? null })
+  }
+  return [...byAccount.values()].sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''))
+}
+
 function toRecord(
   r: DeviceMigrationRow,
   lastSyncAt: Date | null,
   agencyRef: AgencyRef,
-  agentRow: DeviceAgentRow | undefined
+  agentRow: DeviceAgentRow | undefined,
+  nameByUpn: Map<string, string>
 ): DeviceMigrationRecord {
   const agent = toAgentSummary(agentRow)
+  const recentLogons = buildLogons(r, agent, nameByUpn)
   const lastActivity = [r.onelaEntraLastSignIn, r.onelaIntuneLastSync].reduce<Date | null>(
     (max, v) => (v && (!max || v > max) ? v : max),
     null
@@ -135,6 +194,8 @@ function toRecord(
     onelaAutopilotGroupTag: r.onelaAutopilotGroupTag,
     onelaUserUpn: r.onelaUserUpn,
     onelaUserName: r.onelaUserName,
+    lastUser: recentLogons[0] ?? null,
+    recentLogons,
     onelaOfficeLocation: r.onelaOfficeLocation,
     onelaDepartment: r.onelaDepartment,
     ...resolveAgency(r, agencyRef),
@@ -157,14 +218,21 @@ function toRecord(
 
 // ── Inventaire complet (quelques centaines de postes : filtrage côté front) ──
 deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async (c) => {
-  const [rows, lastSyncAt, agencyRows, agentRows] = await Promise.all([
+  const [rows, lastSyncAt, agencyRows, agentRows, onelaUsers] = await Promise.all([
     db.select().from(deviceMigrations),
     getLastSyncAt(),
     db
       .select({ name: agencies.name, trigramme: agencies.trigramme, region: agencies.region })
       .from(agencies),
     db.select().from(deviceAgents),
+    // Noms des comptes vus par l'agent (UPN seul) : cache utilisateurs du module inventaire
+    db
+      .select({ upn: cachedUsers.upn, displayName: cachedUsers.displayName })
+      .from(cachedUsers)
+      .where(eq(cachedUsers.source, 'onela')),
   ])
+  const nameByUpn = new Map<string, string>()
+  for (const u of onelaUsers) if (u.displayName) nameByUpn.set(u.upn.toLowerCase(), u.displayName)
   const agencyRef: AgencyRef = {
     byName: new Map(agencyRows.map((a) => [a.name.trim().toLowerCase(), a])),
     byTrigramme: new Map(agencyRows.map((a) => [a.trigramme.trim().toUpperCase(), a])),
@@ -177,7 +245,7 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
     if (!prev || a.lastCheckinAt > prev.lastCheckinAt) agentByDevice.set(a.deviceMigrationId, a)
   }
   const devices = rows
-    .map((r) => toRecord(r, lastSyncAt, agencyRef, agentByDevice.get(r.id)))
+    .map((r) => toRecord(r, lastSyncAt, agencyRef, agentByDevice.get(r.id), nameByUpn))
     .sort((a, b) => (a.displayName ?? '').localeCompare(b.displayName ?? ''))
   const body: DeviceMigrationListResponse = {
     devices,

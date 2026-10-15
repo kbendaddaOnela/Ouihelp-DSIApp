@@ -205,6 +205,8 @@ async function ensureSchemaPatches() {
     // Envoi des accès (login + mdp temporaire) à l'utilisateur migré
     { table: 'migrations', column: 'credentials_sent_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`credentials_sent_at\` timestamp NULL` },
     { table: 'migrations', column: 'signature_applied_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`signature_applied_at\` timestamp NULL` },
+    // Migration des postes : derniers utilisateurs connectés selon Intune
+    { table: 'device_migrations', column: 'intune_logons', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`intune_logons\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
   ]
   for (const p of columnPatches) {
     try {
@@ -772,6 +774,7 @@ async function ensureSchemaPatches() {
         \`onela_user_name\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`onela_office_location\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`onela_department\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`intune_logons\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`is_encrypted\` int,
         \`free_storage_gb\` int,
         \`total_storage_gb\` int,
