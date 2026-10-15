@@ -81,7 +81,8 @@ export type NewDeviceMigrationRow = typeof deviceMigrations.$inferInsert
 /**
  * Agent DSI installé sur un PC (tâche planifiée SYSTEM, lot 2).
  *
- * Identifié par le MachineGuid Windows (stable jusqu'à la réinstallation). Au 1er
+ * Identifié par le MachineGuid Windows + n° de série (le MachineGuid seul est partagé
+ * par les PC clonés d'un même master). Au 1er
  * check-in, authentifié par la clé d'enrôlement commune, l'agent reçoit un jeton
  * propre au poste ; seul son hash SHA-256 est stocké. Un 2e enregistrement du même
  * MachineGuid est refusé tant que la DSI n'a pas réinitialisé l'agent (token_hash NULL).
@@ -90,7 +91,8 @@ export const deviceAgents = mysqlTable(
   'device_agents',
   {
     id: varchar('id', { length: 36 }).primaryKey(),
-    machineGuid: varchar('machine_guid', { length: 64 }).notNull(),
+    /** Identité de l'agent : « MachineGuid|N° de série » (voir agentIdentity) */
+    machineGuid: varchar('machine_guid', { length: 160 }).notNull(),
     deviceMigrationId: varchar('device_migration_id', { length: 36 }),
     tokenHash: varchar('token_hash', { length: 64 }),
     hostname: varchar('hostname', { length: 255 }),
