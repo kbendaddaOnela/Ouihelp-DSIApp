@@ -33,7 +33,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.0.3'
+$AgentVersion = '1.0.4'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -89,9 +89,12 @@ function Install-Agent {
   Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Action $action -Trigger @($atStartup, $every30) `
     -Principal $principal -Settings $settings -Description 'Agent DSI ONELA — inventaire avant migration Ouihelp (lecture seule)' -Force | Out-Null
 
-  # Nouvelle version : rapport immédiat sans attendre la cadence
-  if (Test-Path $StatePath) { Remove-Item $StatePath -Force }
-  Start-ScheduledTask -TaskName $TaskName
+  # 1er rapport tout de suite, dans ce même processus : s'il échoue, le script Intune / GPO
+  # sort en erreur avec la cause, visible à distance dans « État de l'appareil » d'Intune
+  # (et Intune relance le script). Sans ça, un « Réussi » ne garantissait que l'installation.
+  $script:Force = $true
+  $err = Invoke-Checkin
+  if ($err) { throw "Agent $AgentVersion installé mais 1er rapport en échec : $err" }
 }
 
 function Uninstall-Agent {
@@ -375,9 +378,11 @@ function Get-Report($State) {
 # Check-in
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Renvoie $null si tout va bien (ou si ce n'est pas encore l'heure), sinon la cause de l'échec.
 function Invoke-Checkin {
   $state = Get-State
-  if (-not $Force -and $state.nextCheckinAt -and (Get-Date) -lt [datetime]$state.nextCheckinAt) { return }
+  if (-not $Force -and $state.nextCheckinAt -and (Get-Date) -lt [datetime]$state.nextCheckinAt) { return $null }
+  $failure = $null
 
   $report = Get-Report $state
   $json = $report | ConvertTo-Json -Depth 6 -Compress
@@ -405,15 +410,21 @@ function Invoke-Checkin {
       # Jeton réinitialisé par la DSI : on se ré-enrôle au prochain passage
       Remove-Item $TokenPath -Force -ErrorAction SilentlyContinue
       $state.nextCheckinAt = $null
-      Write-Log 'Jeton refusé (401) : supprimé, ré-enrôlement au prochain passage'
+      $failure = 'Jeton refusé (401) : supprimé, ré-enrôlement au prochain passage'
+    } elseif ($status -eq 401) {
+      $failure = 'Clé d''enrôlement refusée (401) : $EnrollmentKey du script différente de DEVICE_AGENT_ENROLLMENT_KEY côté API'
     } elseif ($status -eq 409) {
       $state.nextCheckinAt = (Get-Date).AddHours(24).ToString('o')
-      Write-Log 'Poste déjà enregistré sans jeton local (409) : réinitialiser l''agent dans la DSI App'
+      $failure = 'Poste déjà enregistré sans jeton local (409) : cliquer « Réinitialiser l''agent » dans la DSI App'
+    } elseif ($status) {
+      $failure = "Réponse HTTP $status de $ApiUrl : $($_.Exception.Message)"
     } else {
-      Write-Log "Check-in en échec ($status) : $($_.Exception.Message)"
+      $failure = "DSI App injoignable ($ApiUrl) — réseau, proxy ou filtrage : $($_.Exception.Message)"
     }
+    Write-Log "Check-in en échec : $failure"
   }
   Save-State $state
+  return $failure
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -421,7 +432,8 @@ function Invoke-Checkin {
 try {
   if ($Uninstall) { Uninstall-Agent; exit 0 }
   if ($PSCommandPath -ne $InstalledPs) { Install-Agent; exit 0 }
-  Invoke-Checkin
+  # Code de sortie ≠ 0 en cas d'échec : visible dans « Dernier résultat » de la tâche planifiée
+  if (Invoke-Checkin) { exit 1 }
   exit 0
 } catch {
   Write-Log "Erreur fatale : $($_.Exception.Message)"
