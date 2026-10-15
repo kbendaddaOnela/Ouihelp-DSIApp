@@ -33,7 +33,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.0.5'
+$AgentVersion = '1.0.6'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -142,7 +142,9 @@ function Get-MdmState {
     if ($p.ProviderID -eq 'MS DM Server' -and $p.EnrollmentState -eq 1) { $enrolled = $true; if ($p.UPN) { $upn = $p.UPN } }
   }
   # Inscription automatique poussée par GPO : reste écrite dans le registre après la sortie du domaine
-  $gpo = Safe 'gpoAutoEnroll' { (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM' -ErrorAction Stop).AutoEnrollMDM -eq 1 } $false
+  # Clé absente = cas normal (pas de GPO d'inscription) : pas de message d'erreur
+  $mdmPolicy = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM' -ErrorAction SilentlyContinue
+  $gpo = [bool]($mdmPolicy -and $mdmPolicy.AutoEnrollMDM -eq 1)
   [ordered]@{ enrolled = $enrolled; upn = $upn; gpoAutoEnroll = [bool]$gpo }
 }
 
@@ -253,10 +255,11 @@ function Measure-LocalBytes([string]$Path, [datetime]$Deadline) {
 function Get-ProfileLoadTime([string]$Sid) {
   $k = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid" -ErrorAction Stop
   if ($null -eq $k.LocalProfileLoadTimeHigh -or $null -eq $k.LocalProfileLoadTimeLow) { return $null }
-  # Valeurs DWORD lues en Int32 signés : on repasse par les octets pour obtenir des UInt32
-  $high = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$k.LocalProfileLoadTimeHigh), 0)
-  $low = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$k.LocalProfileLoadTimeLow), 0)
-  $fileTime = ([int64]$high -shl 32) -bor [int64]$low
+  # DWORD lus en Int32 signés OU en UInt32 selon la version de Windows : le masque sur
+  # 32 bits donne la valeur non signée dans les deux cas (0xFFFFFFFF vaut -1 en PowerShell)
+  $high = [int64]$k.LocalProfileLoadTimeHigh -band [int64]4294967295
+  $low = [int64]$k.LocalProfileLoadTimeLow -band [int64]4294967295
+  $fileTime = ($high -shl 32) -bor $low
   if ($fileTime -le 0) { return $null }
   return [DateTime]::FromFileTimeUtc($fileTime).ToString('o')
 }
