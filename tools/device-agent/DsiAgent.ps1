@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Agent DSI — inventaire des PC ONELA avant leur bascule vers le tenant Ouihelp (lot 2).
@@ -33,7 +33,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.0.4'
+$AgentVersion = '1.0.5'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -277,6 +277,17 @@ function Get-AdUpn([string]$Sid, $State) {
   return $upn
 }
 
+# UPN d'un compte Entra : son emplacement varie selon la version de Windows.
+function Get-EntraUpn([string]$Sid) {
+  $p = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\IdentityStore\Cache\$Sid\IdentityCache\$Sid" -ErrorAction SilentlyContinue
+  if ($p -and $p.UserName) { return $p.UserName }
+  foreach ($k in (Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache' -ErrorAction SilentlyContinue)) {
+    $n = Get-ItemProperty (Join-Path $k.PSPath "Sid2Name\$Sid") -ErrorAction SilentlyContinue
+    if ($n -and $n.IdentityName) { return $n.IdentityName }
+  }
+  return $null
+}
+
 function Get-Profiles($State) {
   $localSid = Safe 'localSid' { (Get-LocalUser | Select-Object -First 1).SID.AccountDomainSid.Value }
   $measure = $Force -or -not $State.profilesMeasuredAt -or ((Get-Date) - [datetime]$State.profilesMeasuredAt).TotalHours -ge 20
@@ -293,8 +304,8 @@ function Get-Profiles($State) {
     $kind = 'unknown'; $account = $null; $upn = $null
     if ($sid -like 'S-1-12-1-*') {
       $kind = 'entra'
-      $account = Safe 'entraName' { (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\IdentityStore\Cache\$sid\IdentityCache\$sid" -ErrorAction Stop).UserName }
-      $upn = $account
+      $upn = Get-EntraUpn $sid
+      $account = if ($upn) { $upn } else { Safe 'entraNt' { (New-Object Security.Principal.SecurityIdentifier $sid).Translate([Security.Principal.NTAccount]).Value } }
     } elseif ($sid -like 'S-1-5-21-*') {
       $kind = if ($localSid -and $sid.StartsWith("$localSid-")) { 'local' } else { 'ad' }
       $account = Safe 'ntName' { (New-Object Security.Principal.SecurityIdentifier $sid).Translate([Security.Principal.NTAccount]).Value }
@@ -419,7 +430,7 @@ function Invoke-Checkin {
     } elseif ($status) {
       $failure = "Réponse HTTP $status de $ApiUrl : $($_.Exception.Message)"
     } else {
-      $failure = "DSI App injoignable ($ApiUrl) — réseau, proxy ou filtrage : $($_.Exception.Message)"
+      $failure = "DSI App injoignable ($ApiUrl) : réseau, proxy ou filtrage ($($_.Exception.Message))"
     }
     Write-Log "Check-in en échec : $failure"
   }
