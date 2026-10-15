@@ -219,6 +219,38 @@ async function linkDevice(agent: DeviceAgentRow, r: DeviceAgentReport): Promise<
   return id
 }
 
+// ── Identité de l'agent ───────────────────────────────────────────────────────
+
+/**
+ * Identité d'un agent = MachineGuid + n° de série. Le MachineGuid seul ne suffit pas : il
+ * est identique sur des PC clonés depuis un master non généralisé (sysprep), et le 2ᵉ PC
+ * recevait alors un 409 « déjà enregistré » sans jamais apparaître dans l'inventaire.
+ * Stockée dans la colonne machine_guid.
+ */
+function agentIdentity(r: DeviceAgentReport): string {
+  return `${r.machineGuid}|${normSerial(r.serialNumber) ?? '-'}`
+}
+
+async function findAgent(r: DeviceAgentReport): Promise<DeviceAgentRow | undefined> {
+  const identity = agentIdentity(r)
+  const [agent] = await db.select().from(deviceAgents).where(eq(deviceAgents.machineGuid, identity))
+  if (agent) return agent
+  // Agents enregistrés avant ce correctif (clé = MachineGuid seul) : on reprend la ligne si
+  // le n° de série concorde — c'est le même PC — et on la passe sur la nouvelle clé.
+  const [legacy] = await db
+    .select()
+    .from(deviceAgents)
+    .where(eq(deviceAgents.machineGuid, r.machineGuid))
+  if (legacy && (legacy.serialNumber ?? null) === normSerial(r.serialNumber)) {
+    await db
+      .update(deviceAgents)
+      .set({ machineGuid: identity })
+      .where(eq(deviceAgents.id, legacy.id))
+    return { ...legacy, machineGuid: identity }
+  }
+  return undefined
+}
+
 // ── Check-in ─────────────────────────────────────────────────────────────────
 
 deviceAgentRouter.post('/checkin', async (c) => {
@@ -239,10 +271,7 @@ deviceAgentRouter.post('/checkin', async (c) => {
   }
   if (!report) return c.json({ error: 'Bad Request', message: 'Rapport invalide' }, 400)
 
-  const [agent] = await db
-    .select()
-    .from(deviceAgents)
-    .where(eq(deviceAgents.machineGuid, report.machineGuid))
+  const agent = await findAgent(report)
   const bearer = c.req
     .header('Authorization')
     ?.replace(/^Bearer\s+/i, '')
@@ -278,7 +307,7 @@ deviceAgentRouter.post('/checkin', async (c) => {
   } else {
     row = {
       id: randomUUID(),
-      machineGuid: report.machineGuid,
+      machineGuid: agentIdentity(report),
       deviceMigrationId: null,
       tokenHash: null,
       hostname: null,

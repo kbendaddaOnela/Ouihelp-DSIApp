@@ -259,6 +259,17 @@ async function ensureSchemaPatches() {
         `enum('entra_joined','hybrid','registered','ad_only','unknown') NOT NULL DEFAULT 'unknown'`,
     },
   ]
+  // device_agents.machine_guid porte désormais « MachineGuid|N° de série » (PC clonés)
+  try {
+    const type = await columnType('device_agents', 'machine_guid')
+    if (type && type !== 'varchar(160)') {
+      await runDdl('ALTER TABLE `device_agents` MODIFY COLUMN `machine_guid` varchar(160) NOT NULL')
+      console.log('[migrate] Patch OK: device_agents.machine_guid → varchar(160)')
+    }
+  } catch (err) {
+    console.error('[migrate] Patch failed: device_agents.machine_guid →', err instanceof Error ? err.message : String(err))
+  }
+
   for (const p of enumValuePatches) {
     try {
       const type = await columnType(p.table, p.column)
@@ -800,7 +811,7 @@ async function ensureSchemaPatches() {
       table: 'device_agents',
       ddl: `CREATE TABLE \`device_agents\` (
         \`id\` varchar(36) NOT NULL,
-        \`machine_guid\` varchar(64) NOT NULL,
+        \`machine_guid\` varchar(160) NOT NULL,
         \`device_migration_id\` varchar(36),
         \`token_hash\` varchar(64),
         \`hostname\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
