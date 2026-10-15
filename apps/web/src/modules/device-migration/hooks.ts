@@ -3,10 +3,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { UpdateDeviceMigrationRequest } from '@dsi-app/shared'
 import { deviceMigrationApi } from './api'
 
+const LIVE_STATUSES = ['scheduled', 'staging', 'staged', 'cleanup', 'ready', 'resetting', 'joining']
+
 export function useDeviceMigrations() {
   return useQuery({
     queryKey: ['device-migrations'],
     queryFn: deviceMigrationApi.devices,
+    // Bascule en cours : suivi en direct des étapes
+    refetchInterval: (q) =>
+      q.state.data?.devices.some((d) => d.migration && LIVE_STATUSES.includes(d.migration.status))
+        ? 20_000
+        : false,
   })
 }
 
@@ -48,6 +55,40 @@ export function useResetDeviceAgent() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: deviceMigrationApi.resetAgent,
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}
+
+// ── Bascule (lot 3) ──
+
+export function useMigrationPackage() {
+  return useQuery({
+    queryKey: ['device-migration-package'],
+    queryFn: deviceMigrationApi.getPackage,
+  })
+}
+
+export function useUploadMigrationPackage() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ file, tokenExpiresAt }: { file: File; tokenExpiresAt: string | null }) =>
+      deviceMigrationApi.uploadPackage(file, tokenExpiresAt),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migration-package'] }),
+  })
+}
+
+export function useScheduleMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => deviceMigrationApi.scheduleMigration(id, { mode: 'reset' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}
+
+export function useCancelMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: deviceMigrationApi.cancelMigration,
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
 }

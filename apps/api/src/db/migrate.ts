@@ -206,6 +206,17 @@ async function ensureSchemaPatches() {
     { table: 'migrations', column: 'credentials_sent_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`credentials_sent_at\` timestamp NULL` },
     { table: 'migrations', column: 'signature_applied_at', ddl: `ALTER TABLE \`migrations\` ADD COLUMN \`signature_applied_at\` timestamp NULL` },
     // Migration des postes : derniers utilisateurs connectés selon Intune
+    // Migration des postes, lot 3 : bascule (réinstallation propre)
+    { table: 'device_migrations', column: 'migration_status', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_status\` varchar(20)` },
+    { table: 'device_migrations', column: 'migration_mode', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_mode\` varchar(20)` },
+    { table: 'device_migrations', column: 'migration_requested_by', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_requested_by\` varchar(255)` },
+    { table: 'device_migrations', column: 'migration_requested_at', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_requested_at\` timestamp NULL` },
+    { table: 'device_migrations', column: 'migration_updated_at', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_updated_at\` timestamp NULL` },
+    { table: 'device_migrations', column: 'migration_error', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_error\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
+    { table: 'device_migrations', column: 'migration_steps', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_steps\` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
+    { table: 'device_migrations', column: 'breakglass_password', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`breakglass_password\` varchar(64)` },
+    { table: 'device_migrations', column: 'migration_token_hash', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_token_hash\` varchar(64)` },
+    { table: 'device_migrations', column: 'hardware_hash', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`hardware_hash\` mediumtext` },
     { table: 'device_migrations', column: 'intune_logons', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`intune_logons\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
   ]
   for (const p of columnPatches) {
@@ -795,6 +806,16 @@ async function ensureSchemaPatches() {
         \`ouihelp_autopilot_id\` varchar(64),
         \`ouihelp_last_sync\` timestamp NULL,
         \`ouihelp_user_upn\` varchar(255),
+        \`migration_status\` varchar(20),
+        \`migration_mode\` varchar(20),
+        \`migration_requested_by\` varchar(255),
+        \`migration_requested_at\` timestamp NULL,
+        \`migration_updated_at\` timestamp NULL,
+        \`migration_error\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`migration_steps\` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`breakglass_password\` varchar(64),
+        \`migration_token_hash\` varchar(64),
+        \`hardware_hash\` mediumtext,
         \`excluded\` int NOT NULL DEFAULT 0,
         \`exclude_reason\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`first_seen_at\` timestamp NOT NULL DEFAULT (now()),
@@ -805,6 +826,21 @@ async function ensureSchemaPatches() {
         UNIQUE KEY \`uq_device_migrations_key\` (\`device_key\`),
         KEY \`idx_device_migrations_serial\` (\`serial_number\`),
         KEY \`idx_device_migrations_entra\` (\`onela_entra_device_id\`)
+      )`,
+    },
+    {
+      table: 'device_migration_packages',
+      ddl: `CREATE TABLE \`device_migration_packages\` (
+        \`id\` varchar(36) NOT NULL,
+        \`file_name\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+        \`size_bytes\` int NOT NULL,
+        \`sha256\` varchar(64) NOT NULL,
+        \`content\` mediumtext NOT NULL,
+        \`token_expires_at\` timestamp NULL,
+        \`uploaded_by\` varchar(255) NOT NULL,
+        \`uploaded_at\` timestamp NOT NULL DEFAULT (now()),
+        \`active\` int NOT NULL DEFAULT 1,
+        PRIMARY KEY (\`id\`)
       )`,
     },
     {

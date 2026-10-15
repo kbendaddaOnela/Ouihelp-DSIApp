@@ -14,8 +14,9 @@
      collecte l'état du PC et l'envoie à la DSI App. Le serveur fixe la cadence réelle
      (nextCheckinMinutes) ; les passages intermédiaires sortent immédiatement.
 
-  LECTURE SEULE : cet agent ne modifie rien sur le poste (ni jonction, ni session, ni
-  profil). Il n'exécute aucune commande reçue du serveur.
+  Hors bascule, LECTURE SEULE : l'agent ne modifie rien sur le poste. Il n'exécute jamais de
+  commande reçue du serveur : la seule action possible est la bascule codée ci-dessous
+  (réinstallation propre vers Ouihelp), déclenchée uniquement si la DSI a programmé CE poste.
 
 .PARAMETER Uninstall
   Supprime la tâche planifiée et C:\ProgramData\DSI.
@@ -33,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.0.6'
+$AgentVersion = '1.1.0'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -82,7 +83,8 @@ function Install-Agent {
     -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledPs`""
   $atStartup = New-ScheduledTaskTrigger -AtStartup
   $atStartup.Delay = 'PT5M'
-  $every30 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 30)
+  # Toutes les 15 min : la cadence réelle vient du serveur (4 h, 15 min pendant une bascule)
+  $every30 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 15)
   $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
   $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
@@ -417,6 +419,8 @@ function Invoke-Checkin {
     $minutes = if ($res.nextCheckinMinutes -gt 0) { [int]$res.nextCheckinMinutes } else { 240 }
     $state.nextCheckinAt = (Get-Date).AddMinutes($minutes).ToString('o')
     Write-Log "Check-in OK, prochain dans $minutes min"
+    # Ordre de bascule (lot 3) ; $null = : aucune sortie ne doit polluer le retour de la fonction
+    if ($res.migration) { $null = Invoke-Migration $res.migration }
   } catch {
     $status = $null
     if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
@@ -439,6 +443,366 @@ function Invoke-Checkin {
   }
   Save-State $state
   return $failure
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Bascule vers Ouihelp : réinstallation propre (lot 3)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Ordre reçu dans la réponse du check-in, uniquement si la DSI a programmé CE poste.
+#  1. staging : contrôles (aucune session, WinRE, alimentation), téléchargement du PPKG,
+#     export des Wi-Fi, empreinte Autopilot, dépôt des fichiers dans C:\Recovery\OEM.
+#  2. staged → cleanup : le serveur retire le PC d'Autopilot ONELA ; l'agent attend « ready ».
+#  3. ready : réinitialisation locale (RemoteWipe/doWipe = « Supprimer tout »).
+# Pendant la réinitialisation, DsiReset.cmd (point d'extensibilité FactoryReset_AfterImageApply)
+# copie C:\DSI et Panther\unattend.xml dans le nouveau Windows. L'unattend saute l'installation
+# sans réseau, crée dsi-secours et une tâche SYSTEM qui lance FirstLogon.ps1 : Wi-Fi restaurés,
+# PPKG Ouihelp installé, jonction vérifiée, secrets effacés, redémarrage.
+
+$MigDir     = Join-Path $Root 'migration'
+$OemDir     = Join-Path $env:SystemDrive 'Recovery\OEM'
+$PayloadDir = Join-Path $OemDir 'DSI'
+$ResetCfg   = Join-Path $OemDir 'ResetConfig.xml'
+$ResetCmd   = Join-Path $OemDir 'DsiReset.cmd'
+
+function Invoke-Api([string]$Method, [string]$Path, $Body = $null, [string]$OutFile = $null) {
+  $headers = @{ Authorization = 'Bearer ' + (Get-Content $TokenPath -Raw).Trim() }
+  $uri = "$($ApiUrl.TrimEnd('/'))/api/device-agent$Path"
+  if ($OutFile) { return Invoke-WebRequest -Method $Method -Uri $uri -Headers $headers -OutFile $OutFile -TimeoutSec 120 -UseBasicParsing }
+  if ($null -ne $Body) {
+    $json = $Body | ConvertTo-Json -Depth 4 -Compress
+    return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -Body ([Text.Encoding]::UTF8.GetBytes($json)) `
+      -ContentType 'application/json; charset=utf-8' -TimeoutSec 60 -UseBasicParsing
+  }
+  return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -TimeoutSec 60 -UseBasicParsing
+}
+
+function Send-Progress([string]$Step, [string]$Status, [string]$Message, [hashtable]$Extra = @{}) {
+  Write-Log "[bascule:$Step/$Status] $Message"
+  $body = @{ step = $Step; status = $Status; message = $Message }
+  foreach ($k in $Extra.Keys) { $body[$k] = $Extra[$k] }
+  try { $null = Invoke-Api 'POST' '/migration/progress' $body } catch { Write-Log "Compte rendu non transmis : $($_.Exception.Message)" }
+}
+
+function Get-InteractiveUser {
+  $u = (Get-CimInstance Win32_ComputerSystem).UserName
+  if ($u) { return $u }
+  $p = Get-Process -Name explorer -IncludeUserName -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($p) { return $p.UserName }
+  return $null
+}
+
+function Test-PowerOk {
+  $b = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $b) { return $true }                     # PC fixe
+  if ($b.BatteryStatus -eq 2) { return $true }      # sur secteur
+  return ($b.EstimatedChargeRemaining -ge 50)
+}
+
+function Get-HardwareHash {
+  $d = Get-CimInstance -Namespace 'root/cimv2/mdm/dmmap' -ClassName 'MDM_DevDetail_Ext01' -Filter "InstanceID='Ext' AND ParentID='./DevDetail'"
+  return $d.DeviceHardwareData
+}
+
+function Write-Utf8([string]$Path, [string]$Text, [bool]$Bom = $false) {
+  [IO.File]::WriteAllText($Path, $Text, (New-Object Text.UTF8Encoding($Bom)))
+}
+
+# unattend.xml du nouveau Windows. Fonction pure (testable hors Windows).
+function New-UnattendXml {
+  param(
+    [string]$Arch, [string]$AdminGroup, [string]$Password, [string]$UserName,
+    [string]$UiLanguage, [string]$InputLocale, [string]$SystemLocale, [string]$UserLocale, [string]$TimeZone
+  )
+  $e = { param($v) [Security.SecurityElement]::Escape($v) }
+  $common = "processorArchitecture=`"$Arch`" publicKeyToken=`"31bf3856ad364e35`" language=`"neutral`" versionScope=`"nonSxS`""
+  $task = 'schtasks.exe /Create /TN "DSI\Bascule Ouihelp" /RU SYSTEM /RL HIGHEST /SC ONLOGON /F /TR "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\DSI\FirstLogon.ps1"'
+  return @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" $common>
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>DSI : tache de bascule Ouihelp</Description>
+          <Path>$(& $e $task)</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+  </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" $common>
+      <InputLocale>$(& $e $InputLocale)</InputLocale>
+      <SystemLocale>$(& $e $SystemLocale)</SystemLocale>
+      <UILanguage>$(& $e $UiLanguage)</UILanguage>
+      <UserLocale>$(& $e $UserLocale)</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" $common>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>$(& $e $UserName)</Name>
+            <Group>$(& $e $AdminGroup)</Group>
+            <Password><Value>$(& $e $Password)</Value><PlainText>true</PlainText></Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+        <Username>$(& $e $UserName)</Username>
+        <Password><Value>$(& $e $Password)</Value><PlainText>true</PlainText></Password>
+      </AutoLogon>
+      <TimeZone>$(& $e $TimeZone)</TimeZone>
+    </component>
+  </settings>
+</unattend>
+"@
+}
+
+# Exécuté par l'environnement de récupération (étape D de « Supprimer tout ») : ASCII, sans GUI.
+$DsiResetCmd = @'
+@echo off
+for /F "tokens=1,2,3 delims= " %%A in ('reg query "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\RecoveryEnvironment" /v TargetOS') DO SET TARGETOS=%%C
+for /F "tokens=1 delims=\" %%A in ('Echo %TARGETOS%') DO SET TARGETOSDRIVE=%%A
+mkdir "%TARGETOSDRIVE%\DSI" >nul 2>&1
+echo DsiReset %DATE% %TIME% TARGETOS=%TARGETOS% > "%TARGETOSDRIVE%\DSI\reset.log"
+xcopy "%TARGETOSDRIVE%\Recovery\OEM\DSI\*" "%TARGETOSDRIVE%\DSI\" /e /h /y /i >> "%TARGETOSDRIVE%\DSI\reset.log" 2>&1
+mkdir "%TARGETOS%\Panther" >nul 2>&1
+copy /y "%TARGETOSDRIVE%\Recovery\OEM\DSI\unattend.xml" "%TARGETOS%\Panther\unattend.xml" >> "%TARGETOSDRIVE%\DSI\reset.log" 2>&1
+echo fin %DATE% %TIME% >> "%TARGETOSDRIVE%\DSI\reset.log"
+exit /b 0
+'@
+
+$ResetConfigXml = @'
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DSI ONELA : bascule Ouihelp (sauvegarde de l'original : ResetConfig.xml.dsi-backup) -->
+<Reset>
+  <Run Phase="FactoryReset_AfterImageApply">
+    <Path>DsiReset.cmd</Path>
+    <Duration>5</Duration>
+  </Run>
+</Reset>
+'@
+
+# Lancé dans le NOUVEAU Windows par la tâche SYSTEM « DSI\Bascule Ouihelp » (ouverture de
+# session de dsi-secours). L'agent n'existe plus : compte rendu via le jeton de bascule.
+$FirstLogonPs1 = @'
+#Requires -Version 5.1
+$ErrorActionPreference = 'Stop'
+$Root = 'C:\DSI'
+$Log  = Join-Path $Root 'firstlogon.log'
+$Lock = Join-Path $Root 'firstlogon.lock'
+$Done = Join-Path $Root 'firstlogon.done'
+function Log([string]$m) { Add-Content -Path $Log -Value ("{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $m) -Encoding UTF8 }
+if (Test-Path $Done) { exit 0 }
+if ((Test-Path $Lock) -and ((Get-Date) - (Get-Item $Lock).LastWriteTime).TotalMinutes -lt 60) { exit 0 }
+Set-Content -Path $Lock -Value (Get-Date).ToString('o')
+
+$cfg = Get-Content (Join-Path $Root 'migration.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+function Report([string]$Step, [string]$Status, [string]$Message, [bool]$Joined = $false) {
+  Log "[$Step/$Status] $Message"
+  try {
+    $body = @{ step = $Step; status = $Status; message = $Message; joined = $Joined } | ConvertTo-Json -Compress
+    $null = Invoke-RestMethod -Method Post -Uri "$($cfg.apiUrl)/api/device-agent/migration/report" `
+      -Headers @{ 'X-Migration-Token' = $cfg.reportToken } -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
+      -ContentType 'application/json; charset=utf-8' -TimeoutSec 30 -UseBasicParsing
+  } catch { Log "Compte rendu non transmis : $($_.Exception.Message)" }
+}
+
+# Clés Wi-Fi en clair, jeton en bloc, mot de passe de l'unattend : rien ne doit rester.
+function Remove-Secrets {
+  Remove-Item (Join-Path $Root 'wifi') -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item (Join-Path $Root 'ouihelp.ppkg'), (Join-Path $Root 'unattend.xml') -Force -ErrorAction SilentlyContinue
+  Remove-Item (Join-Path $env:SystemRoot 'Panther\unattend.xml') -Force -ErrorAction SilentlyContinue
+  $oem = Join-Path $env:SystemDrive 'Recovery\OEM'
+  Remove-Item (Join-Path $oem 'DSI') -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item (Join-Path $oem 'DsiReset.cmd') -Force -ErrorAction SilentlyContinue
+  $rc = Join-Path $oem 'ResetConfig.xml'
+  if (Test-Path "$rc.dsi-backup") { Move-Item "$rc.dsi-backup" $rc -Force } else { Remove-Item $rc -Force -ErrorAction SilentlyContinue }
+  $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+  Set-ItemProperty -Path $wl -Name AutoAdminLogon -Value '0' -ErrorAction SilentlyContinue
+  Remove-ItemProperty -Path $wl -Name DefaultPassword -ErrorAction SilentlyContinue
+}
+
+$ok = $false
+try {
+  $wifi = @(Get-ChildItem (Join-Path $Root 'wifi') -Filter '*.xml' -ErrorAction SilentlyContinue)
+  foreach ($x in $wifi) { $null = & netsh.exe wlan add profile filename="$($x.FullName)" user=all }
+  Log "Nouveau Windows démarré, $($wifi.Count) profil(s) Wi-Fi restauré(s)"
+
+  $online = $false
+  $deadline = (Get-Date).AddMinutes(20)
+  while ((Get-Date) -lt $deadline) {
+    try { $null = Invoke-WebRequest "$($cfg.apiUrl)/api/health" -UseBasicParsing -TimeoutSec 10; $online = $true; break } catch { Start-Sleep -Seconds 15 }
+  }
+  if (-not $online) { throw 'Pas de réseau 20 min après la réinstallation (Wi-Fi non restauré ?)' }
+  Report 'reseau' 'ok' "Windows réinstallé, réseau rétabli ($($wifi.Count) profil(s) Wi-Fi restauré(s))"
+
+  $null = Install-ProvisioningPackage -PackagePath (Join-Path $Root 'ouihelp.ppkg') -ForceInstall -QuietInstall
+  Report 'ppkg' 'info' 'PPKG Ouihelp installé, attente de la jonction à Entra Ouihelp'
+
+  $joined = $false
+  $deadline = (Get-Date).AddMinutes(15)
+  while ((Get-Date) -lt $deadline) {
+    $s = (& dsregcmd.exe /status) -join "`n"
+    if ($s -match 'AzureAdJoined\s*:\s*YES' -and $s -match ('TenantId\s*:\s*' + [regex]::Escape($cfg.ouihelpTenantId))) { $joined = $true; break }
+    Start-Sleep -Seconds 20
+  }
+  if (-not $joined) { throw 'PPKG installé mais PC non joint à Entra Ouihelp après 15 min' }
+
+  try {
+    $v = Get-BitLockerVolume -MountPoint $env:SystemDrive
+    foreach ($kp in ($v.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })) {
+      $null = BackupToAAD-BitLockerKeyProtector -MountPoint $env:SystemDrive -KeyProtectorId $kp.KeyProtectorId
+    }
+  } catch { Log "Clé BitLocker non enregistrée chez Ouihelp : $($_.Exception.Message)" }
+
+  Report 'jonction' 'ok' 'Joint à Entra Ouihelp ; redémarrage vers l''écran de connexion' $true
+  $ok = $true
+} catch {
+  Report 'echec' 'error' $_.Exception.Message
+} finally {
+  Remove-Secrets
+  $null = & schtasks.exe /Delete /TN 'DSI\Bascule Ouihelp' /F
+  $null = New-Item $Done -ItemType File -Force
+  Remove-Item $Lock -Force -ErrorAction SilentlyContinue
+}
+if ($ok) {
+  Remove-Item (Join-Path $Root 'migration.json') -Force -ErrorAction SilentlyContinue
+  & shutdown.exe /r /t 30 /c 'Configuration Ouihelp terminée : redémarrage'
+}
+'@
+
+function Remove-MigrationPayload {
+  Remove-Item $PayloadDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $ResetCmd -Force -ErrorAction SilentlyContinue
+  if (Test-Path "$ResetCfg.dsi-backup") { Move-Item "$ResetCfg.dsi-backup" $ResetCfg -Force }
+  elseif ((Test-Path $ResetCfg) -and ((Get-Content $ResetCfg -Raw) -match 'DSI ONELA')) { Remove-Item $ResetCfg -Force }
+  Remove-Item $MigDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function New-MigrationPayload($Order) {
+  if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
+  $null = New-Item -ItemType Directory -Path $PayloadDir -Force
+  $null = New-Item -ItemType Directory -Path (Join-Path $PayloadDir 'wifi') -Force
+
+  # PPKG : remis par la DSI App, vérifié par son empreinte SHA-256
+  $ppkg = Join-Path $PayloadDir 'ouihelp.ppkg'
+  $null = Invoke-Api 'GET' '/migration/package' $null $ppkg
+  $hash = (Get-FileHash -Path $ppkg -Algorithm SHA256).Hash.ToLower()
+  if ($hash -ne $Order.packageSha256) { throw "PPKG altéré : empreinte $hash au lieu de $($Order.packageSha256)" }
+
+  # Wi-Fi enregistrés, clés comprises : restaurés par FirstLogon.ps1 puis effacés
+  $null = & netsh.exe wlan export profile key=clear folder="$(Join-Path $PayloadDir 'wifi')"
+  $wifiCount = @(Get-ChildItem (Join-Path $PayloadDir 'wifi') -Filter '*.xml' -ErrorAction SilentlyContinue).Count
+
+  $cfg = [ordered]@{
+    apiUrl          = $ApiUrl.TrimEnd('/')
+    reportToken     = $Order.reportToken
+    ouihelpTenantId = $Order.ouihelpTenantId
+    hostname        = $env:COMPUTERNAME
+  }
+  Write-Utf8 (Join-Path $PayloadDir 'migration.json') ($cfg | ConvertTo-Json)
+  Write-Utf8 (Join-Path $PayloadDir 'FirstLogon.ps1') $FirstLogonPs1 $true
+
+  $adminGroup = (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544').Translate([Security.Principal.NTAccount]).Value.Split('\')[-1]
+  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+  $inputLocale = Safe 'inputLocale' { (Get-WinUserLanguageList)[0].InputMethodTips[0] } '040c:0000040c'
+  $unattend = New-UnattendXml -Arch $arch -AdminGroup $adminGroup -Password $Order.breakglassPassword -UserName $Order.breakglassUser `
+    -UiLanguage (Get-UICulture).Name -InputLocale $inputLocale -SystemLocale (Get-WinSystemLocale).Name `
+    -UserLocale (Get-Culture).Name -TimeZone (Get-TimeZone).Id
+  Write-Utf8 (Join-Path $PayloadDir 'unattend.xml') $unattend
+
+  # Point d'extensibilité de la réinitialisation ; on garde l'éventuel ResetConfig.xml du constructeur
+  if ((Test-Path $ResetCfg) -and -not (Test-Path "$ResetCfg.dsi-backup") -and -not ((Get-Content $ResetCfg -Raw) -match 'DSI ONELA')) {
+    Copy-Item $ResetCfg "$ResetCfg.dsi-backup" -Force
+  }
+  [IO.File]::WriteAllText($ResetCmd, $DsiResetCmd, [Text.Encoding]::ASCII)
+  Write-Utf8 $ResetCfg $ResetConfigXml
+  return $wifiCount
+}
+
+function Start-Reset {
+  if (-not (Test-Path (Join-Path $PayloadDir 'unattend.xml')) -or -not (Test-Path $ResetCfg)) {
+    Send-Progress 'reinitialisation' 'error' 'Fichiers de bascule absents de C:\Recovery\OEM : préparation à refaire' @{ fatal = $true }
+    return
+  }
+  $user = Get-InteractiveUser
+  if ($user) { Write-Log "Bascule prête mais session ouverte ($user) : nouvel essai au prochain passage"; return }
+  # Compte rendu AVANT : la réinitialisation peut couper l'agent à tout moment
+  Send-Progress 'reinitialisation' 'info' 'Réinitialisation de Windows lancée (Supprimer tout)' @{ resetTriggered = $true }
+  try {
+    $ns = 'root\cimv2\mdm\dmmap'
+    $session = New-CimSession
+    $instance = Get-CimInstance -Namespace $ns -ClassName 'MDM_RemoteWipe' -Filter "ParentID='./Vendor/MSFT' and InstanceID='RemoteWipe'"
+    $params = New-Object Microsoft.Management.Infrastructure.CimMethodParametersCollection
+    $params.Add([Microsoft.Management.Infrastructure.CimMethodParameter]::Create('param', '', 'String', 'In'))
+    $null = $session.InvokeMethod($ns, $instance, 'doWipeMethod', $params)
+    Write-Log 'doWipeMethod accepté : redémarrage imminent'
+  } catch {
+    Send-Progress 'reinitialisation' 'error' "Réinitialisation refusée par Windows : $($_.Exception.Message)" @{ fatal = $true }
+  }
+}
+
+# Attend que le serveur ait retiré le PC d'Autopilot ONELA (8 min max par passage : la tâche
+# planifiée est limitée à 15 min, mesure des profils comprise).
+function Wait-ForReady {
+  $deadline = (Get-Date).AddMinutes(8)
+  while ((Get-Date) -lt $deadline) {
+    $s = Safe 'migrationStatus' { Invoke-Api 'GET' '/migration' }
+    switch ($s.status) {
+      'ready'     { Start-Reset; return }
+      'failed'    { Write-Log "Bascule en échec côté serveur : $($s.error)"; Remove-MigrationPayload; return }
+      'cancelled' { Remove-MigrationPayload; return }
+    }
+    Start-Sleep -Seconds 20
+  }
+  Write-Log 'Retrait Autopilot ONELA pas encore confirmé : nouvel essai au prochain passage'
+}
+
+function Invoke-Migration($Order) {
+  try {
+    switch ($Order.status) {
+      'cancelled' {
+        if ((Test-Path $PayloadDir) -or (Test-Path $MigDir)) {
+          Remove-MigrationPayload
+          Send-Progress 'nettoyage' 'ok' 'Bascule annulée : fichiers retirés du poste'
+        }
+      }
+      'staging' {
+        $user = Get-InteractiveUser
+        if ($user) { Send-Progress 'attente' 'info' "Session ouverte ($user) : la préparation attend qu'elle soit fermée"; return }
+        if (-not (Test-PowerOk)) { Send-Progress 'attente' 'info' 'Sur batterie sous 50 % : en attente du secteur'; return }
+        if ((Get-WinreEnabled) -eq $false) { Send-Progress 'controle' 'error' 'WinRE désactivé : réinitialisation impossible' @{ fatal = $true }; return }
+        try {
+          $wifiCount = New-MigrationPayload $Order
+          $hash = Get-HardwareHash
+        } catch {
+          Remove-MigrationPayload
+          Send-Progress 'preparation' 'error' "Préparation impossible : $($_.Exception.Message)" @{ fatal = $true }
+          return
+        }
+        Send-Progress 'preparation' 'ok' "Prêt : PPKG vérifié, $wifiCount Wi-Fi exporté(s), fichiers déposés dans C:\Recovery\OEM" @{ staged = $true; hardwareHash = $hash }
+        Wait-ForReady
+      }
+      { $_ -in 'staged', 'cleanup' } { Wait-ForReady }
+      'ready' { Start-Reset }
+    }
+  } catch {
+    Write-Log "Bascule : erreur inattendue $($_.Exception.Message)"
+  }
 }
 
 # ═════════════════════════════════════════════════════════════════════════════

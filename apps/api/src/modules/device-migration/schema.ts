@@ -61,6 +61,23 @@ export const deviceMigrations = mysqlTable(
     ouihelpLastSync: timestamp('ouihelp_last_sync'),
     ouihelpUserUpn: varchar('ouihelp_user_upn', { length: 255 }),
 
+    // ── Bascule (lot 3) ── colonnes jamais touchées par la synchro d'inventaire
+    /** MigrationStatus ; null = jamais programmée */
+    migrationStatus: varchar('migration_status', { length: 20 }),
+    migrationMode: varchar('migration_mode', { length: 20 }),
+    migrationRequestedBy: varchar('migration_requested_by', { length: 255 }),
+    migrationRequestedAt: timestamp('migration_requested_at'),
+    migrationUpdatedAt: timestamp('migration_updated_at'),
+    migrationError: text('migration_error'),
+    /** JSON MigrationStep[] */
+    migrationSteps: mediumtext('migration_steps'),
+    /** Mot de passe du compte local dsi-secours (en clair, comme les mots de passe temporaires) */
+    breakglassPassword: varchar('breakglass_password', { length: 64 }),
+    /** SHA-256 du jeton de compte rendu du nouveau Windows */
+    migrationTokenHash: varchar('migration_token_hash', { length: 64 }),
+    /** Empreinte matérielle Autopilot (base64), relevée par l'agent avant réinitialisation */
+    hardwareHash: mediumtext('hardware_hash'),
+
     excluded: int('excluded').default(0).notNull(),
     excludeReason: varchar('exclude_reason', { length: 255 }),
     firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
@@ -111,3 +128,22 @@ export const deviceAgents = mysqlTable(
 )
 
 export type DeviceAgentRow = typeof deviceAgents.$inferSelect
+
+/**
+ * PPKG Ouihelp (jeton de jonction en bloc), téléversé par la DSI. Un seul actif à la fois.
+ * Contenu en base64 : quelques dizaines de Ko sans applications. Remis uniquement à un
+ * agent authentifié dont le poste est en cours de bascule.
+ */
+export const deviceMigrationPackages = mysqlTable('device_migration_packages', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  fileName: varchar('file_name', { length: 255 }).notNull(),
+  sizeBytes: int('size_bytes').notNull(),
+  sha256: varchar('sha256', { length: 64 }).notNull(),
+  content: mediumtext('content').notNull(),
+  tokenExpiresAt: timestamp('token_expires_at'),
+  uploadedBy: varchar('uploaded_by', { length: 255 }).notNull(),
+  uploadedAt: timestamp('uploaded_at').defaultNow().notNull(),
+  active: int('active').default(1).notNull(),
+})
+
+export type DeviceMigrationPackageRow = typeof deviceMigrationPackages.$inferSelect

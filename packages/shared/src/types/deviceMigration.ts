@@ -88,6 +88,82 @@ export interface DeviceMigrationRecord {
   lastSeenAt: string
   /** Dernier état remonté par l'agent DSI installé sur le PC (null = pas d'agent) */
   agent: DeviceAgentSummary | null
+  /** Bascule vers Ouihelp en cours ou terminée (null = jamais programmée) */
+  migration: DeviceMigrationRun | null
+}
+
+// ── Bascule (lot 3) ──────────────────────────────────────────────────────────
+
+/**
+ * Cycle d'une réinstallation propre :
+ * scheduled (DSI) → staging (agent prépare) → staged (prêt, empreinte envoyée)
+ * → cleanup (serveur retire le PC d'Autopilot ONELA) → ready → resetting (réinitialisation
+ * lancée) → joining (le nouveau Windows a rendu compte) → done.
+ * failed / cancelled : terminaux. Annulation possible jusqu'à « staged » inclus.
+ */
+export type MigrationStatus =
+  | 'scheduled'
+  | 'staging'
+  | 'staged'
+  | 'cleanup'
+  | 'ready'
+  | 'resetting'
+  | 'joining'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+
+export type MigrationMode = 'reset'
+
+export interface MigrationStep {
+  at: string
+  step: string
+  status: 'info' | 'ok' | 'error'
+  message: string
+  /** dsi = action dans l'app ; agent = PC avant réinitialisation ; poste = nouveau Windows ; serveur = Graph */
+  source: 'dsi' | 'agent' | 'poste' | 'serveur'
+}
+
+export interface DeviceMigrationRun {
+  status: MigrationStatus
+  mode: MigrationMode
+  requestedBy: string | null
+  requestedAt: string | null
+  updatedAt: string | null
+  error: string | null
+  steps: MigrationStep[]
+  hasBreakglass: boolean
+}
+
+export interface MigrationPackageInfo {
+  id: string
+  fileName: string
+  sizeBytes: number
+  sha256: string
+  /** Fin de validité du jeton en bloc, saisie au téléversement */
+  tokenExpiresAt: string | null
+  uploadedBy: string
+  uploadedAt: string
+}
+
+export interface MigrationPackageResponse {
+  package: MigrationPackageInfo | null
+}
+
+export interface ScheduleMigrationRequest {
+  mode: MigrationMode
+}
+
+/** Ordre transmis à l'agent dans la réponse du check-in. */
+export interface DeviceAgentMigrationOrder {
+  status: MigrationStatus
+  mode: MigrationMode
+  packageSha256: string
+  ouihelpTenantId: string
+  breakglassUser: string
+  breakglassPassword: string
+  /** Jeton à usage du nouveau Windows pour rendre compte (renvoyé pendant « staging ») */
+  reportToken?: string
 }
 
 /** Une ouverture de session constatée sur le poste. */
@@ -173,6 +249,8 @@ export interface DeviceAgentCheckinResponse {
   /** Renvoyé uniquement au 1er enregistrement : à conserver par l'agent */
   deviceToken?: string
   nextCheckinMinutes: number
+  /** Présent uniquement si une bascule est programmée pour ce poste */
+  migration?: DeviceAgentMigrationOrder
 }
 
 export interface DeviceMigrationSyncState {
