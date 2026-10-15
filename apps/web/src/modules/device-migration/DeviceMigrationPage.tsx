@@ -298,7 +298,12 @@ function AgentPanel({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boole
             <tr>
               <th className="py-1 pr-3 font-medium">Compte</th>
               <th className="py-1 pr-3 font-medium">Type</th>
-              <th className="py-1 pr-3 font-medium">Dernière utilisation</th>
+              <th
+                className="py-1 pr-3 font-medium"
+                title="Dernière ouverture de session (chargement du profil), relevée par l’agent ≥ 1.0.3"
+              >
+                Dernière connexion
+              </th>
               <th className="py-1 font-medium">Données locales</th>
             </tr>
           </thead>
@@ -318,7 +323,15 @@ function AgentPanel({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boole
                         ? 'local'
                         : '?'}
                 </td>
-                <td className="py-0.5 pr-3 text-gray-500">{fmtDate(p.lastUseTime)}</td>
+                <td className="py-0.5 pr-3 text-gray-500">
+                  {p.lastLogonTime ? (
+                    fmtDateTime(p.lastLogonTime)
+                  ) : (
+                    <span title="Agent antérieur à 1.0.3 : date d’utilisation Windows, peu fiable">
+                      ~ {fmtDate(p.lastUseTime)}
+                    </span>
+                  )}
+                </td>
                 <td
                   className={cn(
                     'py-0.5',
