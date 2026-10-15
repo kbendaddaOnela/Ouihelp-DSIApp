@@ -48,7 +48,16 @@ Appareils > Windows > Scripts et corrections > **Scripts de plateforme** > Ajout
 | Exécuter le script dans un hôte PowerShell 64 bits | **Oui** |
 | Affectation | groupe d'**appareils** (commencer par 2-3 PC de la DSI) |
 
-Mise à jour : téléverser la nouvelle version du fichier ; Intune la ré-exécute, l'agent se réinstalle.
+**Mise à jour sans toucher aux PC** : Propriétés du script > Paramètres du script > Modifier >
+téléverser le nouveau fichier. Intune détecte que le contenu a changé et ré-exécute le script sur
+chaque PC à son prochain contrôle (environ toutes les 8 h, et à chaque redémarrage) ; l'agent se
+réinstalle alors par-dessus l'ancien en gardant son jeton. Il n'existe pas d'action à distance
+qui force ce contrôle : la synchronisation Intune ne déclenche pas les scripts de plateforme.
+
+**Suivi à distance (agent ≥ 1.0.4)** : l'installation envoie elle-même le 1er rapport. S'il échoue,
+le script sort en erreur avec la cause (clé refusée, DSI App injoignable, 409…) : « État de
+l'appareil » affiche **Échec**, et Intune relance le script jusqu'à 3 fois. Un « Réussi » garantit
+donc que le PC est bien remonté dans la DSI App.
 
 ### 4. GPO ONELA (secours, pour un PC qui ne remonte pas d'Intune)
 
