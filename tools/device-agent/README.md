@@ -37,6 +37,14 @@ l'endpoint répond 503.
 En tête de `DsiAgent.ps1`, renseigner `$ApiUrl` (URL de l'API, sans `/api`) et `$EnrollmentKey`
 (même valeur que côté API).
 
+Garder le fichier en **UTF-8 avec BOM** : sans BOM, Windows PowerShell 5.1 le lit en ANSI et un
+seul caractère comme « — » dans une chaîne suffit à le rendre illisible (agent 1.0.4 : échec
+Intune sans aucune trace dans `agent.log`). Avant chaque téléversement :
+
+```bash
+pwsh tools/device-agent/Test-AgentScript.ps1 ~/Desktop/DsiAgent-onela.ps1
+```
+
 ### 3. Intune ONELA (voie principale — tous les PC sont hybrides et inscrits)
 
 Appareils > Windows > Scripts et corrections > **Scripts de plateforme** > Ajouter :
