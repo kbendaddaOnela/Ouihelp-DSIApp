@@ -91,6 +91,8 @@ export function sanitizeReport(raw: unknown): DeviceAgentReport | null {
       return {
         sid: str(o['sid'], 100) ?? '?',
         account: str(o['account']),
+        upn: str(o['upn'])?.toLowerCase() ?? null,
+        lastLogonTime: isoOrNull(o['lastLogonTime']),
         kind: (kind && PROFILE_KINDS.has(kind) ? kind : 'unknown') as DeviceAgentProfile['kind'],
         lastUseTime: isoOrNull(o['lastUseTime']),
         loaded: bool(o['loaded']),

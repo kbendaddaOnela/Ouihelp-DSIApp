@@ -33,7 +33,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.0.2'
+$AgentVersion = '1.0.3'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -245,6 +245,35 @@ function Measure-LocalBytes([string]$Path, [datetime]$Deadline) {
   return $total
 }
 
+# Dernière ouverture de session = dernier chargement du profil (Windows 10 1903+).
+# Win32_UserProfile.LastUseTime est inutilisable : mis à jour par des tâches de fond.
+function Get-ProfileLoadTime([string]$Sid) {
+  $k = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid" -ErrorAction Stop
+  if ($null -eq $k.LocalProfileLoadTimeHigh -or $null -eq $k.LocalProfileLoadTimeLow) { return $null }
+  # Valeurs DWORD lues en Int32 signés : on repasse par les octets pour obtenir des UInt32
+  $high = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$k.LocalProfileLoadTimeHigh), 0)
+  $low = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$k.LocalProfileLoadTimeLow), 0)
+  $fileTime = ([int64]$high -shl 32) -bor [int64]$low
+  if ($fileTime -le 0) { return $null }
+  return [DateTime]::FromFileTimeUtc($fileTime).ToString('o')
+}
+
+# UPN d'un compte AD, demandé au contrôleur de domaine (lecture LDAP avec le compte machine).
+# Mis en cache dans state.json : le PC n'est pas toujours sur le réseau ONELA.
+function Get-AdUpn([string]$Sid, $State) {
+  if (-not $State.PSObject.Properties['adUpns']) { $State | Add-Member -NotePropertyName adUpns -NotePropertyValue ([pscustomobject]@{}) }
+  $cached = $State.adUpns.PSObject.Properties[$Sid]
+  if ($cached) { return $cached.Value }
+  $searcher = [adsisearcher]"(objectSid=$Sid)"
+  $searcher.ClientTimeout = [TimeSpan]::FromSeconds(5)
+  [void]$searcher.PropertiesToLoad.Add('userPrincipalName')
+  $hit = $searcher.FindOne()
+  if (-not $hit -or -not $hit.Properties['userprincipalname']) { return $null }
+  $upn = [string]$hit.Properties['userprincipalname'][0]
+  $State.adUpns | Add-Member -NotePropertyName $Sid -NotePropertyValue $upn -Force
+  return $upn
+}
+
 function Get-Profiles($State) {
   $localSid = Safe 'localSid' { (Get-LocalUser | Select-Object -First 1).SID.AccountDomainSid.Value }
   $measure = $Force -or -not $State.profilesMeasuredAt -or ((Get-Date) - [datetime]$State.profilesMeasuredAt).TotalHours -ge 20
@@ -258,13 +287,15 @@ function Get-Profiles($State) {
   $userProfiles = Safe 'profiles' { Get-CimInstance Win32_UserProfile | Where-Object { -not $_.Special -and $_.LocalPath -like "$env:SystemDrive\Users\*" } } @()
   foreach ($p in $userProfiles) {
     $sid = $p.SID
-    $kind = 'unknown'; $account = $null
+    $kind = 'unknown'; $account = $null; $upn = $null
     if ($sid -like 'S-1-12-1-*') {
       $kind = 'entra'
       $account = Safe 'entraName' { (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\IdentityStore\Cache\$sid\IdentityCache\$sid" -ErrorAction Stop).UserName }
+      $upn = $account
     } elseif ($sid -like 'S-1-5-21-*') {
       $kind = if ($localSid -and $sid.StartsWith("$localSid-")) { 'local' } else { 'ad' }
       $account = Safe 'ntName' { (New-Object Security.Principal.SecurityIdentifier $sid).Translate([Security.Principal.NTAccount]).Value }
+      if ($kind -eq 'ad') { $upn = Safe 'adUpn' { Get-AdUpn $sid $State } }
     }
     if (-not $account) { $account = Split-Path $p.LocalPath -Leaf }
 
@@ -283,8 +314,10 @@ function Get-Profiles($State) {
     $result += [ordered]@{
       sid         = $sid
       account     = $account
+      upn         = $upn
       kind        = $kind
       lastUseTime = if ($p.LastUseTime) { $p.LastUseTime.ToUniversalTime().ToString('o') } else { $null }
+      lastLogonTime = Safe 'loadTime' { Get-ProfileLoadTime $sid }
       loaded      = [bool]$p.Loaded
       localDataMb = $sizes[$sid]
     }

@@ -51,8 +51,13 @@ export interface DeviceMigrationRecord {
   onelaManagementAgent: string | null
   onelaAutopilotId: string | null
   onelaAutopilotGroupTag: string | null
+  /** Utilisateur principal Intune = celui qui a INSCRIT le PC (souvent un technicien) */
   onelaUserUpn: string | null
   onelaUserName: string | null
+  /** Dernière personne réellement connectée (hors comptes techniques), toutes sources confondues */
+  lastUser: DeviceLogon | null
+  /** Connexions récentes, de la plus récente à la plus ancienne (dédoublonnées par compte) */
+  recentLogons: DeviceLogon[]
   /** officeLocation de l'utilisateur ONELA principal (= agence) */
   onelaOfficeLocation: string | null
   onelaDepartment: string | null
@@ -85,6 +90,16 @@ export interface DeviceMigrationRecord {
   agent: DeviceAgentSummary | null
 }
 
+/** Une ouverture de session constatée sur le poste. */
+export interface DeviceLogon {
+  /** UPN ONELA si connu, sinon compte tel que vu sur le PC (DOMAINE\compte) */
+  account: string
+  name: string | null
+  at: string | null
+  /** intune = usersLoggedOn (Graph beta) ; agent = chargement du profil Windows */
+  source: 'intune' | 'agent'
+}
+
 // ── Agent DSI (lot 2) ────────────────────────────────────────────────────────
 
 /** Profil Windows présent sur le PC. Les tailles ne comptent que les octets présents localement. */
@@ -92,6 +107,10 @@ export interface DeviceAgentProfile {
   sid: string
   /** DOMAINE\compte (AD) ou UPN (Entra) ; null si non résolu */
   account: string | null
+  /** UPN (Entra, ou résolu auprès de l'AD) ; absent avant l'agent 1.0.3 */
+  upn?: string | null
+  /** Dernier chargement du profil = dernière ouverture de session (agent ≥ 1.0.3) */
+  lastLogonTime?: string | null
   kind: 'ad' | 'entra' | 'local' | 'unknown'
   lastUseTime: string | null
   loaded: boolean
