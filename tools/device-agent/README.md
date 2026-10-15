@@ -8,9 +8,10 @@
 2. **remonte l'état du PC** à la DSI App (`POST /api/device-agent/checkin`) à la cadence fixée par
    le serveur (4 h aujourd'hui).
 
-**Lecture seule** : l'agent ne touche ni aux sessions, ni à la jonction AD / Entra, ni aux profils,
-et n'exécute aucune commande reçue du serveur. Les utilisateurs continuent de se connecter avec
-leur compte ONELA sans rien remarquer.
+**Hors bascule, lecture seule** : l'agent ne touche ni aux sessions, ni à la jonction AD / Entra, ni
+aux profils, et n'exécute jamais de commande reçue du serveur. Sa seule action possible est la
+**bascule codée dans le script** (lot 3, ci-dessous), déclenchée uniquement si la DSI a programmé
+ce poste précis dans la DSI App.
 
 ## Ce qui est remonté
 
@@ -93,3 +94,55 @@ Désinstaller : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\DSI\Dsi
   « Réinitialiser l'agent » dans la fiche du poste.
 - Si la clé fuite, un tiers peut au pire déclarer de faux postes dans l'inventaire. **Le lot 3 ne
   devra jamais remettre le PPKG Ouihelp sur la seule foi de cette clé.**
+
+## Bascule vers Ouihelp : réinstallation propre (agent ≥ 1.1.0, lot 3)
+
+Pilote : PC **Entra Joined** uniquement, exécution **dès qu'aucune session n'est ouverte**.
+
+1. **DSI App** : fiche du poste > « Programmer la réinstallation ». L'agent repasse toutes les 15 min.
+2. **Agent** (statut *staging*) : aucune session ouverte, WinRE activé, secteur ou batterie ≥ 50 %.
+   Il télécharge alors le PPKG Ouihelp (avec son jeton) et vérifie son SHA-256. Il exporte les Wi-Fi
+   **clés comprises**, relève l'empreinte Autopilot, puis dépose dans `C:\Recovery\OEM` :
+   - `ResetConfig.xml` : l'original du constructeur est sauvegardé en `.dsi-backup` ;
+   - `DsiReset.cmd` ;
+   - `DSI\`, qui contient le PPKG, les Wi-Fi, `FirstLogon.ps1`, `migration.json` et `unattend.xml`.
+3. **Serveur** (*cleanup*) : retire le PC d'**Autopilot ONELA**, sinon un PC en Ethernet se
+   réinscrirait chez ONELA à l'installation. Il supprime d'abord l'appareil Intune ONELA si Intune
+   refuse.
+4. **Agent** (*ready*) : `MDM_RemoteWipe.doWipeMethod`, équivalent de « Réinitialiser ce PC >
+   Supprimer tout ».
+5. **Réinitialisation**, étape `FactoryReset_AfterImageApply` : `DsiReset.cmd` copie `C:\DSI` et
+   `Panther\unattend.xml` dans le nouveau Windows. Trace : `C:\DSI\reset.log`.
+6. **Nouveau Windows** : l'`unattend.xml` crée en phase *specialize* une tâche SYSTEM « à
+   l'ouverture de session ». La phase *oobeSystem* saute l'installation sans réseau, puis crée
+   `dsi-secours` (mot de passe propre au poste, visible dans la DSI App) et l'ouvre une fois
+   automatiquement. `FirstLogon.ps1` :
+   - restaure les Wi-Fi ;
+   - installe le PPKG et vérifie avec `dsregcmd` la jonction au tenant Ouihelp ;
+   - enregistre la clé BitLocker chez Ouihelp, rend compte à la DSI App ;
+   - **efface les secrets** (Wi-Fi, PPKG, unattend, autologon) puis redémarre.
+
+   Trace : `C:\DSI\firstlogon.log`.
+7. **Serveur** (*done*) : supprime les objets Intune et Entra ONELA, puis importe l'empreinte dans
+   Autopilot Ouihelp (étiquette `ONELA-BASCULE`).
+
+**À valider en pilote** (non testé sur un vrai PC) :
+- que la réinitialisation déclenchée par le MDM exécute bien `ResetConfig.xml` ;
+- que l'installation de Windows est bien sautée sans réseau ;
+- que `Install-ProvisioningPackage` fonctionne en SYSTEM.
+
+Si le poste reste sur l'installation de Windows, la fiche l'indique au bout de 3 h sans nouvelles :
+intervention sur place.
+
+**Permissions Graph en écriture** :
+- ONELA : `DeviceManagementServiceConfig.ReadWrite.All`, `DeviceManagementManagedDevices.ReadWrite.All`,
+  `Device.ReadWrite.All` ;
+- Ouihelp : `DeviceManagementServiceConfig.ReadWrite.All`.
+
+**PPKG** (Windows Configuration Designer > « Provisionner des appareils de bureau ») :
+- nom `ONL-%SERIAL%`, OOBE masqué ;
+- **Inscrire dans Azure AD** avec un jeton en bloc obtenu avec un compte admin Ouihelp ;
+- **pas de compte administrateur local** (l'agent crée `dsi-secours`), **pas de Wi-Fi** (ceux du
+  poste sont restaurés).
+
+Le PPKG se téléverse dans la DSI App, bouton « PPKG Ouihelp ».

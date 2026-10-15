@@ -1,15 +1,31 @@
 import { Hono } from 'hono'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto'
-import { eq } from 'drizzle-orm'
+import { desc, eq } from 'drizzle-orm'
 import type {
   DeviceAgentCheckinResponse,
+  DeviceAgentMigrationOrder,
   DeviceAgentProfile,
   DeviceAgentReport,
   DeviceJoinType,
+  MigrationStatus,
 } from '@dsi-app/shared'
 import { db } from '../../db/index'
-import { deviceAgents, deviceMigrations, type DeviceAgentRow } from './schema'
+import {
+  deviceAgents,
+  deviceMigrationPackages,
+  deviceMigrations,
+  type DeviceAgentRow,
+} from './schema'
 import { normSerial } from './inventoryService'
+import {
+  ACTIVE_STATUSES,
+  BREAKGLASS_USER,
+  cleanupOnelaBeforeReset,
+  finalizeAfterJoin,
+  generateReportToken,
+  recordStep,
+  sha256 as hashToken,
+} from './migrationService'
 
 /**
  * Endpoint appelé par l'agent DSI des PC ONELA (hors authentification MSAL).
@@ -338,10 +354,242 @@ deviceAgentRouter.post('/checkin', async (c) => {
     })
     .where(eq(deviceAgents.id, row.id))
 
+  const migration = await migrationOrderFor(deviceMigrationId)
   const res: DeviceAgentCheckinResponse = {
     agentId: row.id,
     ...(issuedToken ? { deviceToken: issuedToken } : {}),
-    nextCheckinMinutes: DEFAULT_CHECKIN_MINUTES,
+    // Bascule en cours : l'agent repasse plus souvent pour enchaîner les étapes
+    nextCheckinMinutes:
+      migration && migration.status !== 'cancelled'
+        ? MIGRATION_CHECKIN_MINUTES
+        : DEFAULT_CHECKIN_MINUTES,
+    ...(migration ? { migration } : {}),
   }
   return c.json(res)
+})
+
+// ── Bascule (lot 3) ──────────────────────────────────────────────────────────
+
+const MIGRATION_CHECKIN_MINUTES = 15
+const CLEANUP_STALE_MS = 10 * 60_000
+/** Statuts pour lesquels l'agent agit encore (après « ready », la réinitialisation l'efface). */
+const AGENT_STATUSES = ['scheduled', 'staging', 'staged', 'cleanup', 'ready', 'cancelled']
+
+/**
+ * Ordre de bascule à remettre à l'agent. Au 1er passage (« scheduled ») ou tant que l'agent
+ * prépare (« staging »), un jeton de compte rendu est (ré)émis pour le nouveau Windows : seul
+ * son hash est conservé.
+ */
+async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigrationOrder | null> {
+  const [d] = await db.select().from(deviceMigrations).where(eq(deviceMigrations.id, deviceId))
+  if (!d?.migrationStatus || !AGENT_STATUSES.includes(d.migrationStatus)) return null
+  if (d.migrationStatus === 'cancelled') {
+    return {
+      status: 'cancelled',
+      mode: 'reset',
+      packageSha256: '',
+      ouihelpTenantId: '',
+      breakglassUser: BREAKGLASS_USER,
+      breakglassPassword: '',
+    }
+  }
+  const [pkg] = await db
+    .select({ sha256: deviceMigrationPackages.sha256 })
+    .from(deviceMigrationPackages)
+    .where(eq(deviceMigrationPackages.active, 1))
+    .orderBy(desc(deviceMigrationPackages.uploadedAt))
+    .limit(1)
+  if (!pkg) return null
+
+  let reportToken: string | undefined
+  let status = d.migrationStatus as MigrationStatus
+  if (status === 'scheduled' || status === 'staging') {
+    reportToken = generateReportToken()
+    await db
+      .update(deviceMigrations)
+      .set({ migrationTokenHash: hashToken(reportToken) })
+      .where(eq(deviceMigrations.id, deviceId))
+    if (status === 'scheduled') {
+      status = 'staging'
+      await recordStep(
+        deviceId,
+        { step: 'ordre', status: 'info', source: 'serveur', message: 'Ordre transmis à l’agent' },
+        { status }
+      )
+    }
+  }
+  return {
+    status,
+    mode: 'reset',
+    packageSha256: pkg.sha256,
+    ouihelpTenantId: (process.env['AZURE_TENANT_ID'] ?? '').toLowerCase(),
+    breakglassUser: BREAKGLASS_USER,
+    breakglassPassword: d.breakglassPassword ?? '',
+    ...(reportToken ? { reportToken } : {}),
+  }
+}
+
+/** Agent authentifié par son jeton (endpoints de bascule) → poste rattaché. */
+async function agentDevice(bearerHeader: string | undefined): Promise<string | null> {
+  const bearer = bearerHeader?.replace(/^Bearer\s+/i, '').trim()
+  if (!bearer) return null
+  const [agent] = await db
+    .select()
+    .from(deviceAgents)
+    .where(eq(deviceAgents.tokenHash, hashToken(bearer)))
+  return agent?.deviceMigrationId ?? null
+}
+
+deviceAgentRouter.get('/migration', async (c) => {
+  const deviceId = await agentDevice(c.req.header('Authorization'))
+  if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
+  const [d] = await db
+    .select({
+      status: deviceMigrations.migrationStatus,
+      error: deviceMigrations.migrationError,
+      updatedAt: deviceMigrations.migrationUpdatedAt,
+    })
+    .from(deviceMigrations)
+    .where(eq(deviceMigrations.id, deviceId))
+  // Retrait Autopilot ONELA lancé en arrière-plan : un recyclage du conteneur le tue sans
+  // reprise. Sans nouvelle étape depuis 10 min, on le relance (opération idempotente).
+  if (
+    d?.status === 'cleanup' &&
+    d.updatedAt &&
+    Date.now() - d.updatedAt.getTime() > CLEANUP_STALE_MS
+  ) {
+    await recordStep(deviceId, {
+      step: 'autopilot-onela',
+      status: 'info',
+      source: 'serveur',
+      message: 'Retrait Autopilot ONELA relancé (aucune nouvelle depuis 10 min)',
+    })
+    cleanupOnelaBeforeReset(deviceId).catch((err) =>
+      console.error('[device-migration] cleanup error:', err instanceof Error ? err.message : err)
+    )
+  }
+  return c.json({ status: d?.status ?? null, error: d?.error ?? null })
+})
+
+/** PPKG actif, remis uniquement à l'agent d'un poste en cours de préparation. */
+deviceAgentRouter.get('/migration/package', async (c) => {
+  const deviceId = await agentDevice(c.req.header('Authorization'))
+  if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
+  const [d] = await db
+    .select({ status: deviceMigrations.migrationStatus })
+    .from(deviceMigrations)
+    .where(eq(deviceMigrations.id, deviceId))
+  if (d?.status !== 'staging')
+    return c.json({ error: 'Forbidden', message: 'Aucune bascule en préparation' }, 403)
+  const [pkg] = await db
+    .select()
+    .from(deviceMigrationPackages)
+    .where(eq(deviceMigrationPackages.active, 1))
+    .orderBy(desc(deviceMigrationPackages.uploadedAt))
+    .limit(1)
+  if (!pkg) return c.json({ error: 'Not Found', message: 'Aucun PPKG' }, 404)
+  await recordStep(deviceId, {
+    step: 'ppkg',
+    status: 'info',
+    source: 'serveur',
+    message: `PPKG ${pkg.fileName} remis à l’agent`,
+  })
+  return c.body(Buffer.from(pkg.content, 'base64'), 200, {
+    'Content-Type': 'application/octet-stream',
+    'Cache-Control': 'no-store',
+  })
+})
+
+interface ProgressBody {
+  step?: unknown
+  status?: unknown
+  message?: unknown
+  /** Préparation terminée : empreinte matérielle jointe */
+  staged?: unknown
+  hardwareHash?: unknown
+  /** Réinitialisation lancée */
+  resetTriggered?: unknown
+  /** Échec définitif côté agent (avant réinitialisation) */
+  fatal?: unknown
+}
+
+deviceAgentRouter.post('/migration/progress', async (c) => {
+  const deviceId = await agentDevice(c.req.header('Authorization'))
+  if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
+  const b = ((await c.req.json().catch(() => null)) ?? {}) as ProgressBody
+  const [d] = await db
+    .select({ status: deviceMigrations.migrationStatus })
+    .from(deviceMigrations)
+    .where(eq(deviceMigrations.id, deviceId))
+  const current = d?.status as MigrationStatus | undefined
+  if (!current || !ACTIVE_STATUSES.includes(current)) {
+    return c.json({ error: 'Conflict', message: 'Aucune bascule en cours' }, 409)
+  }
+  const stepStatus = b.status === 'ok' || b.status === 'error' ? b.status : 'info'
+  const step = {
+    step: str(b.step, 40) ?? 'agent',
+    status: stepStatus as 'ok' | 'error' | 'info',
+    source: 'agent' as const,
+    message: str(b.message, 1000) ?? '',
+  }
+
+  if (b.fatal === true && ['staging', 'staged', 'ready'].includes(current)) {
+    await recordStep(deviceId, step, { status: 'failed', error: step.message })
+  } else if (b.staged === true && current === 'staging') {
+    const hash =
+      typeof b.hardwareHash === 'string' && b.hardwareHash.length < 64_000 ? b.hardwareHash : null
+    await db
+      .update(deviceMigrations)
+      .set({ hardwareHash: hash })
+      .where(eq(deviceMigrations.id, deviceId))
+    await recordStep(deviceId, step, { status: 'cleanup' })
+    // Retrait d'Autopilot ONELA : peut prendre quelques minutes, l'agent interroge /migration
+    cleanupOnelaBeforeReset(deviceId).catch((err) =>
+      console.error('[device-migration] cleanup error:', err instanceof Error ? err.message : err)
+    )
+  } else if (b.resetTriggered === true && current === 'ready') {
+    await recordStep(deviceId, step, { status: 'resetting' })
+  } else {
+    await recordStep(deviceId, step)
+  }
+  return c.json({ ok: true })
+})
+
+/**
+ * Compte rendu du NOUVEAU Windows (l'agent a été effacé) : authentifié par le jeton de
+ * compte rendu déposé dans C:\\DSI avant la réinitialisation.
+ */
+deviceAgentRouter.post('/migration/report', async (c) => {
+  const token = c.req.header('X-Migration-Token')?.trim()
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const [d] = await db
+    .select({ id: deviceMigrations.id, status: deviceMigrations.migrationStatus })
+    .from(deviceMigrations)
+    .where(eq(deviceMigrations.migrationTokenHash, hashToken(token)))
+  if (!d) return c.json({ error: 'Unauthorized' }, 401)
+  const status = d.status as MigrationStatus
+  if (!['resetting', 'joining', 'ready', 'failed'].includes(status)) {
+    return c.json({ error: 'Conflict', message: 'Bascule non attendue' }, 409)
+  }
+  const b = ((await c.req.json().catch(() => null)) ?? {}) as ProgressBody & { joined?: unknown }
+  const step = {
+    step: str(b.step, 40) ?? 'poste',
+    status: (b.status === 'ok' || b.status === 'error' ? b.status : 'info') as
+      | 'ok'
+      | 'error'
+      | 'info',
+    source: 'poste' as const,
+    message: str(b.message, 1000) ?? '',
+  }
+  if (b.joined === true) {
+    await recordStep(d.id, step, { status: 'done', error: null })
+    finalizeAfterJoin(d.id).catch((err) =>
+      console.error('[device-migration] finalize error:', err instanceof Error ? err.message : err)
+    )
+  } else if (step.status === 'error') {
+    await recordStep(d.id, step, { status: 'failed', error: step.message })
+  } else {
+    await recordStep(d.id, step, { status: 'joining' })
+  }
+  return c.json({ ok: true })
 })

@@ -11,6 +11,7 @@ import {
   Lock,
   LockOpen,
   Radio,
+  Package,
 } from 'lucide-react'
 import type {
   DeviceAgentReport,
@@ -23,6 +24,7 @@ import { usePermission } from '@/hooks/usePermission'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { MIGRATION_CFG, MigrationPanel, PackagePanel } from './MigrationPanels'
 import {
   useDeviceMigrations,
   useDeviceSyncState,
@@ -512,6 +514,7 @@ function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boo
         </div>
       </div>
       <AgentPanel d={d} canWrite={canWrite} />
+      <MigrationPanel d={d} canWrite={canWrite} />
     </div>
   )
 }
@@ -531,6 +534,7 @@ export default function DeviceMigrationPage() {
   const [intune, setIntune] = useState<'' | 'in' | 'out'>('')
   const [agentFilter, setAgentFilter] = useState<'' | 'with' | 'without' | 'warnings'>('')
   const [open, setOpen] = useState<string | null>(null)
+  const [showPackage, setShowPackage] = useState(false)
 
   const sync = syncData?.sync ?? data?.sync
   const lastSyncAt = syncData?.lastSyncAt ?? data?.lastSyncAt ?? null
@@ -625,6 +629,9 @@ export default function DeviceMigrationPage() {
               ? `Synchro : ${sync.step ?? '…'}`
               : `Dernière synchro : ${fmtDateTime(lastSyncAt)}`}
           </span>
+          <Button size="sm" variant="outline" onClick={() => setShowPackage((v) => !v)}>
+            <Package className="mr-1.5 h-4 w-4" /> PPKG Ouihelp
+          </Button>
           {canWrite && (
             <Button
               size="sm"
@@ -647,6 +654,8 @@ export default function DeviceMigrationPage() {
           <strong>uniquement dans l’AD local</strong> apparaissent dès que leur agent remonte.
         </p>
       </div>
+
+      {showPackage && <PackagePanel canWrite={canWrite} />}
 
       {(sync?.error || (sync?.warnings.length ?? 0) > 0) && (
         <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
@@ -910,6 +919,16 @@ export default function DeviceMigrationPage() {
                         >
                           {STATE_CFG[d.state].label}
                         </span>
+                        {d.migration && d.migration.status !== 'cancelled' && (
+                          <div
+                            className={cn(
+                              'mt-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium',
+                              MIGRATION_CFG[d.migration.status].cls
+                            )}
+                          >
+                            {MIGRATION_CFG[d.migration.status].label}
+                          </div>
+                        )}
                       </td>
                     </tr>
                     {open === d.id && (

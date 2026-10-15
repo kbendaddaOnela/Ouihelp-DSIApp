@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { desc, eq } from 'drizzle-orm'
 import type {
   DeviceAgentReport,
   DeviceAgentSummary,
@@ -9,6 +9,9 @@ import type {
   DeviceMigrationRecord,
   DeviceMigrationState,
   UpdateDeviceMigrationRequest,
+  MigrationPackageResponse,
+  MigrationStatus,
+  ScheduleMigrationRequest,
 } from '@dsi-app/shared'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -16,12 +19,22 @@ import type { RbacVariables } from '../../middleware/rbac'
 import { db } from '../../db/index'
 import { agencies } from '../accounts/schema'
 import { cachedUsers } from '../inventory/schema'
+import { randomUUID, createHash } from 'crypto'
 import {
   deviceAgents,
+  deviceMigrationPackages,
   deviceMigrations,
   type DeviceAgentRow,
   type DeviceMigrationRow,
 } from './schema'
+import {
+  ACTIVE_STATUSES,
+  BREAKGLASS_USER,
+  CANCELLABLE_STATUSES,
+  generateBreakglassPassword,
+  recordStep,
+  toMigrationRun,
+} from './migrationService'
 import {
   getLastSyncAt,
   getSyncState,
@@ -163,7 +176,13 @@ function toRecord(
     r.lastSeenAt.getTime() >= lastSyncAt.getTime() ||
     (!!agentRow && Date.now() - agentRow.lastCheckinAt.getTime() < AGENT_PRESENT_MS)
   let state: DeviceMigrationState
-  if (r.ouihelpIntuneId || r.ouihelpAutopilotId || agent?.joinedToOuihelp) state = 'migrated'
+  if (
+    r.ouihelpIntuneId ||
+    r.ouihelpAutopilotId ||
+    agent?.joinedToOuihelp ||
+    r.migrationStatus === 'done'
+  )
+    state = 'migrated'
   else if (r.excluded) state = 'excluded'
   else if (!seenInLastSync) state = 'gone'
   // Un agent qui répond prouve que le PC sert encore, même sans activité Entra / Intune récente
@@ -213,6 +232,7 @@ function toRecord(
     firstSeenAt: r.firstSeenAt.toISOString(),
     lastSeenAt: r.lastSeenAt.toISOString(),
     agent,
+    migration: toMigrationRun(r),
   }
 }
 
@@ -303,5 +323,188 @@ deviceMigrationRouter.post(
       .set({ tokenHash: null })
       .where(eq(deviceAgents.deviceMigrationId, id))
     return c.json({ ok: true, reset: agents.length })
+  }
+)
+
+// ── Bascule (lot 3) ──────────────────────────────────────────────────────────
+
+const MAX_PACKAGE_BYTES = 10 * 1024 * 1024
+
+deviceMigrationRouter.get('/package', requirePermission('migration:read'), async (c) => {
+  const [p] = await db
+    .select()
+    .from(deviceMigrationPackages)
+    .where(eq(deviceMigrationPackages.active, 1))
+    .orderBy(desc(deviceMigrationPackages.uploadedAt))
+    .limit(1)
+  const body: MigrationPackageResponse = {
+    package: p
+      ? {
+          id: p.id,
+          fileName: p.fileName,
+          sizeBytes: p.sizeBytes,
+          sha256: p.sha256,
+          tokenExpiresAt: iso(p.tokenExpiresAt),
+          uploadedBy: p.uploadedBy,
+          uploadedAt: p.uploadedAt.toISOString(),
+        }
+      : null,
+  }
+  return c.json(body)
+})
+
+/** Téléversement du PPKG Ouihelp (multipart : file + tokenExpiresAt optionnel). Remplace l'actif. */
+deviceMigrationRouter.post('/package', requirePermission('migration:write'), async (c) => {
+  const form = await c.req.parseBody()
+  const file = form['file']
+  if (!(file instanceof File))
+    return c.json({ error: 'Bad Request', message: 'Fichier « file » requis' }, 400)
+  if (!file.name.toLowerCase().endsWith('.ppkg')) {
+    return c.json({ error: 'Bad Request', message: 'Fichier .ppkg attendu' }, 400)
+  }
+  if (file.size === 0 || file.size > MAX_PACKAGE_BYTES) {
+    return c.json({ error: 'Bad Request', message: 'Taille invalide (10 Mo maximum)' }, 400)
+  }
+  const bytes = Buffer.from(await file.arrayBuffer())
+  const expiresRaw = typeof form['tokenExpiresAt'] === 'string' ? form['tokenExpiresAt'] : ''
+  const expires = expiresRaw ? new Date(expiresRaw) : null
+  const id = randomUUID()
+  await db.update(deviceMigrationPackages).set({ active: 0 })
+  await db.insert(deviceMigrationPackages).values({
+    id,
+    fileName: file.name.slice(0, 255),
+    sizeBytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    content: bytes.toString('base64'),
+    tokenExpiresAt: expires && !Number.isNaN(expires.getTime()) ? expires : null,
+    uploadedBy: c.get('dbUser').email,
+    active: 1,
+  })
+  return c.json({ ok: true, id })
+})
+
+async function loadDevice(id: string): Promise<DeviceMigrationRow | undefined> {
+  const [row] = await db.select().from(deviceMigrations).where(eq(deviceMigrations.id, id))
+  return row
+}
+
+/**
+ * Programme une réinstallation propre. Garde-fous : PPKG actif, agent qui répond, WinRE
+ * activé, n° de série connu, PC Entra Joined (périmètre du pilote), aucune bascule en cours.
+ */
+deviceMigrationRouter.post(
+  '/devices/:id/migration',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const body = (await c.req.json().catch(() => null)) as ScheduleMigrationRequest | null
+    if (body?.mode !== 'reset')
+      return c.json({ error: 'Bad Request', message: 'Mode « reset » attendu' }, 400)
+    const d = await loadDevice(id)
+    if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
+
+    const refuse = (message: string) => c.json({ error: 'Conflict', message }, 409)
+    if (d.migrationStatus && ACTIVE_STATUSES.includes(d.migrationStatus as MigrationStatus)) {
+      return refuse('Une bascule est déjà en cours pour ce poste')
+    }
+    if (d.joinType !== 'entra_joined')
+      return refuse('Pilote limité aux PC Entra Joined pour l’instant')
+    if (!d.serialNumber)
+      return refuse('N° de série inconnu : impossible de vérifier Autopilot ONELA')
+    const [pkg] = await db
+      .select({ id: deviceMigrationPackages.id })
+      .from(deviceMigrationPackages)
+      .where(eq(deviceMigrationPackages.active, 1))
+      .limit(1)
+    if (!pkg) return refuse('Aucun PPKG Ouihelp téléversé')
+    const agents = await db
+      .select()
+      .from(deviceAgents)
+      .where(eq(deviceAgents.deviceMigrationId, id))
+    const agent = agents.sort((a, b) => b.lastCheckinAt.getTime() - a.lastCheckinAt.getTime())[0]
+    if (!agent || Date.now() - agent.lastCheckinAt.getTime() > 24 * 3600_000) {
+      return refuse('Agent absent ou silencieux depuis plus de 24 h')
+    }
+    const winre = agent.report
+      ? (JSON.parse(agent.report) as { winreEnabled?: boolean | null }).winreEnabled
+      : null
+    if (winre === false) return refuse('WinRE désactivé : réinitialisation impossible')
+
+    const by = c.get('dbUser').email
+    const now = new Date()
+    await db
+      .update(deviceMigrations)
+      .set({
+        migrationStatus: 'scheduled',
+        migrationMode: 'reset',
+        migrationRequestedBy: by,
+        migrationRequestedAt: now,
+        migrationUpdatedAt: now,
+        migrationError: null,
+        migrationSteps: JSON.stringify([
+          {
+            at: now.toISOString(),
+            step: 'programmation',
+            status: 'info',
+            source: 'dsi',
+            message: `Réinstallation propre programmée par ${by}`,
+          },
+        ]),
+        breakglassPassword: generateBreakglassPassword(),
+        migrationTokenHash: null,
+        hardwareHash: null,
+      })
+      .where(eq(deviceMigrations.id, id))
+    return c.json({ ok: true })
+  }
+)
+
+deviceMigrationRouter.post(
+  '/devices/:id/migration/cancel',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const d = await loadDevice(id)
+    if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
+    if (!CANCELLABLE_STATUSES.includes(d.migrationStatus as MigrationStatus)) {
+      return c.json(
+        {
+          error: 'Conflict',
+          message:
+            'Annulation impossible à ce stade (Autopilot ONELA déjà modifié ou réinitialisation lancée)',
+        },
+        409
+      )
+    }
+    await recordStep(
+      id,
+      {
+        step: 'annulation',
+        status: 'info',
+        source: 'dsi',
+        message: `Annulée par ${c.get('dbUser').email} — l’agent retirera ses fichiers au prochain passage`,
+      },
+      { status: 'cancelled' }
+    )
+    return c.json({ ok: true })
+  }
+)
+
+/** Mot de passe du compte local de secours ; chaque consultation est tracée dans le journal. */
+deviceMigrationRouter.get(
+  '/devices/:id/migration/breakglass',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const d = await loadDevice(id)
+    if (!d?.breakglassPassword)
+      return c.json({ error: 'Not Found', message: 'Aucun mot de passe de secours' }, 404)
+    await recordStep(id, {
+      step: 'secours',
+      status: 'info',
+      source: 'dsi',
+      message: `Mot de passe ${BREAKGLASS_USER} consulté par ${c.get('dbUser').email}`,
+    })
+    return c.json({ user: BREAKGLASS_USER, password: d.breakglassPassword })
   }
 )

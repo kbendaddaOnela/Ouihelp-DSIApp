@@ -1,5 +1,7 @@
 import { apiClient } from '@/lib/api'
 import type {
+  MigrationPackageResponse,
+  ScheduleMigrationRequest,
   DeviceMigrationListResponse,
   DeviceMigrationSyncState,
   UpdateDeviceMigrationRequest,
@@ -21,4 +23,29 @@ export const deviceMigrationApi = {
 
   resetAgent: (id: string) =>
     apiClient.post(`/device-migration/devices/${id}/agent/reset`).then((r) => r.data),
+
+  // ── Bascule (lot 3) ──
+  getPackage: () =>
+    apiClient.get<MigrationPackageResponse>('/device-migration/package').then((r) => r.data),
+
+  uploadPackage: (file: File, tokenExpiresAt: string | null) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (tokenExpiresAt) form.append('tokenExpiresAt', tokenExpiresAt)
+    return apiClient.post('/device-migration/package', form).then((r) => r.data)
+  },
+
+  scheduleMigration: (id: string, req: ScheduleMigrationRequest) =>
+    apiClient.post(`/device-migration/devices/${id}/migration`, req).then((r) => r.data),
+
+  cancelMigration: (id: string) =>
+    apiClient.post(`/device-migration/devices/${id}/migration/cancel`).then((r) => r.data),
+
+  breakglass: (id: string) =>
+    apiClient
+      .get<{
+        user: string
+        password: string
+      }>(`/device-migration/devices/${id}/migration/breakglass`)
+      .then((r) => r.data),
 }
