@@ -144,6 +144,12 @@ export interface DeviceMigrationRun {
   error: string | null
   steps: MigrationStep[]
   hasBreakglass: boolean
+  /** true = prévenir l'utilisateur connecté et attendre son accord ; false = seulement hors session */
+  promptUser: boolean
+  /** Nombre de reports déjà demandés par l'utilisateur */
+  snoozeCount: number
+  /** L'utilisateur a reporté le maximum de fois : la DSI doit relancer */
+  snoozeExhausted: boolean
 }
 
 export interface MigrationPackageInfo {
@@ -163,7 +169,15 @@ export interface MigrationPackageResponse {
 
 export interface ScheduleMigrationRequest {
   mode: MigrationMode
+  /** true (défaut) : prévenir l'utilisateur et attendre « Démarrer » ; false : agir hors session */
+  promptUser?: boolean
 }
+
+/** Avertissement affiché à l'utilisateur en mode « session ouverte ». */
+export const MIGRATION_PROMPT_MESSAGE =
+  'La DSI va mettre à jour votre PC. Enregistrez votre travail. Après le redémarrage, connectez-vous avec votre adresse et votre mot de passe Ouihelp.'
+export const MIGRATION_SNOOZE_MINUTES = 15
+export const MIGRATION_MAX_SNOOZES = 3
 
 /** Ordre transmis à l'agent dans la réponse du check-in. */
 export interface DeviceAgentMigrationOrder {
@@ -177,6 +191,16 @@ export interface DeviceAgentMigrationOrder {
   reportToken?: string
   /** Nom à donner au poste (appliqué après l'installation du PPKG) */
   computerName: string
+  /** Prévenir l'utilisateur connecté et attendre son accord avant de basculer */
+  promptUser: boolean
+  /** Message affiché à l'utilisateur */
+  promptMessage: string
+  /** Durée d'un report, en minutes */
+  snoozeMinutes: number
+  /** Nombre maximum de reports */
+  maxSnoozes: number
+  /** Reports déjà demandés (le bouton « Plus tard » disparaît une fois le maximum atteint) */
+  snoozeCount: number
 }
 
 /** Une ouverture de session constatée sur le poste. */

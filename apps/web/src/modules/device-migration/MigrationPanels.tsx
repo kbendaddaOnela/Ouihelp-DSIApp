@@ -245,6 +245,8 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
   const schedule = useScheduleMigration()
   const cancel = useCancelMigration()
   const [secret, setSecret] = useState<{ user: string; password: string } | null>(null)
+  // true : prévenir l'utilisateur connecté et attendre « Démarrer » ; false : seulement hors session
+  const [promptUser, setPromptUser] = useState(true)
   const m = d.migration
   const active = !!m && ACTIVE.includes(m.status)
   const block = blockers(d)
@@ -260,8 +262,11 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
       message: (
         <div className="space-y-2 text-sm">
           <p>
-            Dès qu’aucune session n’est ouverte, l’agent prépare le poste, le serveur le retire
-            d’Autopilot ONELA, puis <strong>Windows est réinitialisé (« Supprimer tout »)</strong>.
+            {promptUser
+              ? 'L’agent prévient l’utilisateur connecté et attend qu’il clique « Démarrer » (ou agit tout de suite si personne n’est connecté), '
+              : 'Dès qu’aucune session n’est ouverte, l’agent prépare le poste, '}
+            le serveur retire le poste d’Autopilot ONELA, puis{' '}
+            <strong>Windows est réinitialisé (« Supprimer tout »)</strong>.
           </p>
           <p>
             Toutes les données locales sont <strong>effacées</strong>. Le poste rejoint ensuite
@@ -281,7 +286,7 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
       })
       return
     }
-    schedule.mutate(d.id)
+    schedule.mutate({ id: d.id, promptUser })
   }
 
   return (
@@ -335,6 +340,27 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
           </div>
         )}
       </div>
+
+      {canWrite && !active && (
+        <div className="flex flex-wrap items-center gap-4 text-gray-600">
+          <span className="text-gray-400">Déclenchement :</span>
+          <label className="flex items-center gap-1">
+            <input type="radio" checked={promptUser} onChange={() => setPromptUser(true)} />
+            Prévenir l’utilisateur (fenêtre « Démarrer / Plus tard », 3 reports)
+          </label>
+          <label className="flex items-center gap-1">
+            <input type="radio" checked={!promptUser} onChange={() => setPromptUser(false)} />
+            Seulement hors session
+          </label>
+        </div>
+      )}
+      {m && m.promptUser && ['scheduled', 'staging'].includes(m.status) && (
+        <p className={cn('text-xs', m.snoozeExhausted ? 'text-amber-700' : 'text-gray-500')}>
+          Mode avertissement
+          {m.snoozeCount > 0 && ` — ${m.snoozeCount} report(s) par l’utilisateur`}
+          {m.snoozeExhausted && ' — reports épuisés : relancer l’utilisateur'}
+        </p>
+      )}
 
       <TargetName d={d} canWrite={canWrite} locked={active} />
 

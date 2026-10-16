@@ -218,6 +218,8 @@ async function ensureSchemaPatches() {
     { table: 'device_migrations', column: 'migration_token_hash', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_token_hash\` varchar(64)` },
     { table: 'device_migrations', column: 'hardware_hash', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`hardware_hash\` mediumtext` },
     { table: 'device_migrations', column: 'target_name', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`target_name\` varchar(15)` },
+    { table: 'device_migrations', column: 'migration_prompt_user', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_prompt_user\` int NOT NULL DEFAULT 1` },
+    { table: 'device_migrations', column: 'migration_snoozes', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_snoozes\` int NOT NULL DEFAULT 0` },
     { table: 'device_migrations', column: 'intune_logons', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`intune_logons\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
   ]
   for (const p of columnPatches) {
@@ -818,6 +820,8 @@ async function ensureSchemaPatches() {
         \`migration_token_hash\` varchar(64),
         \`hardware_hash\` mediumtext,
         \`target_name\` varchar(15),
+        \`migration_prompt_user\` int NOT NULL DEFAULT 1,
+        \`migration_snoozes\` int NOT NULL DEFAULT 0,
         \`excluded\` int NOT NULL DEFAULT 0,
         \`exclude_reason\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
         \`first_seen_at\` timestamp NOT NULL DEFAULT (now()),

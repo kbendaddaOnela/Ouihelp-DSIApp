@@ -79,6 +79,10 @@ export const deviceMigrations = mysqlTable(
     hardwareHash: mediumtext('hardware_hash'),
     /** Nom chez Ouihelp saisi par la DSI, ou figé à la programmation ; null = calculé (naming.ts) */
     targetName: varchar('target_name', { length: 15 }),
+    /** 1 = prévenir l'utilisateur et attendre son accord ; 0 = agir seulement hors session */
+    migrationPromptUser: int('migration_prompt_user').default(1).notNull(),
+    /** Nombre de reports demandés par l'utilisateur */
+    migrationSnoozes: int('migration_snoozes').default(0).notNull(),
 
     excluded: int('excluded').default(0).notNull(),
     excludeReason: varchar('exclude_reason', { length: 255 }),

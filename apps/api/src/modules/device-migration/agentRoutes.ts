@@ -1,13 +1,16 @@
 import { Hono } from 'hono'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto'
-import { desc, eq } from 'drizzle-orm'
-import type {
-  DeviceAgentCheckinResponse,
-  DeviceAgentMigrationOrder,
-  DeviceAgentProfile,
-  DeviceAgentReport,
-  DeviceJoinType,
-  MigrationStatus,
+import { desc, eq, sql } from 'drizzle-orm'
+import {
+  MIGRATION_MAX_SNOOZES,
+  MIGRATION_PROMPT_MESSAGE,
+  MIGRATION_SNOOZE_MINUTES,
+  type DeviceAgentCheckinResponse,
+  type DeviceAgentMigrationOrder,
+  type DeviceAgentProfile,
+  type DeviceAgentReport,
+  type DeviceJoinType,
+  type MigrationStatus,
 } from '@dsi-app/shared'
 import { db } from '../../db/index'
 import {
@@ -392,6 +395,11 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
       breakglassUser: BREAKGLASS_USER,
       breakglassPassword: '',
       computerName: '',
+      promptUser: false,
+      promptMessage: '',
+      snoozeMinutes: 0,
+      maxSnoozes: 0,
+      snoozeCount: 0,
     }
   }
   const [pkg] = await db
@@ -427,6 +435,11 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
     breakglassUser: BREAKGLASS_USER,
     breakglassPassword: d.breakglassPassword ?? '',
     computerName: d.targetName ?? '',
+    promptUser: d.migrationPromptUser === 1,
+    promptMessage: MIGRATION_PROMPT_MESSAGE,
+    snoozeMinutes: MIGRATION_SNOOZE_MINUTES,
+    maxSnoozes: MIGRATION_MAX_SNOOZES,
+    snoozeCount: d.migrationSnoozes,
     ...(reportToken ? { reportToken } : {}),
   }
 }
@@ -513,6 +526,8 @@ interface ProgressBody {
   resetTriggered?: unknown
   /** Échec définitif côté agent (avant réinitialisation) */
   fatal?: unknown
+  /** L'utilisateur a reporté la bascule (mode session ouverte) */
+  snoozed?: unknown
 }
 
 deviceAgentRouter.post('/migration/progress', async (c) => {
@@ -537,6 +552,13 @@ deviceAgentRouter.post('/migration/progress', async (c) => {
 
   if (b.fatal === true && ['staging', 'staged', 'ready'].includes(current)) {
     await recordStep(deviceId, step, { status: 'failed', error: step.message })
+  } else if (b.snoozed === true) {
+    // L'utilisateur a reporté : on compte, l'avertissement reviendra plus tard
+    await db
+      .update(deviceMigrations)
+      .set({ migrationSnoozes: sql`${deviceMigrations.migrationSnoozes} + 1` })
+      .where(eq(deviceMigrations.id, deviceId))
+    await recordStep(deviceId, step)
   } else if (b.staged === true && current === 'staging') {
     const hash =
       typeof b.hardwareHash === 'string' && b.hardwareHash.length < 64_000 ? b.hardwareHash : null

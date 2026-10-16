@@ -80,7 +80,8 @@ export function useUploadMigrationPackage() {
 export function useScheduleMigration() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => deviceMigrationApi.scheduleMigration(id, { mode: 'reset' }),
+    mutationFn: ({ id, promptUser }: { id: string; promptUser: boolean }) =>
+      deviceMigrationApi.scheduleMigration(id, { mode: 'reset', promptUser }),
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
 }

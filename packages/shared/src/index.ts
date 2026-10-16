@@ -1,5 +1,10 @@
 export type { Role, Permission } from './types/roles'
 export { ROLE_PERMISSIONS, hasPermission } from './types/roles'
+export {
+  MIGRATION_PROMPT_MESSAGE,
+  MIGRATION_SNOOZE_MINUTES,
+  MIGRATION_MAX_SNOOZES,
+} from './types/deviceMigration'
 
 export type { AppUser, MeResponse, EntraIdJwtPayload } from './types/auth'
 
