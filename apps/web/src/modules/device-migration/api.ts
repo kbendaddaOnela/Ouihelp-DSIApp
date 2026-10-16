@@ -41,6 +41,9 @@ export const deviceMigrationApi = {
   cancelMigration: (id: string) =>
     apiClient.post(`/device-migration/devices/${id}/migration/cancel`).then((r) => r.data),
 
+  updateTargetName: (id: string, name: string | null) =>
+    apiClient.patch(`/device-migration/devices/${id}/target-name`, { name }).then((r) => r.data),
+
   breakglass: (id: string) =>
     apiClient
       .get<{

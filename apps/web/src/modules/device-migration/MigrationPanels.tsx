@@ -20,6 +20,7 @@ import {
   useCancelMigration,
   useMigrationPackage,
   useScheduleMigration,
+  useUpdateTargetName,
   useUploadMigrationPackage,
 } from './hooks'
 
@@ -145,6 +146,8 @@ export function PackagePanel({ canWrite }: { canWrite: boolean }) {
 /** Raisons de ne pas pouvoir programmer (mêmes garde-fous que l'API, affichés d'avance). */
 function blockers(d: DeviceMigrationRecord): string[] {
   const b: string[] = []
+  if (!d.targetName) b.push('Nom Ouihelp à saisir')
+  if (d.targetNameConflict) b.push(`Nom déjà attribué à ${d.targetNameConflict}`)
   if (d.joinType !== 'entra_joined') b.push('Pilote limité aux PC Entra Joined')
   if (!d.serialNumber) b.push('N° de série inconnu')
   if (!d.agent) b.push('Agent DSI non installé')
@@ -159,6 +162,82 @@ function blockers(d: DeviceMigrationRecord): string[] {
       b.push('Aucun profil Wi-Fi enregistré à restaurer')
   }
   return b
+}
+
+/** Futur nom chez Ouihelp (convention ONL-<site>-<n° de série>), modifiable hors bascule. */
+function TargetName({
+  d,
+  canWrite,
+  locked,
+}: {
+  d: DeviceMigrationRecord
+  canWrite: boolean
+  locked: boolean
+}) {
+  const update = useUpdateTargetName()
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(d.targetName ?? '')
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-gray-400">Nom chez Ouihelp :</span>
+      {editing ? (
+        <>
+          <input
+            className="w-40 rounded-md border border-gray-300 px-2 py-1 font-mono uppercase"
+            maxLength={15}
+            value={value}
+            onChange={(e) => setValue(e.target.value.toUpperCase())}
+          />
+          <Button
+            size="sm"
+            disabled={update.isPending || !value}
+            onClick={() =>
+              update.mutate({ id: d.id, name: value }, { onSuccess: () => setEditing(false) })
+            }
+          >
+            Enregistrer
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setEditing(false)}>
+            Annuler
+          </Button>
+        </>
+      ) : (
+        <>
+          <span className={cn('font-mono', d.targetName ? 'text-gray-800' : 'text-amber-700')}>
+            {d.targetName ?? 'impossible à déduire'}
+          </span>
+          <span className="text-gray-400">
+            {d.targetName ? (d.targetNameAuto ? '(convention)' : '(saisi)') : ''}
+          </span>
+          {canWrite && !locked && (
+            <>
+              <button
+                className="text-primary-600 hover:underline"
+                onClick={() => {
+                  setValue(d.targetName ?? '')
+                  setEditing(true)
+                }}
+              >
+                Modifier
+              </button>
+              {!d.targetNameAuto && (
+                <button
+                  className="text-gray-500 hover:underline"
+                  onClick={() => update.mutate({ id: d.id, name: null })}
+                >
+                  Revenir à la convention
+                </button>
+              )}
+            </>
+          )}
+        </>
+      )}
+      {d.targetNameConflict && (
+        <span className="text-red-600">déjà attribué à {d.targetNameConflict}</span>
+      )}
+      {update.error && <span className="text-red-600">{(update.error as Error).message}</span>}
+    </div>
+  )
 }
 
 export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boolean }) {
@@ -256,6 +335,8 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
           </div>
         )}
       </div>
+
+      <TargetName d={d} canWrite={canWrite} locked={active} />
 
       {!active && block.length > 0 && (
         <p className="text-gray-500">Non programmable : {block.join(' · ')}</p>

@@ -23,6 +23,8 @@ import { deviceMigrations, type DeviceMigrationRow } from './schema'
  */
 
 export const BREAKGLASS_USER = 'dsi-secours'
+/** Étiquette Autopilot Ouihelp, la même que le script de migration Intune existant (groupes dynamiques) */
+export const GROUP_TAG = process.env['DEVICE_MIGRATION_GROUP_TAG'] ?? 'OUIHELP'
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 const MAX_STEPS = 200
 
@@ -309,7 +311,7 @@ export async function finalizeAfterJoin(id: string): Promise<void> {
           '@odata.type': '#microsoft.graph.importedWindowsAutopilotDeviceIdentity',
           serialNumber: d.serialNumber,
           hardwareIdentifier: d.hardwareHash,
-          groupTag: 'ONELA-BASCULE',
+          groupTag: GROUP_TAG,
         }
       )
       await step(

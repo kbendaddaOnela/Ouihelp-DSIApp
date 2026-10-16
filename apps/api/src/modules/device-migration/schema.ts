@@ -77,6 +77,8 @@ export const deviceMigrations = mysqlTable(
     migrationTokenHash: varchar('migration_token_hash', { length: 64 }),
     /** Empreinte matérielle Autopilot (base64), relevée par l'agent avant réinitialisation */
     hardwareHash: mediumtext('hardware_hash'),
+    /** Nom chez Ouihelp saisi par la DSI, ou figé à la programmation ; null = calculé (naming.ts) */
+    targetName: varchar('target_name', { length: 15 }),
 
     excluded: int('excluded').default(0).notNull(),
     excludeReason: varchar('exclude_reason', { length: 255 }),

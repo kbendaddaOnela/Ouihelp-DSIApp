@@ -12,6 +12,7 @@ import type {
   MigrationPackageResponse,
   MigrationStatus,
   ScheduleMigrationRequest,
+  UpdateTargetNameRequest,
 } from '@dsi-app/shared'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -27,6 +28,7 @@ import {
   type DeviceAgentRow,
   type DeviceMigrationRow,
 } from './schema'
+import { autoTargetName, invalidComputerName, type AgencyCodes } from './naming'
 import {
   ACTIVE_STATUSES,
   BREAKGLASS_USER,
@@ -63,9 +65,53 @@ function parseEntraObjects(raw: string | null): DeviceEntraObject[] {
   }
 }
 
-interface AgencyRef {
+interface AgencyRef extends AgencyCodes {
   byName: Map<string, { name: string; region: string }>
   byTrigramme: Map<string, { name: string; region: string }>
+}
+
+interface TargetNameInfo {
+  name: string | null
+  auto: boolean
+  conflict: string | null
+}
+
+/**
+ * Nom chez Ouihelp de chaque poste (saisi ou calculé) et détection des doublons. Les postes
+ * exclus ne comptent pas ; un poste déjà basculé garde son nom (il est réellement pris).
+ */
+function computeTargetNames(
+  rows: DeviceMigrationRow[],
+  codes: AgencyCodes
+): Map<string, TargetNameInfo> {
+  const out = new Map<string, TargetNameInfo>()
+  const owners = new Map<string, DeviceMigrationRow[]>()
+  for (const r of rows) {
+    const name = r.targetName ?? autoTargetName(r, codes)
+    out.set(r.id, { name, auto: !r.targetName, conflict: null })
+    if (name && !r.excluded) owners.set(name, [...(owners.get(name) ?? []), r])
+  }
+  for (const list of owners.values()) {
+    if (list.length < 2) continue
+    for (const r of list) {
+      const other = list.find((o) => o.id !== r.id)!
+      out.get(r.id)!.conflict = other.displayName ?? other.serialNumber ?? other.id
+    }
+  }
+  return out
+}
+
+async function loadAgencyRef(): Promise<AgencyRef> {
+  const agencyRows = await db
+    .select({ name: agencies.name, trigramme: agencies.trigramme, region: agencies.region })
+    .from(agencies)
+  return {
+    byName: new Map(agencyRows.map((a) => [a.name.trim().toLowerCase(), a])),
+    byTrigramme: new Map(agencyRows.map((a) => [a.trigramme.trim().toUpperCase(), a])),
+    trigrammeByName: new Map(
+      agencyRows.map((a) => [a.name.trim().toLowerCase(), a.trigramme.trim().toUpperCase()])
+    ),
+  }
 }
 
 /**
@@ -162,7 +208,8 @@ function toRecord(
   lastSyncAt: Date | null,
   agencyRef: AgencyRef,
   agentRow: DeviceAgentRow | undefined,
-  nameByUpn: Map<string, string>
+  nameByUpn: Map<string, string>,
+  target: TargetNameInfo | undefined
 ): DeviceMigrationRecord {
   const agent = toAgentSummary(agentRow)
   const recentLogons = buildLogons(r, agent, nameByUpn)
@@ -233,17 +280,18 @@ function toRecord(
     lastSeenAt: r.lastSeenAt.toISOString(),
     agent,
     migration: toMigrationRun(r),
+    targetName: target?.name ?? null,
+    targetNameAuto: target?.auto ?? true,
+    targetNameConflict: target?.conflict ?? null,
   }
 }
 
 // ── Inventaire complet (quelques centaines de postes : filtrage côté front) ──
 deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async (c) => {
-  const [rows, lastSyncAt, agencyRows, agentRows, onelaUsers] = await Promise.all([
+  const [rows, lastSyncAt, agencyRef, agentRows, onelaUsers] = await Promise.all([
     db.select().from(deviceMigrations),
     getLastSyncAt(),
-    db
-      .select({ name: agencies.name, trigramme: agencies.trigramme, region: agencies.region })
-      .from(agencies),
+    loadAgencyRef(),
     db.select().from(deviceAgents),
     // Noms des comptes vus par l'agent (UPN seul) : cache utilisateurs du module inventaire
     db
@@ -253,10 +301,7 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
   ])
   const nameByUpn = new Map<string, string>()
   for (const u of onelaUsers) if (u.displayName) nameByUpn.set(u.upn.toLowerCase(), u.displayName)
-  const agencyRef: AgencyRef = {
-    byName: new Map(agencyRows.map((a) => [a.name.trim().toLowerCase(), a])),
-    byTrigramme: new Map(agencyRows.map((a) => [a.trigramme.trim().toUpperCase(), a])),
-  }
+  const targetNames = computeTargetNames(rows, agencyRef)
   // Plusieurs agents pour un poste (réinstallation de Windows) : le plus récent gagne
   const agentByDevice = new Map<string, DeviceAgentRow>()
   for (const a of agentRows) {
@@ -265,7 +310,9 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
     if (!prev || a.lastCheckinAt > prev.lastCheckinAt) agentByDevice.set(a.deviceMigrationId, a)
   }
   const devices = rows
-    .map((r) => toRecord(r, lastSyncAt, agencyRef, agentByDevice.get(r.id), nameByUpn))
+    .map((r) =>
+      toRecord(r, lastSyncAt, agencyRef, agentByDevice.get(r.id), nameByUpn, targetNames.get(r.id))
+    )
     .sort((a, b) => (a.displayName ?? '').localeCompare(b.displayName ?? ''))
   const body: DeviceMigrationListResponse = {
     devices,
@@ -430,11 +477,21 @@ deviceMigrationRouter.post(
       : null
     if (winre === false) return refuse('WinRE désactivé : réinitialisation impossible')
 
+    const allRows = await db.select().from(deviceMigrations)
+    const target = computeTargetNames(allRows, await loadAgencyRef()).get(id)
+    if (!target?.name)
+      return refuse('Nom Ouihelp impossible à déduire : saisir le nom du poste à la main')
+    const invalid = invalidComputerName(target.name)
+    if (invalid) return refuse(`Nom Ouihelp invalide (${target.name}) : ${invalid}`)
+    if (target.conflict) return refuse(`Nom ${target.name} déjà attribué à ${target.conflict}`)
+
     const by = c.get('dbUser').email
     const now = new Date()
     await db
       .update(deviceMigrations)
       .set({
+        // Nom figé à la programmation : il ne bouge plus si l'inventaire change pendant la bascule
+        targetName: target.name,
         migrationStatus: 'scheduled',
         migrationMode: 'reset',
         migrationRequestedBy: by,
@@ -447,7 +504,7 @@ deviceMigrationRouter.post(
             step: 'programmation',
             status: 'info',
             source: 'dsi',
-            message: `Réinstallation propre programmée par ${by}`,
+            message: `Réinstallation propre programmée par ${by} — futur nom ${target.name}`,
           },
         ]),
         breakglassPassword: generateBreakglassPassword(),
@@ -506,5 +563,43 @@ deviceMigrationRouter.get(
       message: `Mot de passe ${BREAKGLASS_USER} consulté par ${c.get('dbUser').email}`,
     })
     return c.json({ user: BREAKGLASS_USER, password: d.breakglassPassword })
+  }
+)
+
+/** Nom du poste chez Ouihelp : saisie manuelle, ou null pour revenir au nom calculé. */
+deviceMigrationRouter.patch(
+  '/devices/:id/target-name',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const body = (await c.req.json().catch(() => null)) as UpdateTargetNameRequest | null
+    if (!body || (body.name !== null && typeof body.name !== 'string')) {
+      return c.json({ error: 'Bad Request', message: 'Champ « name » (texte ou null) requis' }, 400)
+    }
+    const d = await loadDevice(id)
+    if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
+    if (d.migrationStatus && ACTIVE_STATUSES.includes(d.migrationStatus as MigrationStatus)) {
+      return c.json({ error: 'Conflict', message: 'Bascule en cours : le nom est figé' }, 409)
+    }
+    const name = body.name === null ? null : body.name.trim().toUpperCase()
+    if (name !== null) {
+      const invalid = invalidComputerName(name)
+      if (invalid) return c.json({ error: 'Bad Request', message: invalid }, 400)
+      const codes = await loadAgencyRef()
+      const taken = (await db.select().from(deviceMigrations)).find(
+        (r) => r.id !== id && !r.excluded && (r.targetName ?? autoTargetName(r, codes)) === name
+      )
+      if (taken) {
+        return c.json(
+          {
+            error: 'Conflict',
+            message: `Nom déjà attribué à ${taken.displayName ?? taken.serialNumber}`,
+          },
+          409
+        )
+      }
+    }
+    await db.update(deviceMigrations).set({ targetName: name }).where(eq(deviceMigrations.id, id))
+    return c.json({ ok: true })
   }
 )

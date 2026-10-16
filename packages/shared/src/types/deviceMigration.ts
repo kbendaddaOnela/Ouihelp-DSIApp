@@ -90,6 +90,17 @@ export interface DeviceMigrationRecord {
   agent: DeviceAgentSummary | null
   /** Bascule vers Ouihelp en cours ou terminée (null = jamais programmée) */
   migration: DeviceMigrationRun | null
+  /** Nom du poste chez Ouihelp (ONL-<site>-<n° de série>) ; null = impossible à déduire */
+  targetName: string | null
+  /** true = calculé par la convention ; false = saisi par la DSI (ou figé à la programmation) */
+  targetNameAuto: boolean
+  /** Autre poste qui aurait le même nom (bloque la programmation) */
+  targetNameConflict: string | null
+}
+
+export interface UpdateTargetNameRequest {
+  /** null = revenir au nom calculé */
+  name: string | null
 }
 
 // ── Bascule (lot 3) ──────────────────────────────────────────────────────────
@@ -164,6 +175,8 @@ export interface DeviceAgentMigrationOrder {
   breakglassPassword: string
   /** Jeton à usage du nouveau Windows pour rendre compte (renvoyé pendant « staging ») */
   reportToken?: string
+  /** Nom à donner au poste (appliqué après l'installation du PPKG) */
+  computerName: string
 }
 
 /** Une ouverture de session constatée sur le poste. */

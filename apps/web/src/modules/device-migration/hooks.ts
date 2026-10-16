@@ -92,3 +92,12 @@ export function useCancelMigration() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
 }
+
+export function useUpdateTargetName() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string | null }) =>
+      deviceMigrationApi.updateTargetName(id, name),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}

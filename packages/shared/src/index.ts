@@ -133,4 +133,5 @@ export type {
   MigrationPackageResponse,
   ScheduleMigrationRequest,
   DeviceAgentMigrationOrder,
+  UpdateTargetNameRequest,
 } from './types/deviceMigration'
