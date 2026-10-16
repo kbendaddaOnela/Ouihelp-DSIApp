@@ -140,6 +140,7 @@ export type {
   DeviceAgentMigrationOrder,
   UpdateTargetNameRequest,
   MigrationProfileMapping,
+  MigrationProfileAction,
   MigrationProfilesResponse,
   DeviceAgentApp,
   DeviceAppCatalogEntry,

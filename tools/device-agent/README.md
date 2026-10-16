@@ -189,9 +189,16 @@ Méthode reprise d'**IntuneMigration V9** (Steve Weiner), avec quatre différenc
 ### Déroulé
 
 1. **DSI App** : fiche du poste > mode « En place » > « Programmer la bascule ». Le tableau des
-   profils montre, pour chaque profil ONELA du poste, le compte Ouihelp qui en héritera (trouvé par
-   la table des migrations de comptes, puis par l'adresse mail, ou saisi par la DSI). Un profil sans
-   correspondance bloque la programmation.
+   profils montre ce que devient chaque profil ONELA du poste :
+   - **un seul profil est conservé** et transféré, par défaut celui du **dernier utilisateur
+     connecté** ; la DSI peut en désigner un autre (« Conserver celui-ci »). Son compte Ouihelp est
+     trouvé par la table des migrations de comptes, puis par l'adresse mail, ou saisi à la main ;
+     sans correspondance, la programmation est refusée ;
+   - **tous les autres profils ONELA sont supprimés du poste** à la bascule : clé
+     `ProfileList` et dossier de `C:\Users`, données locales comprises. Leurs comptes ONELA ne
+     peuvent de toute façon plus ouvrir de session une fois le poste sorti du tenant.
+   - les profils de comptes **locaux** (compte de secours, administrateur local) ne sont jamais
+     touchés.
 2. **Agent** (*staging*) : neutralise la mise en veille, contrôle l'alimentation et **10 Go libres**,
    télécharge le PPKG et vérifie son SHA-256, puis fige l'ordre dans
    `C:\ProgramData\DSI\migration\inplace.json` (**sans aucun secret** : le mot de passe du compte
@@ -206,10 +213,12 @@ Méthode reprise d'**IntuneMigration V9** (Steve Weiner), avec quatre différenc
    - `dsregcmd /leave`, puis sortie du domaine avec le compte de secours si le PC est hybride ;
    - installe le PPKG Ouihelp (repli `dism.exe` si `Install-ProvisioningPackage` échoue) ;
    - redémarre. Message d'attente sur l'écran de verrouillage pendant les deux redémarrages.
-5. **Agent** (phase « profils », session fermée) : pour chaque profil, retrait des jetons de
-   l'ancien tenant (`AAD.BrokerPlugin`), enregistrement du compte Ouihelp (`CreateProfile`, profil
-   créé puis supprimé), puis **`Win32_UserProfile.ChangeOwner`** vers le SID Ouihelp et nettoyage
-   des caches d'identité qui pointent encore sur l'ancien UPN. Puis redémarrage.
+5. **Agent** (phase « profils », session fermée) : retrait des jetons de l'ancien tenant
+   (`AAD.BrokerPlugin`), enregistrement du compte Ouihelp (`CreateProfile`, profil créé puis
+   supprimé), puis **`Win32_UserProfile.ChangeOwner`** vers le SID Ouihelp et nettoyage des caches
+   d'identité qui pointent encore sur l'ancien UPN. **Une fois le transfert réussi**, les autres
+   profils ONELA sont supprimés (`Remove-CimInstance` sur `Win32_UserProfile`, qui retire la clé de
+   registre et le dossier ; reliquats nettoyés derrière). Puis redémarrage.
 6. **Agent** (phase « jonction ») : attend la jonction au tenant Ouihelp (`dsregcmd`), enregistre la
    clé BitLocker chez Ouihelp, applique le nom DSI **après** le PPKG, rend compte « joint » et
    retire ses fichiers de bascule.
@@ -226,14 +235,18 @@ Méthode reprise d'**IntuneMigration V9** (Steve Weiner), avec quatre différenc
   en rendant compte au lieu de retenter toutes les 2 min, et retire son message d'attente.
 - **Passé le point de non-retour, l'agent termine le travail local même si la DSI « abandonne » la
   bascule dans l'app** : sinon le poste resterait entre les deux tenants. L'abandon le dit.
-- Un profil qui échoue garde son ancien propriétaire (l'utilisateur obtient un profil neuf) : c'est
-  écrit dans le journal du poste, les autres profils sont transférés.
+- Si le transfert du profil conservé échoue, **aucun profil n'est supprimé** : l'agent réessaie au
+  passage suivant.
+- L'agent ne supprime jamais un profil **système, chargé (session ouverte), local**, ni celui qui
+  fait partie du transfert, quoi que dise l'ordre reçu.
 - Le jeton de jonction en bloc du PPKG expire (180 jours au plus). La DSI App **refuse de programmer**
   une bascule avec un PPKG expiré, et signale celui qui expire dans moins de 30 jours.
 
 ### Ce que la bascule en place ne fait pas
 
 - Les données déjà dans OneDrive ONELA ne suivent pas : c'est un compte, pas un fichier local.
+- Les données locales des profils supprimés sont **perdues** (décision DSI) : la colonne « Données
+  locales » du tableau dit combien il y en a, avant de programmer.
 - L'appartenance aux groupes locaux, les applications installées par utilisateur (`AppData`) et les
   réglages liés au SID d'origine peuvent demander une reprise ponctuelle.
 - Le profil n'est transféré qu'une fois : relancer une bascule sur un poste déjà basculé n'a pas

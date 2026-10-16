@@ -1365,6 +1365,32 @@ function Remove-IdentityCache([string]$OldUpn) {
   }
 }
 
+# Suppression d'un profil ONELA qui n'est pas repris : Remove-CimInstance retire la clé
+# ProfileList ET le dossier de C:\Users. Garde-fous : jamais un profil système, chargé, ou qui
+# fait partie du transfert. Le compte ONELA ne pourrait de toute façon plus ouvrir de session.
+function Remove-OldProfile($P, [string[]]$Keep) {
+  if ($Keep -contains $P.sid) { return @{ ok = $false; message = 'profil repris, non supprimé' } }
+  $prof = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $P.sid }
+  if (-not $prof) { return @{ ok = $true; message = 'déjà absent' } }
+  if ($prof.Special) { return @{ ok = $false; message = 'profil système' } }
+  if ($prof.Loaded) { return @{ ok = $false; message = 'profil chargé' } }
+  $path = $prof.LocalPath
+  try {
+    Remove-CimInstance -InputObject $prof -ErrorAction Stop
+  } catch {
+    return @{ ok = $false; message = $_.Exception.Message }
+  }
+  # Reliquats éventuels : dossier verrouillé au moment de la suppression, clé laissée en place
+  if ($path -and (Test-Path -LiteralPath $path)) {
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  Remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$($P.sid)" -Recurse -Force -ErrorAction SilentlyContinue
+  Safe 'cacheIdentite' { Remove-IdentityCache $P.upn }
+  $left = ($path -and (Test-Path -LiteralPath $path))
+  if ($left) { return @{ ok = $true; message = "supprimé (dossier $path encore présent)" } }
+  return @{ ok = $true; message = 'supprimé' }
+}
+
 # Transfert d'un profil Windows ONELA au compte Ouihelp (méthode V9) :
 #  1. les jetons de l'ancien tenant (AAD.BrokerPlugin) sont retirés du profil ;
 #  2. Windows enregistre le compte Ouihelp en créant son profil, aussitôt supprimé : seule
@@ -1418,6 +1444,9 @@ function New-InplacePayload($Order) {
     ouihelpTenantId = [string]$Order.ouihelpTenantId
     profileMap      = @(@($Order.profileMap) | ForEach-Object {
         [ordered]@{ oldSid = $_.oldSid; oldUpn = $_.oldUpn; newSid = $_.newSid; newUpn = $_.newUpn; newSam = $_.newSam }
+      })
+    removeProfiles  = @(@($Order.removeProfiles) | ForEach-Object {
+        [ordered]@{ sid = $_.sid; account = $_.account; upn = $_.upn }
       })
   }
   Save-Inplace $state
@@ -1501,7 +1530,7 @@ function Invoke-InplaceProfiles($State) {
     Remove-InplacePayload
     return
   }
-  $maps = @($State.profileMap)
+  $maps = @($State.profileMap | Where-Object { $_ -and $_.oldSid })
   $ok = @()
   $failed = @()
   if ($maps.Count -eq 0) {
@@ -1522,6 +1551,26 @@ function Invoke-InplaceProfiles($State) {
     Send-Progress 'profils' 'error' "Transféré(s) : $($ok -join ', ') ; échec sur $($failed -join ' ; ')"
   } else {
     Send-Progress 'profils' 'ok' "Profil(s) transféré(s) : $($ok -join ', ')"
+  }
+  # Les autres profils ONELA ne sont supprimés qu'une fois le transfert réussi.
+  # @($null) vaut un élément vide : on filtre (états écrits par une version antérieure)
+  $remove = @($State.removeProfiles | Where-Object { $_ -and $_.sid })
+  if ($remove.Count -gt 0) {
+    $keep = @($State.profileMap | Where-Object { $_ } | ForEach-Object { $_.oldSid; $_.newSid })
+    $gone = @()
+    $kept = @()
+    foreach ($rp in $remove) {
+      $label = $rp.upn
+      if (-not $label) { $label = $rp.account }
+      if (-not $label) { $label = $rp.sid }
+      $r = Remove-OldProfile $rp $keep
+      if ($r.ok) { $gone += $label } else { $kept += "$label : $($r.message)" }
+    }
+    if ($kept.Count -eq 0) {
+      Send-Progress 'profils-supprimes' 'ok' "$($gone.Count) profil(s) supprimé(s) du poste : $($gone -join ', ')"
+    } else {
+      Send-Progress 'profils-supprimes' 'error' "$($gone.Count) profil(s) supprimé(s) ; conservé(s) : $($kept -join ' ; ')"
+    }
   }
   $State.phase = 'join'
   $State.attempts = 0

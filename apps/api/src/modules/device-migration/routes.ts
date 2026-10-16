@@ -458,6 +458,13 @@ async function latestAgent(
   return { agent, report }
 }
 
+/** SID du profil que la DSI veut conserver (null / absent = le dernier connecté). */
+function parseMainSid(raw: unknown): string | null | undefined {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'string' || !/^S-1-[\d-]+$/.test(raw)) return undefined
+  return raw
+}
+
 function parseTargets(raw: unknown): Record<string, string | null> | null {
   if (raw === undefined) return {}
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
@@ -477,15 +484,21 @@ deviceMigrationRouter.post(
   requirePermission('migration:read'),
   async (c) => {
     const id = c.req.param('id')
-    const body = (await c.req.json().catch(() => ({}))) as { profileTargets?: unknown }
+    const body = (await c.req.json().catch(() => ({}))) as {
+      profileTargets?: unknown
+      mainProfileSid?: unknown
+    }
     const targets = parseTargets(body.profileTargets)
     if (!targets)
       return c.json({ error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' }, 400)
+    const mainSid = parseMainSid(body.mainProfileSid)
+    if (mainSid === undefined)
+      return c.json({ error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' }, 400)
     const a = await latestAgent(id)
     if (!a?.report)
       return c.json({ error: 'Not Found', message: 'Aucun rapport d’agent pour ce poste' }, 404)
     const body2: MigrationProfilesResponse = {
-      profiles: await resolveProfileMap(a.report.profiles, targets),
+      profiles: await resolveProfileMap(a.report.profiles, targets, mainSid),
     }
     return c.json(body2)
   }
@@ -509,6 +522,9 @@ deviceMigrationRouter.post(
     const targets = parseTargets(body?.profileTargets)
     if (!targets)
       return c.json({ error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' }, 400)
+    const mainSid = parseMainSid(body?.mainProfileSid)
+    if (mainSid === undefined)
+      return c.json({ error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' }, 400)
     const d = await loadDevice(id)
     if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
 
@@ -550,12 +566,13 @@ deviceMigrationRouter.post(
       if (!a.report) return refuse('Aucun rapport d’agent : profils inconnus')
       if (a.report.agentVersion.localeCompare('1.2.0', undefined, { numeric: true }) < 0)
         return refuse(`Agent ${a.report.agentVersion} trop ancien : la bascule en place demande l’agent 1.2.0`)
-      profileMap = await resolveProfileMap(a.report.profiles, targets)
-      const broken = profileMap.find((m) => m.error)
-      if (broken)
-        return refuse(`Profil ${broken.oldAccount ?? broken.oldSid} : ${broken.error}`)
-      if (!profileMap.some((m) => m.newSid))
-        return refuse('Aucun profil à transférer : choisir le compte Ouihelp d’au moins un profil')
+      profileMap = await resolveProfileMap(a.report.profiles, targets, mainSid)
+      const main = profileMap.find((m) => m.action === 'migrate')
+      if (!main)
+        return refuse('Aucun profil d’utilisateur ONELA sur ce poste : rien à transférer')
+      if (main.error) return refuse(`Profil ${main.oldAccount ?? main.oldSid} : ${main.error}`)
+      if (!main.newSid)
+        return refuse(`Profil ${main.oldAccount ?? main.oldSid} : compte Ouihelp à choisir`)
     }
 
     const allRows = await db.select().from(deviceMigrations)
@@ -569,13 +586,16 @@ deviceMigrationRouter.post(
     const promptUser = body!.promptUser !== false
     const by = c.get('dbUser').email
     const now = new Date()
-    const transferred = profileMap
-      .filter((m) => m.newUpn)
-      .map((m) => `${m.oldUpn ?? m.oldAccount} → ${m.newUpn}`)
-      .join(', ')
+    const main = profileMap.find((m) => m.action === 'migrate')
+    const removed = profileMap.filter((m) => m.action === 'delete')
+    const removedLabel = removed.length
+      ? ` — ${removed.length} autre(s) profil(s) supprimé(s) du poste : ${removed
+          .map((m) => m.oldUpn ?? m.oldAccount ?? m.oldSid)
+          .join(', ')}`
+      : ' — aucun autre profil sur le poste'
     const what =
       mode === 'inplace'
-        ? `Bascule en place programmée par ${by} — profils : ${transferred}`
+        ? `Bascule en place programmée par ${by} — profil conservé ${main?.oldUpn ?? main?.oldAccount} → ${main?.newUpn}${removedLabel}`
         : `Réinstallation propre programmée par ${by}`
     await db
       .update(deviceMigrations)
