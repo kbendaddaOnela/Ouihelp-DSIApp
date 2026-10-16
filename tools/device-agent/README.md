@@ -97,7 +97,13 @@ Désinstaller : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\DSI\Dsi
 
 ## Bascule vers Ouihelp : réinstallation propre (agent ≥ 1.1.0, lot 3)
 
-Pilote : PC **Entra Joined** uniquement, exécution **dès qu'aucune session n'est ouverte**.
+Pilote : PC **Entra Joined** uniquement. Deux modes au choix à la programmation :
+
+- **Prévenir l'utilisateur** (défaut) : si une session est ouverte, l'agent affiche dans la session
+  une fenêtre « Démarrer maintenant / Plus tard (15 min) » avec le message DSI. La bascule ne part
+  que si l'utilisateur clique « Démarrer » (ou si personne n'est connecté). Jusqu'à **3 reports**,
+  après quoi le bouton « Plus tard » disparaît et la DSI voit « reports épuisés » pour relancer.
+- **Seulement hors session** : l'agent attend qu'aucune session ne soit ouverte.
 
 1. **DSI App** : fiche du poste > « Programmer la réinstallation ». L'agent repasse toutes les 15 min.
 2. **Agent** (statut *staging*) : dès la programmation, il neutralise la **mise en veille**, la

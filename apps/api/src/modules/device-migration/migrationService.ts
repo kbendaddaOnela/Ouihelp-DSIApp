@@ -1,10 +1,11 @@
 import { createHash, randomBytes, randomInt } from 'crypto'
 import { eq } from 'drizzle-orm'
-import type {
-  DeviceEntraObject,
-  DeviceMigrationRun,
-  MigrationStatus,
-  MigrationStep,
+import {
+  MIGRATION_MAX_SNOOZES,
+  type DeviceEntraObject,
+  type DeviceMigrationRun,
+  type MigrationStatus,
+  type MigrationStep,
 } from '@dsi-app/shared'
 import { db } from '../../db/index'
 import { getMsToken, onelaCreds, ouihelpCreds } from '../inventory/syncService'
@@ -79,6 +80,9 @@ export function toMigrationRun(r: DeviceMigrationRow): DeviceMigrationRun | null
     error: r.migrationError,
     steps: parseSteps(r.migrationSteps),
     hasBreakglass: !!r.breakglassPassword,
+    promptUser: r.migrationPromptUser === 1,
+    snoozeCount: r.migrationSnoozes,
+    snoozeExhausted: r.migrationSnoozes >= MIGRATION_MAX_SNOOZES,
   }
 }
 

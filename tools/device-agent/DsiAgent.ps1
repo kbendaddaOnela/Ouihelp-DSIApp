@@ -34,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.3'
+$AgentVersion = '1.1.4'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -736,6 +736,8 @@ if ($ok) {
 '@
 
 function Remove-MigrationPayload {
+  Remove-Item $PromptScript, $PromptChoice -Force -ErrorAction SilentlyContinue
+  $null = & schtasks.exe /Delete /TN 'DSI\Avertissement migration' /F 2>$null
   Remove-Item $PayloadDir -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item $ResetCmd -Force -ErrorAction SilentlyContinue
   if (Test-Path "$ResetCfg.dsi-backup") { Move-Item "$ResetCfg.dsi-backup" $ResetCfg -Force }
@@ -785,13 +787,75 @@ function New-MigrationPayload($Order) {
   return $wifiCount
 }
 
+# Marqueur d'accord de l'utilisateur, persistant d'un passage à l'autre (SYSTEM)
+$ConsentMarker = Join-Path $MigDir 'consented'
+# Fichiers d'échange avec la session utilisateur : dans C:\Users\Public, seul endroit où un
+# utilisateur standard peut écrire (C:\ProgramData\DSI est réservé à SYSTEM/Administrateurs).
+$PromptScript = Join-Path $env:PUBLIC 'dsi-maj-pc.ps1'
+$PromptChoice = Join-Path $env:PUBLIC 'dsi-maj-choix.txt'
+$PromptSnoozeUntil = Join-Path $MigDir 'snooze-until'
+
+# Affiche à l'utilisateur connecté, dans SA session, une fenêtre « Démarrer / Plus tard ».
+# Lancée depuis SYSTEM via une tâche planifiée à jeton interactif (pas de mot de passe stocké).
+function Show-MigrationPrompt([string]$User, $Order) {
+  $allowSnooze = if ($Order.snoozeCount -lt $Order.maxSnoozes) { '$true' } else { '$false' }
+  $later = [int]$Order.snoozeMinutes
+  $dialog = @"
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+`$choice = '$PromptChoice'
+`$msg = @'
+$($Order.promptMessage)
+'@
+`$f = New-Object System.Windows.Forms.Form
+`$f.Text = 'Mise a jour de votre PC - DSI'
+`$f.Size = New-Object System.Drawing.Size(520, 240)
+`$f.StartPosition = 'CenterScreen'
+`$f.TopMost = `$true
+`$f.FormBorderStyle = 'FixedDialog'
+`$f.MaximizeBox = `$false; `$f.MinimizeBox = `$false
+`$l = New-Object System.Windows.Forms.Label
+`$l.Text = `$msg
+`$l.Size = New-Object System.Drawing.Size(480, 120)
+`$l.Location = New-Object System.Drawing.Point(20, 20)
+`$l.Font = New-Object System.Drawing.Font('Segoe UI', 11)
+`$f.Controls.Add(`$l)
+`$go = New-Object System.Windows.Forms.Button
+`$go.Text = 'Demarrer maintenant'
+`$go.Size = New-Object System.Drawing.Size(180, 36)
+`$go.Location = New-Object System.Drawing.Point(300, 150)
+`$go.Add_Click({ Set-Content -Path `$choice -Value 'start' -Encoding ASCII; `$f.Close() })
+`$f.Controls.Add(`$go)
+if ($allowSnooze) {
+  `$later = New-Object System.Windows.Forms.Button
+  `$later.Text = 'Plus tard ($later min)'
+  `$later.Size = New-Object System.Drawing.Size(150, 36)
+  `$later.Location = New-Object System.Drawing.Point(140, 150)
+  `$later.Add_Click({ Set-Content -Path `$choice -Value 'snooze' -Encoding ASCII; `$f.Close() })
+  `$f.Controls.Add(`$later)
+}
+[System.Windows.Forms.Application]::Run(`$f)
+"@
+  Set-Content -Path $PromptScript -Value $dialog -Encoding UTF8
+  Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
+  try {
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PromptScript`""
+    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName 'DSI\Avertissement migration' -Action $action -Principal $principal -Force | Out-Null
+    Start-ScheduledTask -TaskName 'DSI\Avertissement migration'
+    Write-Log "Avertissement affiché à $User"
+  } catch {
+    Write-Log "Affichage de l'avertissement impossible : $($_.Exception.Message)"
+  }
+}
+
 function Start-Reset {
   if (-not (Test-Path (Join-Path $PayloadDir 'unattend.xml')) -or -not (Test-Path $ResetCfg)) {
     Send-Progress 'reinitialisation' 'error' 'Fichiers de bascule absents de C:\Recovery\OEM : préparation à refaire' @{ fatal = $true }
     return
   }
   $user = Get-InteractiveUser
-  if ($user) { Write-Log "Bascule prête mais session ouverte ($user) : nouvel essai au prochain passage"; return }
+  # Session ouverte : on ne bascule que si l'utilisateur a cliqué « Démarrer » (marqueur persistant)
+  if ($user -and -not (Test-Path $ConsentMarker)) { Write-Log "Bascule prête, session ouverte ($user) sans accord : nouvel essai au prochain passage"; return }
   # Compte rendu AVANT : la réinitialisation peut couper l'agent à tout moment
   Send-Progress 'reinitialisation' 'info' 'Réinitialisation de Windows lancée (Supprimer tout)' @{ resetTriggered = $true }
   try {
@@ -837,7 +901,35 @@ function Invoke-Migration($Order) {
         # Dès la préparation, le PC ne doit plus s'endormir (session fermée = écran de verrouillage)
         Disable-Sleep
         $user = Get-InteractiveUser
-        if ($user) { Send-Progress 'attente' 'info' "Session ouverte ($user) : la préparation attend qu'elle soit fermée"; return }
+        if ($user) {
+          if (-not $Order.promptUser) {
+            Send-Progress 'attente' 'info' "Session ouverte ($user) : la préparation attend qu'elle soit fermée"; return
+          }
+          # Mode « session ouverte » : on prévient l'utilisateur et on attend son accord
+          $choice = if (Test-Path $PromptChoice) { (Get-Content $PromptChoice -Raw -ErrorAction SilentlyContinue).Trim() } else { $null }
+          if ($choice -eq 'start') {
+            Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
+            Set-Content -Path $ConsentMarker -Value (Get-Date).ToString('o') -Encoding ASCII
+            Send-Progress 'accord' 'ok' "$user a cliqué « Démarrer » : préparation en cours"
+            # on poursuit la préparation ci-dessous
+          }
+          elseif ($choice -eq 'snooze') {
+            Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
+            Set-Content -Path $PromptSnoozeUntil -Value (Get-Date).AddMinutes($Order.snoozeMinutes).ToString('o') -Encoding ASCII
+            Send-Progress 'report' 'info' "Mise à jour reportée par $user" @{ snoozed = $true }
+            return
+          }
+          else {
+            # Pas encore de réponse : on (ré)affiche l'avertissement, sauf pendant un report en cours
+            $until = if (Test-Path $PromptSnoozeUntil) { try { [datetime](Get-Content $PromptSnoozeUntil -Raw) } catch { [datetime]::MinValue } } else { [datetime]::MinValue }
+            if ((Get-Date) -ge $until) {
+              Show-MigrationPrompt $user $Order
+              Send-Progress 'avertissement' 'info' "Avertissement affiché à $user (en attente de son accord)"
+            }
+            return
+          }
+        }
         if (-not (Test-PowerOk)) { Send-Progress 'attente' 'info' 'Sur batterie sous 50 % : en attente du secteur'; return }
         if ((Get-WinreEnabled) -eq $false) { Send-Progress 'controle' 'error' 'WinRE désactivé : réinitialisation impossible' @{ fatal = $true }; return }
         try {

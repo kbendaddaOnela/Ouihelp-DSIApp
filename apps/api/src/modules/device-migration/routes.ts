@@ -485,6 +485,7 @@ deviceMigrationRouter.post(
     if (invalid) return refuse(`Nom Ouihelp invalide (${target.name}) : ${invalid}`)
     if (target.conflict) return refuse(`Nom ${target.name} déjà attribué à ${target.conflict}`)
 
+    const promptUser = body.promptUser !== false
     const by = c.get('dbUser').email
     const now = new Date()
     await db
@@ -504,9 +505,11 @@ deviceMigrationRouter.post(
             step: 'programmation',
             status: 'info',
             source: 'dsi',
-            message: `Réinstallation propre programmée par ${by} — futur nom ${target.name}`,
+            message: `Réinstallation propre programmée par ${by} — futur nom ${target.name}${promptUser ? ' — avec avertissement utilisateur' : ' — hors session'}`,
           },
         ]),
+        migrationPromptUser: promptUser ? 1 : 0,
+        migrationSnoozes: 0,
         breakglassPassword: generateBreakglassPassword(),
         migrationTokenHash: null,
         hardwareHash: null,
