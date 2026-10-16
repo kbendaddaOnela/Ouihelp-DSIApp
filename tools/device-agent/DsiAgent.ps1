@@ -34,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.2'
+$AgentVersion = '1.1.3'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -420,7 +420,16 @@ function Invoke-Checkin {
     $state.nextCheckinAt = (Get-Date).AddMinutes($minutes).ToString('o')
     Write-Log "Check-in OK, prochain dans $minutes min"
     # Ordre de bascule (lot 3) ; $null = : aucune sortie ne doit polluer le retour de la fonction
-    if ($res.migration) { $null = Invoke-Migration $res.migration }
+    if ($res.migration) {
+      $null = Invoke-Migration $res.migration
+    }
+    elseif (Test-Path $PayloadDir) {
+      # Plus de bascule active (échec ou annulation côté serveur) mais des fichiers subsistent
+      # dans C:\Recovery\OEM (PPKG, clés Wi-Fi en clair, ResetConfig) : on les retire.
+      Remove-MigrationPayload
+      Restore-Sleep
+      Write-Log 'Bascule terminée côté serveur : fichiers de bascule retirés de C:\Recovery\OEM'
+    }
   } catch {
     $status = $null
     if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
