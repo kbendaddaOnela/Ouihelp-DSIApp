@@ -65,6 +65,8 @@ const ACTIVE: MigrationStatus[] = [
 const CANCELLABLE: MigrationStatus[] = ['scheduled', 'staging', 'staged']
 /** Sans nouvelles du poste au-delà, la réinstallation a probablement buté (WinRE, réseau…) */
 const RESET_SILENCE_MS = 3 * 3600_000
+/** Version minimale de l'agent pour une bascule en place (même garde-fou que l'API). */
+const INPLACE_AGENT_VERSION = '1.2.1'
 
 // ── PPKG Ouihelp ─────────────────────────────────────────────────────────────
 
@@ -178,9 +180,11 @@ function blockers(d: DeviceMigrationRecord, mode: MigrationMode): string[] {
     if (d.agent.silent) b.push('Agent silencieux depuis plus de 24 h')
     if (
       mode === 'inplace' &&
-      d.agent.report.agentVersion.localeCompare('1.2.0', undefined, { numeric: true }) < 0
+      d.agent.report.agentVersion.localeCompare(INPLACE_AGENT_VERSION, undefined, {
+        numeric: true,
+      }) < 0
     )
-      b.push(`Agent ${d.agent.report.agentVersion} : 1.2.0 requis`)
+      b.push(`Agent ${d.agent.report.agentVersion} : ${INPLACE_AGENT_VERSION} requis`)
     if (mode === 'reset') {
       if (d.agent.report.winreEnabled === false) b.push('WinRE désactivé')
       if (

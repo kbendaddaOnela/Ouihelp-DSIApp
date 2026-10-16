@@ -170,7 +170,7 @@ intervention sur place.
 Le PPKG se téléverse dans la DSI App, bouton « PPKG Ouihelp ».
 
 
-## Bascule vers Ouihelp : mode « en place » (agent ≥ 1.2.0)
+## Bascule vers Ouihelp : mode « en place » (agent ≥ 1.2.1)
 
 **Windows, les applications et les fichiers restent en place.** Le poste quitte ONELA, reçoit le
 PPKG Ouihelp, et chaque profil Windows est donné au compte Ouihelp choisi par la DSI : l'utilisateur
