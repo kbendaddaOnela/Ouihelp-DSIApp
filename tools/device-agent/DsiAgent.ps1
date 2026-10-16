@@ -37,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.2'
+$AgentVersion = '1.2.3'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1017,12 +1017,30 @@ function Start-PromptViaTask([string]$User, [string]$Exe, [string]$Arguments) {
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 4)
     Register-ScheduledTask -TaskPath $PromptTaskPath -TaskName $PromptTaskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
     Start-ScheduledTask -TaskPath $PromptTaskPath -TaskName $PromptTaskName
-    Start-Sleep -Seconds 5
-    if (Get-Process -Name 'DsiMajPc' -ErrorAction SilentlyContinue) { return 'OK' }
-    $info = Get-ScheduledTaskInfo -TaskPath $PromptTaskPath -TaskName $PromptTaskName
-    return ('fenêtre absente (résultat 0x{0:X})' -f ([int64]$info.LastTaskResult -band 4294967295))
+    return 'OK'
   } catch {
     return "erreur $($_.Exception.Message)"
+  }
+}
+
+# Résultat de la dernière exécution de la tâche d'avertissement, pour le journal.
+function Get-PromptTaskResult {
+  $info = Safe 'tacheAvertissement' { Get-ScheduledTaskInfo -TaskPath $PromptTaskPath -TaskName $PromptTaskName }
+  if (-not $info) { return 'tâche absente' }
+  return ('résultat 0x{0:X}' -f ([int64]$info.LastTaskResult -band 4294967295))
+}
+
+# Attend que la fenêtre soit réellement là. Un seul contrôle 5 s après le lancement était
+# trompeur : sur un poste qui vient d'être réinstallé, le premier démarrage de l'exe (WinForms,
+# compilé sur place) prend plus longtemps - l'agent déclarait un échec alors que l'utilisateur
+# avait la fenêtre devant lui. Une réponse déjà donnée compte aussi comme un succès.
+function Wait-PromptWindow([int]$Seconds) {
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  while ($true) {
+    if (Get-Process -Name 'DsiMajPc' -ErrorAction SilentlyContinue) { return $true }
+    if (Test-Path $PromptChoice) { return $true }
+    if ((Get-Date) -ge $deadline) { return $false }
+    Start-Sleep -Seconds 2
   }
 }
 
@@ -1039,13 +1057,14 @@ function Show-MigrationPrompt([string]$User, $Order) {
     Initialize-UserSessionLauncher
     $lines = [DsiNative.UserSession]::Launch($cmd)
     Write-Log "Avertissement ($User) : $($lines -join ' ; ')"
-    if (($lines | Where-Object { $_ -like '* OK' }).Count -gt 0) { return 'shown' }
+    # On ne se fie pas au compte rendu du lancement mais à la présence de la fenêtre.
+    if (Wait-PromptWindow 20) { return 'shown' }
     # Secours : tâche planifiée au nom de l'utilisateur, lancée par le Planificateur lui-même
     # (donc hors du job de l'agent), dans sa session interactive.
     $viaTask = Start-PromptViaTask $User $PromptExe "`"$PromptChoice`" `"$PromptMsg`" $([int]$Order.snoozeMinutes) $allow"
     Write-Log "Avertissement ($User) par tâche planifiée : $viaTask"
-    if ($viaTask -eq 'OK') { return 'shown' }
-    $script:PromptError = "$($lines -join ' ; ') ; tâche planifiée : $viaTask"
+    if ($viaTask -eq 'OK' -and (Wait-PromptWindow 40)) { return 'shown' }
+    $script:PromptError = "$($lines -join ' ; ') ; tâche planifiée : $viaTask, $(Get-PromptTaskResult)"
     return 'failed'
   } catch {
     $script:PromptError = $_.Exception.Message
