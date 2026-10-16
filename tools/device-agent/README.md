@@ -124,7 +124,16 @@ Pilote : PC **Entra Joined** uniquement, exécution **dès qu'aucune session n'e
 
    Trace : `C:\DSI\firstlogon.log`.
 7. **Serveur** (*done*) : supprime les objets Intune et Entra ONELA, puis importe l'empreinte dans
-   Autopilot Ouihelp (étiquette `ONELA-BASCULE`).
+   Autopilot Ouihelp avec l'étiquette **`OUIHELP`**, la même que le script de migration Intune
+   (groupes dynamiques). Elle se change avec la variable `DEVICE_MIGRATION_GROUP_TAG`.
+
+**Nom du poste chez Ouihelp** : `ONL-<site>-<fin du n° de série>`, par exemple `ONL-AIX-G255FX3`
+pour une agence et `ONL-SIE-6HWLFH4` pour le siège ONELA, 15 caractères au maximum.
+- Il est calculé par la DSI App, d'après le trigramme du nom actuel ou l'agence de l'utilisateur.
+- Il est modifiable dans la fiche du poste, et figé à la programmation.
+- Il est inscrit dans l'`unattend.xml`, puis réappliqué **après** l'installation du PPKG : **le nom
+  saisi dans le PPKG est ignoré**, par exemple `ONL-%SERIAL%`, que l'assistant WCD impose.
+- `FirstLogon.ps1` force aussi `AllowAddProvisioningPackage=1` avant d'installer le PPKG.
 
 **À valider en pilote** (non testé sur un vrai PC) :
 - que la réinitialisation déclenchée par le MDM exécute bien `ResetConfig.xml` ;
@@ -140,7 +149,7 @@ intervention sur place.
 - Ouihelp : `DeviceManagementServiceConfig.ReadWrite.All`.
 
 **PPKG** (Windows Configuration Designer > « Provisionner des appareils de bureau ») :
-- nom `ONL-%SERIAL%`, OOBE masqué ;
+- nom `ONL-%SERIAL%` (imposé par l'assistant, ignoré ensuite), OOBE masqué ;
 - **Inscrire dans Azure AD** avec un jeton en bloc obtenu avec un compte admin Ouihelp ;
 - **pas de compte administrateur local** (l'agent crée `dsi-secours`), **pas de Wi-Fi** (ceux du
   poste sont restaurés).

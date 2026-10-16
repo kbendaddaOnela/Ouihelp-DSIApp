@@ -391,6 +391,7 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
       ouihelpTenantId: '',
       breakglassUser: BREAKGLASS_USER,
       breakglassPassword: '',
+      computerName: '',
     }
   }
   const [pkg] = await db
@@ -425,6 +426,7 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
     ouihelpTenantId: (process.env['AZURE_TENANT_ID'] ?? '').toLowerCase(),
     breakglassUser: BREAKGLASS_USER,
     breakglassPassword: d.breakglassPassword ?? '',
+    computerName: d.targetName ?? '',
     ...(reportToken ? { reportToken } : {}),
   }
 }

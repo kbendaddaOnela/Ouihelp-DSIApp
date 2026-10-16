@@ -34,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.0'
+$AgentVersion = '1.1.1'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -511,7 +511,7 @@ function Write-Utf8([string]$Path, [string]$Text, [bool]$Bom = $false) {
 # unattend.xml du nouveau Windows. Fonction pure (testable hors Windows).
 function New-UnattendXml {
   param(
-    [string]$Arch, [string]$AdminGroup, [string]$Password, [string]$UserName,
+    [string]$Arch, [string]$AdminGroup, [string]$Password, [string]$UserName, [string]$ComputerName,
     [string]$UiLanguage, [string]$InputLocale, [string]$SystemLocale, [string]$UserLocale, [string]$TimeZone
   )
   $e = { param($v) [Security.SecurityElement]::Escape($v) }
@@ -521,6 +521,9 @@ function New-UnattendXml {
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
   <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" $common>
+      <ComputerName>$(& $e $ComputerName)</ComputerName>
+    </component>
     <component name="Microsoft-Windows-Deployment" $common>
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
@@ -650,6 +653,10 @@ try {
   if (-not $online) { throw 'Pas de réseau 20 min après la réinstallation (Wi-Fi non restauré ?)' }
   Report 'reseau' 'ok' "Windows réinstallé, réseau rétabli ($($wifi.Count) profil(s) Wi-Fi restauré(s))"
 
+  # Une stratégie peut interdire l'ajout de PPKG (correctif repris du script de migration Intune)
+  $sec = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Security'
+  if (-not (Test-Path $sec)) { $null = New-Item -Path $sec -Force }
+  Set-ItemProperty -Path $sec -Name AllowAddProvisioningPackage -Value 1 -Type DWord
   $null = Install-ProvisioningPackage -PackagePath (Join-Path $Root 'ouihelp.ppkg') -ForceInstall -QuietInstall
   Report 'ppkg' 'info' 'PPKG Ouihelp installé, attente de la jonction à Entra Ouihelp'
 
@@ -669,7 +676,13 @@ try {
     }
   } catch { Log "Clé BitLocker non enregistrée chez Ouihelp : $($_.Exception.Message)" }
 
-  Report 'jonction' 'ok' 'Joint à Entra Ouihelp ; redémarrage vers l''écran de connexion' $true
+  # Nom DSI (ONL-<site>-<série>) appliqué APRÈS le PPKG, qui peut imposer le sien
+  if ($cfg.computerName -and $env:COMPUTERNAME -ne $cfg.computerName) {
+    try { Rename-Computer -NewName $cfg.computerName -Force; Log "Renommé en $($cfg.computerName) (effectif au redémarrage)" }
+    catch { Log "Renommage en $($cfg.computerName) impossible : $($_.Exception.Message)" }
+  }
+
+  Report 'jonction' 'ok' "Joint à Entra Ouihelp, nom $($cfg.computerName) ; redémarrage vers l'écran de connexion" $true
   $ok = $true
 } catch {
   Report 'echec' 'error' $_.Exception.Message
@@ -712,6 +725,7 @@ function New-MigrationPayload($Order) {
     apiUrl          = $ApiUrl.TrimEnd('/')
     reportToken     = $Order.reportToken
     ouihelpTenantId = $Order.ouihelpTenantId
+    computerName    = $Order.computerName
     hostname        = $env:COMPUTERNAME
   }
   Write-Utf8 (Join-Path $PayloadDir 'migration.json') ($cfg | ConvertTo-Json)
@@ -720,7 +734,7 @@ function New-MigrationPayload($Order) {
   $adminGroup = (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544').Translate([Security.Principal.NTAccount]).Value.Split('\')[-1]
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
   $inputLocale = Safe 'inputLocale' { (Get-WinUserLanguageList)[0].InputMethodTips[0] } '040c:0000040c'
-  $unattend = New-UnattendXml -Arch $arch -AdminGroup $adminGroup -Password $Order.breakglassPassword -UserName $Order.breakglassUser `
+  $unattend = New-UnattendXml -Arch $arch -AdminGroup $adminGroup -Password $Order.breakglassPassword -UserName $Order.breakglassUser -ComputerName $Order.computerName `
     -UiLanguage (Get-UICulture).Name -InputLocale $inputLocale -SystemLocale (Get-WinSystemLocale).Name `
     -UserLocale (Get-Culture).Name -TimeZone (Get-TimeZone).Id
   Write-Utf8 (Join-Path $PayloadDir 'unattend.xml') $unattend

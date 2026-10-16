@@ -115,6 +115,7 @@ function exportCsv(devices: DeviceMigrationRecord[]) {
     ['Agence', (d) => d.agency],
     ['Agence de l’utilisateur', (d) => d.onelaOfficeLocation],
     ['Région', (d) => d.region],
+    ['Nom Ouihelp', (d) => d.targetName],
     ['Dernière activité', (d) => fmtDate(d.lastActivityAt)],
     ['Intune ONELA', (d) => (d.onelaIntuneId ? 'oui' : 'non')],
     ['Autopilot ONELA', (d) => (d.onelaAutopilotId ? 'oui' : 'non')],
