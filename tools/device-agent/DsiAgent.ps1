@@ -34,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.1'
+$AgentVersion = '1.1.2'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -499,6 +499,34 @@ function Test-PowerOk {
   return ($b.EstimatedChargeRemaining -ge 50)
 }
 
+# Session fermée, le PC se met en veille sur l'écran de verrouillage et l'agent ne tourne
+# plus → bascule figée. On neutralise veille / mise en veille prolongée / extinction de
+# l'écran sur secteur ET sur batterie, le temps de la bascule. Idempotent, rejoué à chaque
+# passage. Réglages perdus de toute façon à la réinstallation ; on les rétablit à l'annulation.
+function Disable-Sleep {
+  foreach ($c in @(
+    'standby-timeout-ac 0', 'standby-timeout-dc 0',
+    'hibernate-timeout-ac 0', 'hibernate-timeout-dc 0',
+    'monitor-timeout-ac 0', 'monitor-timeout-dc 0',
+    'disk-timeout-ac 0', 'disk-timeout-dc 0'
+  )) {
+    $null = & powercfg.exe /change $c.Split(' ')[0] $c.Split(' ')[1] 2>$null
+  }
+  # Fermeture du capot = « ne rien faire » sur secteur et sur batterie (indices 0/1)
+  foreach ($pa in @('SUB_BUTTONS LIDACTION')) {
+    $null = & powercfg.exe /setacvalueindex SCHEME_CURRENT $pa.Split(' ')[0] $pa.Split(' ')[1] 0 2>$null
+    $null = & powercfg.exe /setdcvalueindex SCHEME_CURRENT $pa.Split(' ')[0] $pa.Split(' ')[1] 0 2>$null
+  }
+  $null = & powercfg.exe /setactive SCHEME_CURRENT 2>$null
+  Write-Log 'Veille / extinction écran / action capot neutralisées pour la bascule'
+}
+
+function Restore-Sleep {
+  # Rétablit les délais par défaut du profil équilibré (après une annulation)
+  $null = & powercfg.exe /restoredefaultschemes 2>$null
+  Write-Log 'Réglages d''alimentation par défaut rétablis'
+}
+
 function Get-HardwareHash {
   $d = Get-CimInstance -Namespace 'root/cimv2/mdm/dmmap' -ClassName 'MDM_DevDetail_Ext01' -Filter "InstanceID='Ext' AND ParentID='./DevDetail'"
   return $d.DeviceHardwareData
@@ -792,10 +820,13 @@ function Invoke-Migration($Order) {
       'cancelled' {
         if ((Test-Path $PayloadDir) -or (Test-Path $MigDir)) {
           Remove-MigrationPayload
+          Restore-Sleep
           Send-Progress 'nettoyage' 'ok' 'Bascule annulée : fichiers retirés du poste'
         }
       }
       'staging' {
+        # Dès la préparation, le PC ne doit plus s'endormir (session fermée = écran de verrouillage)
+        Disable-Sleep
         $user = Get-InteractiveUser
         if ($user) { Send-Progress 'attente' 'info' "Session ouverte ($user) : la préparation attend qu'elle soit fermée"; return }
         if (-not (Test-PowerOk)) { Send-Progress 'attente' 'info' 'Sur batterie sous 50 % : en attente du secteur'; return }
@@ -811,8 +842,8 @@ function Invoke-Migration($Order) {
         Send-Progress 'preparation' 'ok' "Prêt : PPKG vérifié, $wifiCount Wi-Fi exporté(s), fichiers déposés dans C:\Recovery\OEM" @{ staged = $true; hardwareHash = $hash }
         Wait-ForReady
       }
-      { $_ -in 'staged', 'cleanup' } { Wait-ForReady }
-      'ready' { Start-Reset }
+      { $_ -in 'staged', 'cleanup' } { Disable-Sleep; Wait-ForReady }
+      'ready' { Disable-Sleep; Start-Reset }
     }
   } catch {
     Write-Log "Bascule : erreur inattendue $($_.Exception.Message)"

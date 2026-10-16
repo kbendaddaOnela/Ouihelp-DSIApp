@@ -100,7 +100,10 @@ Désinstaller : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\DSI\Dsi
 Pilote : PC **Entra Joined** uniquement, exécution **dès qu'aucune session n'est ouverte**.
 
 1. **DSI App** : fiche du poste > « Programmer la réinstallation ». L'agent repasse toutes les 15 min.
-2. **Agent** (statut *staging*) : aucune session ouverte, WinRE activé, secteur ou batterie ≥ 50 %.
+2. **Agent** (statut *staging*) : dès la programmation, il neutralise la **mise en veille**, la
+   mise en veille prolongée, l'extinction de l'écran et l'action de fermeture du capot (via
+   `powercfg`) — session fermée, le PC resterait sinon sur l'écran de verrouillage et s'endormirait.
+   Contrôles : aucune session ouverte, WinRE activé, secteur ou batterie ≥ 50 %.
    Il télécharge alors le PPKG Ouihelp (avec son jeton) et vérifie son SHA-256. Il exporte les Wi-Fi
    **clés comprises**, relève l'empreinte Autopilot, puis dépose dans `C:\Recovery\OEM` :
    - `ResetConfig.xml` : l'original du constructeur est sauvegardé en `.dsi-backup` ;
