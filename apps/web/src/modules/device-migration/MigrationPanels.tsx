@@ -9,7 +9,14 @@ import {
   XCircle,
   Info,
 } from 'lucide-react'
-import type { DeviceMigrationRecord, MigrationStatus } from '@dsi-app/shared'
+import type {
+  DeviceAppCatalogEntry,
+  DeviceMigrationRecord,
+  DeviceMigrationRun,
+  MigrationMode,
+  MigrationProfileMapping,
+  MigrationStatus,
+} from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
@@ -17,7 +24,11 @@ import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { CopyButton } from '@/modules/migration/components/CopyButton'
 import { deviceMigrationApi } from './api'
 import {
+  useAbandonMigration,
+  useAppCatalog,
   useCancelMigration,
+  useProfilePreview,
+  useUpdateAppRules,
   useMigrationPackage,
   useScheduleMigration,
   useUpdateTargetName,
@@ -143,25 +154,159 @@ export function PackagePanel({ canWrite }: { canWrite: boolean }) {
 
 // ── Bascule d'un poste ───────────────────────────────────────────────────────
 
+/** Libellé du statut, adapté au mode (« resetting » = bascule en cours pour le mode en place). */
+export function migrationLabel(m: DeviceMigrationRun): string {
+  if (m.mode === 'inplace') {
+    if (m.status === 'ready') return 'Bascule : imminente'
+    if (m.status === 'resetting') return 'Bascule : en cours sur le poste'
+  }
+  return MIGRATION_CFG[m.status].label
+}
+
 /** Raisons de ne pas pouvoir programmer (mêmes garde-fous que l'API, affichés d'avance). */
-function blockers(d: DeviceMigrationRecord): string[] {
+function blockers(d: DeviceMigrationRecord, mode: MigrationMode): string[] {
   const b: string[] = []
   if (!d.targetName) b.push('Nom Ouihelp à saisir')
   if (d.targetNameConflict) b.push(`Nom déjà attribué à ${d.targetNameConflict}`)
-  if (d.joinType !== 'entra_joined') b.push('Pilote limité aux PC Entra Joined')
+  if (mode === 'reset' && d.joinType !== 'entra_joined')
+    b.push('Réinstallation limitée aux PC Entra Joined')
+  if (mode === 'inplace' && d.joinType !== 'entra_joined' && d.joinType !== 'hybrid')
+    b.push('Bascule en place limitée aux PC Entra Joined ou hybrides')
   if (!d.serialNumber) b.push('N° de série inconnu')
   if (!d.agent) b.push('Agent DSI non installé')
   else {
     if (d.agent.silent) b.push('Agent silencieux depuis plus de 24 h')
-    if (d.agent.report.winreEnabled === false) b.push('WinRE désactivé')
     if (
-      d.agent.report.network.wifi &&
-      d.agent.report.network.wifiProfiles.length === 0 &&
-      !d.agent.report.network.ethernet
+      mode === 'inplace' &&
+      d.agent.report.agentVersion.localeCompare('1.2.0', undefined, { numeric: true }) < 0
     )
-      b.push('Aucun profil Wi-Fi enregistré à restaurer')
+      b.push(`Agent ${d.agent.report.agentVersion} : 1.2.0 requis`)
+    if (mode === 'reset') {
+      if (d.agent.report.winreEnabled === false) b.push('WinRE désactivé')
+      if (
+        d.agent.report.network.wifi &&
+        d.agent.report.network.wifiProfiles.length === 0 &&
+        !d.agent.report.network.ethernet
+      )
+        b.push('Aucun profil Wi-Fi enregistré à restaurer')
+    }
   }
   return b
+}
+
+const SOURCE_LABEL: Record<NonNullable<MigrationProfileMapping['source']>, string> = {
+  migration: 'compte créé par la DSI App',
+  mail: 'même adresse',
+  manual: 'saisi',
+}
+
+/** Profils ONELA du poste → compte Ouihelp qui en hérite. Éditable avant programmation. */
+function ProfileMap({
+  profiles,
+  editable,
+  targets,
+  setTargets,
+}: {
+  profiles: MigrationProfileMapping[]
+  editable: boolean
+  targets: Record<string, string | null>
+  setTargets: (t: Record<string, string | null>) => void
+}) {
+  const [editing, setEditing] = useState<string | null>(null)
+  const [value, setValue] = useState('')
+  if (profiles.length === 0)
+    return <p className="text-gray-500">Aucun profil d’utilisateur ONELA sur ce poste.</p>
+  const setTarget = (sid: string, upn: string | null | undefined) => {
+    const next = { ...targets }
+    if (upn === undefined) delete next[sid]
+    else next[sid] = upn
+    setTargets(next)
+  }
+  return (
+    <table className="w-full">
+      <thead>
+        <tr className="text-left text-gray-400">
+          <th className="py-1 pr-3 font-normal">Profil ONELA</th>
+          <th className="py-1 pr-3 font-normal">Données locales</th>
+          <th className="py-1 font-normal">Repris par le compte Ouihelp</th>
+        </tr>
+      </thead>
+      <tbody>
+        {profiles.map((p) => (
+          <tr key={p.oldSid} className="border-t border-gray-100 align-top">
+            <td className="py-1 pr-3 font-mono">{p.oldUpn ?? p.oldAccount ?? p.oldSid}</td>
+            <td className="py-1 pr-3">{p.localDataMb == null ? '—' : `${p.localDataMb} Mo`}</td>
+            <td className="py-1">
+              {editing === p.oldSid ? (
+                <span className="flex flex-wrap items-center gap-2">
+                  <input
+                    className="w-64 rounded-md border border-gray-300 px-2 py-1"
+                    placeholder="prenom.nom@ouihelp.fr"
+                    value={value}
+                    onChange={(e) => setValue(e.target.value.trim())}
+                  />
+                  <Button
+                    size="sm"
+                    disabled={!value.includes('@')}
+                    onClick={() => {
+                      setTarget(p.oldSid, value)
+                      setEditing(null)
+                    }}
+                  >
+                    OK
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setEditing(null)}>
+                    Annuler
+                  </Button>
+                </span>
+              ) : (
+                <span className="flex flex-wrap items-center gap-2">
+                  {p.newUpn ? (
+                    <span className="font-mono text-gray-800">{p.newUpn}</span>
+                  ) : p.error ? (
+                    <span className="text-red-600">{p.error}</span>
+                  ) : (
+                    <span className="text-gray-400">non transféré (profil laissé tel quel)</span>
+                  )}
+                  {p.newUpn && p.source && (
+                    <span className="text-gray-400">({SOURCE_LABEL[p.source]})</span>
+                  )}
+                  {editable && (
+                    <>
+                      <button
+                        className="text-primary-600 hover:underline"
+                        onClick={() => {
+                          setValue(p.newUpn ?? '')
+                          setEditing(p.oldSid)
+                        }}
+                      >
+                        Choisir le compte
+                      </button>
+                      {p.oldSid in targets ? (
+                        <button
+                          className="text-gray-500 hover:underline"
+                          onClick={() => setTarget(p.oldSid, undefined)}
+                        >
+                          Correspondance auto
+                        </button>
+                      ) : (
+                        <button
+                          className="text-gray-500 hover:underline"
+                          onClick={() => setTarget(p.oldSid, null)}
+                        >
+                          Ne pas transférer
+                        </button>
+                      )}
+                    </>
+                  )}
+                </span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
 }
 
 /** Futur nom chez Ouihelp (convention ONL-<site>-<n° de série>), modifiable hors bascule. */
@@ -244,56 +389,110 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
   const { confirm, alert } = useConfirm()
   const schedule = useScheduleMigration()
   const cancel = useCancelMigration()
+  const abandon = useAbandonMigration()
   const [secret, setSecret] = useState<{ user: string; password: string } | null>(null)
   // true : prévenir l'utilisateur connecté et attendre « Démarrer » ; false : seulement hors session
   const [promptUser, setPromptUser] = useState(true)
+  const [mode, setMode] = useState<MigrationMode>('inplace')
+  const [targets, setTargets] = useState<Record<string, string | null>>({})
   const m = d.migration
   const active = !!m && ACTIVE.includes(m.status)
-  const block = blockers(d)
+  const block = blockers(d, mode)
+  const preview = useProfilePreview(
+    d.id,
+    targets,
+    canWrite && !active && mode === 'inplace' && !!d.agent
+  )
+  const previewProfiles = preview.data?.profiles ?? []
+  const previewBlock =
+    mode === 'inplace' && preview.data
+      ? previewProfiles.find((p) => p.error)
+        ? 'Correspondance des profils à corriger'
+        : !previewProfiles.some((p) => p.newSid)
+          ? 'Aucun profil à transférer'
+          : null
+      : null
   const silentReset =
     m?.status === 'resetting' &&
     m.updatedAt &&
     Date.now() - new Date(m.updatedAt).getTime() > RESET_SILENCE_MS
 
   const onSchedule = async () => {
-    const res = await confirm({
-      title: `Réinstaller ${d.displayName ?? 'ce poste'} pour Ouihelp ?`,
-      tone: 'danger',
-      message: (
-        <div className="space-y-2 text-sm">
-          <p>
-            {promptUser
-              ? 'L’agent prévient l’utilisateur connecté et attend qu’il clique « Démarrer » (ou agit tout de suite si personne n’est connecté), '
-              : 'Dès qu’aucune session n’est ouverte, l’agent prépare le poste, '}
-            le serveur retire le poste d’Autopilot ONELA, puis{' '}
-            <strong>Windows est réinitialisé (« Supprimer tout »)</strong>.
-          </p>
-          <p>
-            Toutes les données locales sont <strong>effacées</strong>. Le poste rejoint ensuite
-            Entra et Intune Ouihelp tout seul ; l’utilisateur se connecte avec son compte Ouihelp.
-          </p>
-          <p>Annulation possible jusqu’à l’étape « prêt ».</p>
-        </div>
-      ),
-      checkbox: { label: 'J’ai compris que le poste sera entièrement effacé' },
-      confirmLabel: 'Programmer la réinstallation',
-    })
+    const trigger = promptUser
+      ? 'L’agent prévient l’utilisateur connecté et attend qu’il clique « Démarrer » (ou agit tout de suite si personne n’est connecté). '
+      : 'L’agent agit dès qu’aucune session n’est ouverte. '
+    const res =
+      mode === 'inplace'
+        ? await confirm({
+            title: `Basculer ${d.displayName ?? 'ce poste'} vers Ouihelp (en place) ?`,
+            message: (
+              <div className="space-y-2 text-sm">
+                <p>
+                  {trigger}Le serveur retire le poste d’Autopilot ONELA, puis le poste quitte ONELA,
+                  rejoint Entra et Intune Ouihelp avec le PPKG, et prend le nom{' '}
+                  <strong>{d.targetName}</strong>.
+                </p>
+                <p>
+                  <strong>Windows, applications et fichiers sont conservés.</strong> Chaque profil
+                  ONELA retenu est transféré au compte Ouihelp indiqué. Les applications décochées
+                  dans le catalogue « Applications » sont désinstallées.
+                </p>
+                <p>
+                  Deux redémarrages, puis l’utilisateur se connecte avec son adresse Ouihelp et
+                  retrouve son bureau. Annulation possible jusqu’à l’étape « prêt ».
+                </p>
+              </div>
+            ),
+            confirmLabel: 'Programmer la bascule',
+          })
+        : await confirm({
+            title: `Réinstaller ${d.displayName ?? 'ce poste'} pour Ouihelp ?`,
+            tone: 'danger',
+            message: (
+              <div className="space-y-2 text-sm">
+                <p>
+                  {trigger}Le serveur retire le poste d’Autopilot ONELA, puis{' '}
+                  <strong>Windows est réinitialisé (« Supprimer tout »)</strong>.
+                </p>
+                <p>
+                  Toutes les données locales sont <strong>effacées</strong>. Le poste rejoint
+                  ensuite Entra et Intune Ouihelp tout seul ; l’utilisateur se connecte avec son
+                  compte Ouihelp.
+                </p>
+                <p>Annulation possible jusqu’à l’étape « prêt ».</p>
+              </div>
+            ),
+            checkbox: { label: 'J’ai compris que le poste sera entièrement effacé' },
+            confirmLabel: 'Programmer la réinstallation',
+          })
     if (!res.confirmed) return
-    if (!res.checked) {
+    if (mode === 'reset' && !res.checked) {
       await alert({
         title: 'Non programmé',
         message: 'Cochez la case de confirmation pour programmer la réinstallation.',
       })
       return
     }
-    schedule.mutate({ id: d.id, promptUser })
+    schedule.mutate({ id: d.id, mode, promptUser, profileTargets: targets })
+  }
+
+  const onAbandon = async () => {
+    const res = await confirm({
+      title: 'Abandonner cette bascule ?',
+      tone: 'danger',
+      message:
+        'La bascule passe en échec dans la DSI App pour pouvoir en programmer une autre. Rien n’est fait sur le poste ni dans les tenants : à reprendre à la main.',
+      confirmLabel: 'Abandonner',
+    })
+    if (res.confirmed) abandon.mutate(d.id)
   }
 
   return (
     <div className="space-y-3 border-t border-gray-200 px-4 py-3 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 font-semibold text-gray-700">
-          <RotateCcw className="h-4 w-4" /> Bascule vers Ouihelp (réinstallation propre)
+          <RotateCcw className="h-4 w-4" /> Bascule vers Ouihelp
+          {m && (m.mode === 'inplace' ? ' (en place, profil conservé)' : ' (réinstallation propre)')}
           {m && (
             <span
               className={cn(
@@ -301,7 +500,7 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
                 MIGRATION_CFG[m.status].cls
               )}
             >
-              {MIGRATION_CFG[m.status].label}
+              {migrationLabel(m)}
             </span>
           )}
         </div>
@@ -327,20 +526,42 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
                 Annuler la bascule
               </Button>
             )}
+            {m && ['cleanup', 'ready', 'resetting', 'joining'].includes(m.status) && (
+              <Button size="sm" variant="outline" disabled={abandon.isPending} onClick={onAbandon}>
+                Abandonner
+              </Button>
+            )}
             {!active && (
               <Button
                 size="sm"
-                variant="destructive"
-                disabled={block.length > 0 || schedule.isPending}
+                variant={mode === 'reset' ? 'destructive' : 'default'}
+                disabled={
+                  block.length > 0 ||
+                  schedule.isPending ||
+                  (mode === 'inplace' && (!preview.data || !!previewBlock))
+                }
                 onClick={onSchedule}
               >
-                {m ? 'Reprogrammer' : 'Programmer la réinstallation'}
+                {m ? 'Reprogrammer' : mode === 'inplace' ? 'Programmer la bascule' : 'Programmer la réinstallation'}
               </Button>
             )}
           </div>
         )}
       </div>
 
+      {canWrite && !active && (
+        <div className="flex flex-wrap items-center gap-4 text-gray-600">
+          <span className="text-gray-400">Mode :</span>
+          <label className="flex items-center gap-1">
+            <input type="radio" checked={mode === 'inplace'} onChange={() => setMode('inplace')} />
+            En place (Windows, applications et profil conservés)
+          </label>
+          <label className="flex items-center gap-1">
+            <input type="radio" checked={mode === 'reset'} onChange={() => setMode('reset')} />
+            Réinstallation propre (tout est effacé)
+          </label>
+        </div>
+      )}
       {canWrite && !active && (
         <div className="flex flex-wrap items-center gap-4 text-gray-600">
           <span className="text-gray-400">Déclenchement :</span>
@@ -364,11 +585,36 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
 
       <TargetName d={d} canWrite={canWrite} locked={active} />
 
-      {!active && block.length > 0 && (
-        <p className="text-gray-500">Non programmable : {block.join(' · ')}</p>
+      {m?.mode === 'inplace' && m.profiles.length > 0 && (active || m.status === 'done') ? (
+        <ProfileMap profiles={m.profiles} editable={false} targets={{}} setTargets={() => {}} />
+      ) : (
+        canWrite &&
+        !active &&
+        mode === 'inplace' &&
+        d.agent &&
+        (preview.isLoading ? (
+          <Spinner />
+        ) : preview.error ? (
+          <p className="text-red-600">{(preview.error as Error).message}</p>
+        ) : (
+          <ProfileMap
+            profiles={previewProfiles}
+            editable
+            targets={targets}
+            setTargets={setTargets}
+          />
+        ))
       )}
-      {(schedule.error || cancel.error) && (
-        <p className="text-red-600">{((schedule.error ?? cancel.error) as Error).message}</p>
+
+      {!active && (block.length > 0 || previewBlock) && (
+        <p className="text-gray-500">
+          Non programmable : {[...block, ...(previewBlock ? [previewBlock] : [])].join(' · ')}
+        </p>
+      )}
+      {(schedule.error || cancel.error || abandon.error) && (
+        <p className="text-red-600">
+          {((schedule.error ?? cancel.error ?? abandon.error) as Error).message}
+        </p>
       )}
       {m?.error && (
         <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-800">
@@ -378,10 +624,9 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
       {silentReset && (
         <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
           <ShieldAlert className="h-4 w-4 shrink-0" />
-          Aucune nouvelle du poste depuis plus de 3 h après le lancement de la réinitialisation : il
-          est sans doute resté sur l’installation de Windows (Wi-Fi non restauré, script de
-          réinitialisation non exécuté). Intervention sur place avec le compte de secours ou un
-          compte Ouihelp.
+          {m?.mode === 'inplace'
+            ? 'Aucune nouvelle du poste depuis plus de 3 h après le début de la bascule : vérifier sur place (compte de secours .\\dsi-secours), puis « Abandonner » si besoin.'
+            : 'Aucune nouvelle du poste depuis plus de 3 h après le lancement de la réinitialisation : il est sans doute resté sur l’installation de Windows ou dans l’environnement de récupération. Intervention sur place, puis « Abandonner ».'}
         </div>
       )}
       {secret && (
@@ -395,7 +640,7 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
             <span className="font-mono">{secret.password}</span>{' '}
             <CopyButton text={secret.password} />
           </span>
-          <span className="text-gray-400">Renouvelé ensuite par LAPS Ouihelp.</span>
+          <span className="text-gray-400">Administrateur local créé par la bascule.</span>
         </div>
       )}
 
@@ -423,6 +668,141 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
             </li>
           ))}
         </ol>
+      )}
+    </div>
+  )
+}
+
+// ── Catalogue des applications (bascule en place) ───────────────────────────
+
+type AppFilter = 'all' | 'review' | 'keep' | 'remove'
+
+/**
+ * Applications vues par les agents, une règle par application pour tout le parc : cochée =
+ * conservée, décochée = désinstallée à la bascule en place. Jamais revue = conservée.
+ */
+export function AppsPanel({ canWrite }: { canWrite: boolean }) {
+  const { data, isLoading, error } = useAppCatalog(true)
+  const update = useUpdateAppRules()
+  const [q, setQ] = useState('')
+  const [filter, setFilter] = useState<AppFilter>('all')
+  const apps = data?.apps ?? []
+  const needle = q.trim().toLowerCase()
+  const visible = apps.filter((a: DeviceAppCatalogEntry) => {
+    if (needle && !`${a.name} ${a.publisher ?? ''}`.toLowerCase().includes(needle)) return false
+    if (filter === 'review') return a.keep === null
+    if (filter === 'keep') return a.keep === true
+    if (filter === 'remove') return a.keep === false
+    return true
+  })
+  const toReview = apps.filter((a) => a.keep === null).length
+  const toRemove = apps.filter((a) => a.keep === false).length
+
+  return (
+    <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-gray-700">
+          Applications du parc ({apps.length}) — {toRemove} à désinstaller, {toReview} à revoir
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            className="w-56 rounded-md border border-gray-300 px-2 py-1"
+            placeholder="Rechercher une application"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <select
+            className="rounded-md border border-gray-300 px-2 py-1"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as AppFilter)}
+          >
+            <option value="all">Toutes</option>
+            <option value="review">À revoir</option>
+            <option value="keep">Conservées</option>
+            <option value="remove">À désinstaller</option>
+          </select>
+          {canWrite && visible.some((a) => a.keep === null) && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={update.isPending}
+              onClick={() =>
+                update.mutate({
+                  keys: visible.filter((a) => a.keep === null).map((a) => a.key),
+                  keep: true,
+                })
+              }
+            >
+              Marquer les affichées « à revoir » comme conservées
+            </Button>
+          )}
+        </div>
+      </div>
+      <p className="text-gray-500">
+        Cochée = conservée ; <strong>décochée = désinstallée</strong> lors de la bascule en place
+        (règle valable pour tout le parc). Une application jamais revue est conservée. Seules les
+        désinstallations silencieuses (MSI ou commande prévue par l’éditeur) sont lancées ; les
+        autres restent en place et sont signalées dans le journal.
+      </p>
+      {update.error && <p className="text-red-600">{(update.error as Error).message}</p>}
+      {isLoading ? (
+        <Spinner />
+      ) : error ? (
+        <p className="text-red-600">{(error as Error).message}</p>
+      ) : apps.length === 0 ? (
+        <p className="text-gray-500">
+          Aucune application remontée : l’inventaire arrive avec l’agent 1.2.0.
+        </p>
+      ) : (
+        <div className="max-h-[480px] overflow-auto">
+          <table className="w-full">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-gray-400">
+                <th className="py-1 pr-2 font-normal">Conserver</th>
+                <th className="py-1 pr-3 font-normal">Application</th>
+                <th className="py-1 pr-3 font-normal">Éditeur</th>
+                <th className="py-1 pr-3 text-right font-normal">Postes</th>
+                <th className="py-1 font-normal">Désinstallation silencieuse</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((a) => (
+                <tr key={a.key} className="border-t border-gray-100">
+                  <td className="py-1 pr-2">
+                    <input
+                      type="checkbox"
+                      disabled={!canWrite || update.isPending}
+                      checked={a.keep !== false}
+                      onChange={(e) => update.mutate({ keys: [a.key], keep: e.target.checked })}
+                    />
+                  </td>
+                  <td className="py-1 pr-3">
+                    <span className={cn(a.keep === false && 'text-red-700 line-through')}>
+                      {a.name}
+                    </span>
+                    {a.keep === null && (
+                      <span className="ml-2 rounded bg-amber-50 px-1.5 text-[10px] text-amber-700">
+                        à revoir
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1 pr-3 text-gray-500">{a.publisher ?? '—'}</td>
+                  <td className="py-1 pr-3 text-right">{a.deviceCount}</td>
+                  <td
+                    className={cn(
+                      'py-1',
+                      a.uninstallableCount < a.deviceCount ? 'text-amber-700' : 'text-gray-500'
+                    )}
+                  >
+                    {a.uninstallableCount === a.deviceCount
+                      ? 'oui'
+                      : `${a.uninstallableCount} / ${a.deviceCount} postes`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )

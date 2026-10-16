@@ -83,6 +83,8 @@ export const deviceMigrations = mysqlTable(
     migrationPromptUser: int('migration_prompt_user').default(1).notNull(),
     /** Nombre de reports demandés par l'utilisateur */
     migrationSnoozes: int('migration_snoozes').default(0).notNull(),
+    /** JSON MigrationProfileMapping[] — profils transférés (bascule en place), figé à la programmation */
+    migrationProfileMap: text('migration_profile_map'),
 
     excluded: int('excluded').default(0).notNull(),
     excludeReason: varchar('exclude_reason', { length: 255 }),
@@ -153,3 +155,17 @@ export const deviceMigrationPackages = mysqlTable('device_migration_packages', {
 })
 
 export type DeviceMigrationPackageRow = typeof deviceMigrationPackages.$inferSelect
+
+/**
+ * Règle DSI par application pour la bascule en place, valable pour tout le parc.
+ * app_key = nom normalisé sans numéro de version (voir appKey). keep : 1 conservée,
+ * 0 désinstallée à la bascule ; pas de ligne = pas encore revue (conservée).
+ */
+export const deviceAppRules = mysqlTable('device_app_rules', {
+  appKey: varchar('app_key', { length: 255 }).primaryKey(),
+  keep: int('keep').notNull(),
+  updatedBy: varchar('updated_by', { length: 255 }).notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+})
+
+export type DeviceAppRuleRow = typeof deviceAppRules.$inferSelect

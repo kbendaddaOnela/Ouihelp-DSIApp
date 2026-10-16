@@ -10,6 +10,7 @@ import {
 import { db } from '../../db/index'
 import { getMsToken, onelaCreds, ouihelpCreds } from '../inventory/syncService'
 import { deviceMigrations, type DeviceMigrationRow } from './schema'
+import { parseProfileMap } from './profileMapping'
 
 /**
  * Bascule d'un poste vers Ouihelp par réinstallation propre (lot 3).
@@ -39,7 +40,7 @@ export const ACTIVE_STATUSES: MigrationStatus[] = [
   'resetting',
   'joining',
 ]
-/** Statuts depuis lesquels la DSI peut encore annuler sans risque (rien n'a été touché côté ONELA). */
+/** Statuts depuis lesquels la DSI peut encore annuler sans risque (rien n'a été touché sur le poste). */
 export const CANCELLABLE_STATUSES: MigrationStatus[] = ['scheduled', 'staging', 'staged']
 
 export function sha256(s: string): string {
@@ -73,7 +74,7 @@ export function toMigrationRun(r: DeviceMigrationRow): DeviceMigrationRun | null
   if (!r.migrationStatus) return null
   return {
     status: r.migrationStatus as MigrationStatus,
-    mode: 'reset',
+    mode: r.migrationMode === 'inplace' ? 'inplace' : 'reset',
     requestedBy: r.migrationRequestedBy,
     requestedAt: r.migrationRequestedAt?.toISOString() ?? null,
     updatedAt: r.migrationUpdatedAt?.toISOString() ?? null,
@@ -83,6 +84,7 @@ export function toMigrationRun(r: DeviceMigrationRow): DeviceMigrationRun | null
     promptUser: r.migrationPromptUser === 1,
     snoozeCount: r.migrationSnoozes,
     snoozeExhausted: r.migrationSnoozes >= MIGRATION_MAX_SNOOZES,
+    profiles: parseProfileMap(r.migrationProfileMap),
   }
 }
 

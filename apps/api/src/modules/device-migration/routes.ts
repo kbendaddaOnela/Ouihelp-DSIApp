@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { desc, eq } from 'drizzle-orm'
+import { desc, eq, inArray } from 'drizzle-orm'
 import type {
   DeviceAgentReport,
   DeviceAgentSummary,
@@ -13,6 +13,10 @@ import type {
   MigrationStatus,
   ScheduleMigrationRequest,
   UpdateTargetNameRequest,
+  MigrationProfileMapping,
+  MigrationProfilesResponse,
+  DeviceAppCatalogResponse,
+  UpdateAppRuleRequest,
 } from '@dsi-app/shared'
 import { authMiddleware } from '../../middleware/auth'
 import { loadUserRole, requirePermission } from '../../middleware/rbac'
@@ -23,11 +27,14 @@ import { cachedUsers } from '../inventory/schema'
 import { randomUUID, createHash } from 'crypto'
 import {
   deviceAgents,
+  deviceAppRules,
   deviceMigrationPackages,
   deviceMigrations,
   type DeviceAgentRow,
   type DeviceMigrationRow,
 } from './schema'
+import { resolveProfileMap } from './profileMapping'
+import { buildAppCatalog } from './appCatalog'
 import { autoTargetName, invalidComputerName, type AgencyCodes } from './naming'
 import {
   ACTIVE_STATUSES,
@@ -435,9 +442,60 @@ async function loadDevice(id: string): Promise<DeviceMigrationRow | undefined> {
   return row
 }
 
+/** Dernier agent du poste (le plus récent s'il y en a plusieurs) et son rapport. */
+async function latestAgent(
+  id: string
+): Promise<{ agent: DeviceAgentRow; report: DeviceAgentReport | null } | null> {
+  const agents = await db.select().from(deviceAgents).where(eq(deviceAgents.deviceMigrationId, id))
+  const agent = agents.sort((a, b) => b.lastCheckinAt.getTime() - a.lastCheckinAt.getTime())[0]
+  if (!agent) return null
+  let report: DeviceAgentReport | null = null
+  try {
+    report = agent.report ? (JSON.parse(agent.report) as DeviceAgentReport) : null
+  } catch {
+    report = null
+  }
+  return { agent, report }
+}
+
+function parseTargets(raw: unknown): Record<string, string | null> | null {
+  if (raw === undefined) return {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const out: Record<string, string | null> = {}
+  for (const [sid, upn] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^S-1-[\d-]+$/.test(sid)) return null
+    if (upn === null) out[sid] = null
+    else if (typeof upn === 'string' && /^[^@\s]+@[^@\s]+$/.test(upn.trim())) out[sid] = upn.trim()
+    else return null
+  }
+  return out
+}
+
+/** Aperçu des profils transférés (bascule en place), avec la saisie DSI éventuelle. */
+deviceMigrationRouter.post(
+  '/devices/:id/migration/profiles',
+  requirePermission('migration:read'),
+  async (c) => {
+    const id = c.req.param('id')
+    const body = (await c.req.json().catch(() => ({}))) as { profileTargets?: unknown }
+    const targets = parseTargets(body.profileTargets)
+    if (!targets)
+      return c.json({ error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' }, 400)
+    const a = await latestAgent(id)
+    if (!a?.report)
+      return c.json({ error: 'Not Found', message: 'Aucun rapport d’agent pour ce poste' }, 404)
+    const body2: MigrationProfilesResponse = {
+      profiles: await resolveProfileMap(a.report.profiles, targets),
+    }
+    return c.json(body2)
+  }
+)
+
 /**
- * Programme une réinstallation propre. Garde-fous : PPKG actif, agent qui répond, WinRE
- * activé, n° de série connu, PC Entra Joined (périmètre du pilote), aucune bascule en cours.
+ * Programme une bascule. Garde-fous communs : PPKG actif, agent qui répond, n° de série connu,
+ * nom Ouihelp valide et unique, aucune bascule en cours.
+ *  - inplace : PC Entra Joined ou hybride ; chaque profil retenu doit avoir son compte Ouihelp.
+ *  - reset   : PC Entra Joined, WinRE activé.
  */
 deviceMigrationRouter.post(
   '/devices/:id/migration',
@@ -445,8 +503,12 @@ deviceMigrationRouter.post(
   async (c) => {
     const id = c.req.param('id')
     const body = (await c.req.json().catch(() => null)) as ScheduleMigrationRequest | null
-    if (body?.mode !== 'reset')
-      return c.json({ error: 'Bad Request', message: 'Mode « reset » attendu' }, 400)
+    const mode = body?.mode
+    if (mode !== 'reset' && mode !== 'inplace')
+      return c.json({ error: 'Bad Request', message: 'Mode « inplace » ou « reset » attendu' }, 400)
+    const targets = parseTargets(body?.profileTargets)
+    if (!targets)
+      return c.json({ error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' }, 400)
     const d = await loadDevice(id)
     if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
 
@@ -454,8 +516,10 @@ deviceMigrationRouter.post(
     if (d.migrationStatus && ACTIVE_STATUSES.includes(d.migrationStatus as MigrationStatus)) {
       return refuse('Une bascule est déjà en cours pour ce poste')
     }
-    if (d.joinType !== 'entra_joined')
-      return refuse('Pilote limité aux PC Entra Joined pour l’instant')
+    if (mode === 'reset' && d.joinType !== 'entra_joined')
+      return refuse('Réinstallation propre limitée aux PC Entra Joined')
+    if (mode === 'inplace' && d.joinType !== 'entra_joined' && d.joinType !== 'hybrid')
+      return refuse('Bascule en place limitée aux PC Entra Joined ou hybrides')
     if (!d.serialNumber)
       return refuse('N° de série inconnu : impossible de vérifier Autopilot ONELA')
     const [pkg] = await db
@@ -464,18 +528,25 @@ deviceMigrationRouter.post(
       .where(eq(deviceMigrationPackages.active, 1))
       .limit(1)
     if (!pkg) return refuse('Aucun PPKG Ouihelp téléversé')
-    const agents = await db
-      .select()
-      .from(deviceAgents)
-      .where(eq(deviceAgents.deviceMigrationId, id))
-    const agent = agents.sort((a, b) => b.lastCheckinAt.getTime() - a.lastCheckinAt.getTime())[0]
-    if (!agent || Date.now() - agent.lastCheckinAt.getTime() > 24 * 3600_000) {
+    const a = await latestAgent(id)
+    if (!a || Date.now() - a.agent.lastCheckinAt.getTime() > 24 * 3600_000) {
       return refuse('Agent absent ou silencieux depuis plus de 24 h')
     }
-    const winre = agent.report
-      ? (JSON.parse(agent.report) as { winreEnabled?: boolean | null }).winreEnabled
-      : null
-    if (winre === false) return refuse('WinRE désactivé : réinitialisation impossible')
+    if (mode === 'reset' && a.report?.winreEnabled === false)
+      return refuse('WinRE désactivé : réinitialisation impossible')
+
+    let profileMap: MigrationProfileMapping[] = []
+    if (mode === 'inplace') {
+      if (!a.report) return refuse('Aucun rapport d’agent : profils inconnus')
+      if (a.report.agentVersion.localeCompare('1.2.0', undefined, { numeric: true }) < 0)
+        return refuse(`Agent ${a.report.agentVersion} trop ancien : la bascule en place demande l’agent 1.2.0`)
+      profileMap = await resolveProfileMap(a.report.profiles, targets)
+      const broken = profileMap.find((m) => m.error)
+      if (broken)
+        return refuse(`Profil ${broken.oldAccount ?? broken.oldSid} : ${broken.error}`)
+      if (!profileMap.some((m) => m.newSid))
+        return refuse('Aucun profil à transférer : choisir le compte Ouihelp d’au moins un profil')
+    }
 
     const allRows = await db.select().from(deviceMigrations)
     const target = computeTargetNames(allRows, await loadAgencyRef()).get(id)
@@ -485,16 +556,24 @@ deviceMigrationRouter.post(
     if (invalid) return refuse(`Nom Ouihelp invalide (${target.name}) : ${invalid}`)
     if (target.conflict) return refuse(`Nom ${target.name} déjà attribué à ${target.conflict}`)
 
-    const promptUser = body.promptUser !== false
+    const promptUser = body!.promptUser !== false
     const by = c.get('dbUser').email
     const now = new Date()
+    const transferred = profileMap
+      .filter((m) => m.newUpn)
+      .map((m) => `${m.oldUpn ?? m.oldAccount} → ${m.newUpn}`)
+      .join(', ')
+    const what =
+      mode === 'inplace'
+        ? `Bascule en place programmée par ${by} — profils : ${transferred}`
+        : `Réinstallation propre programmée par ${by}`
     await db
       .update(deviceMigrations)
       .set({
         // Nom figé à la programmation : il ne bouge plus si l'inventaire change pendant la bascule
         targetName: target.name,
         migrationStatus: 'scheduled',
-        migrationMode: 'reset',
+        migrationMode: mode,
         migrationRequestedBy: by,
         migrationRequestedAt: now,
         migrationUpdatedAt: now,
@@ -505,11 +584,12 @@ deviceMigrationRouter.post(
             step: 'programmation',
             status: 'info',
             source: 'dsi',
-            message: `Réinstallation propre programmée par ${by} — futur nom ${target.name}${promptUser ? ' — avec avertissement utilisateur' : ' — hors session'}`,
+            message: `${what} — futur nom ${target.name}${promptUser ? ' — avec avertissement utilisateur' : ' — hors session'}`,
           },
         ]),
         migrationPromptUser: promptUser ? 1 : 0,
         migrationSnoozes: 0,
+        migrationProfileMap: mode === 'inplace' ? JSON.stringify(profileMap) : null,
         breakglassPassword: generateBreakglassPassword(),
         migrationTokenHash: null,
         hardwareHash: null,
@@ -518,6 +598,64 @@ deviceMigrationRouter.post(
     return c.json({ ok: true })
   }
 )
+
+/**
+ * Bascule bloquée sur le poste (réinitialisation ratée, PC injoignable) : la DSI la marque en
+ * échec pour pouvoir en reprogrammer une. Ne touche ni au poste ni aux tenants.
+ */
+deviceMigrationRouter.post(
+  '/devices/:id/migration/abandon',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const d = await loadDevice(id)
+    if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
+    if (!['cleanup', 'ready', 'resetting', 'joining'].includes(d.migrationStatus ?? '')) {
+      return c.json({ error: 'Conflict', message: 'Rien à abandonner à ce stade' }, 409)
+    }
+    const msg = `Bascule abandonnée par ${c.get('dbUser').email} (poste à reprendre à la main)`
+    await recordStep(
+      id,
+      { step: 'abandon', status: 'error', source: 'dsi', message: msg },
+      { status: 'failed', error: msg }
+    )
+    return c.json({ ok: true })
+  }
+)
+
+// ── Catalogue des applications (bascule en place) ──
+
+deviceMigrationRouter.get('/apps', requirePermission('migration:read'), async (c) => {
+  const body: DeviceAppCatalogResponse = { apps: await buildAppCatalog() }
+  return c.json(body)
+})
+
+deviceMigrationRouter.put('/apps/rules', requirePermission('migration:write'), async (c) => {
+  const body = (await c.req.json().catch(() => null)) as UpdateAppRuleRequest | null
+  if (
+    !body ||
+    !Array.isArray(body.keys) ||
+    body.keys.length === 0 ||
+    body.keys.length > 500 ||
+    !body.keys.every((k) => typeof k === 'string' && k.length > 0 && k.length <= 255) ||
+    (body.keep !== null && typeof body.keep !== 'boolean')
+  ) {
+    return c.json({ error: 'Bad Request', message: 'keys (1 à 500) et keep (booléen ou null) requis' }, 400)
+  }
+  if (body.keep === null) {
+    await db.delete(deviceAppRules).where(inArray(deviceAppRules.appKey, body.keys))
+  } else {
+    const by = c.get('dbUser').email
+    const now = new Date()
+    for (const key of body.keys) {
+      await db
+        .insert(deviceAppRules)
+        .values({ appKey: key, keep: body.keep ? 1 : 0, updatedBy: by, updatedAt: now })
+        .onDuplicateKeyUpdate({ set: { keep: body.keep ? 1 : 0, updatedBy: by, updatedAt: now } })
+    }
+  }
+  return c.json({ ok: true })
+})
 
 deviceMigrationRouter.post(
   '/devices/:id/migration/cancel',

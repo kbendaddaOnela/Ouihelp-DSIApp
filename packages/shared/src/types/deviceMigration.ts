@@ -106,7 +106,7 @@ export interface UpdateTargetNameRequest {
 // ── Bascule (lot 3) ──────────────────────────────────────────────────────────
 
 /**
- * Cycle d'une réinstallation propre :
+ * Cycle d'une bascule (les deux modes partagent les statuts) :
  * scheduled (DSI) → staging (agent prépare) → staged (prêt, empreinte envoyée)
  * → cleanup (serveur retire le PC d'Autopilot ONELA) → ready → resetting (réinitialisation
  * lancée) → joining (le nouveau Windows a rendu compte) → done.
@@ -124,7 +124,34 @@ export type MigrationStatus =
   | 'failed'
   | 'cancelled'
 
-export type MigrationMode = 'reset'
+/**
+ * - inplace : bascule en place, Windows et applications conservés, profil transféré au compte
+ *   Ouihelp (Win32_UserProfile.ChangeOwner) ; « resetting » = bascule en cours sur le poste.
+ * - reset   : réinstallation propre (Supprimer tout), profil perdu.
+ */
+export type MigrationMode = 'inplace' | 'reset'
+
+/** Profil Windows ONELA → compte Ouihelp qui en hérite (bascule en place). */
+export interface MigrationProfileMapping {
+  oldSid: string
+  /** Compte tel que vu sur le PC (DOMAINE\compte ou UPN) */
+  oldAccount: string | null
+  oldUpn: string | null
+  localDataMb: number | null
+  /** Compte Ouihelp retenu ; null = profil non transféré */
+  newUpn: string | null
+  newSid: string | null
+  /** Partie avant « @ » du compte Ouihelp (nom du profil Windows) */
+  newSam: string | null
+  /** D'où vient le compte Ouihelp : table des migrations de comptes, adresse mail, saisie DSI */
+  source: 'migration' | 'mail' | 'manual' | null
+  /** Correspondance impossible (compte introuvable, désactivé…) */
+  error: string | null
+}
+
+export interface MigrationProfilesResponse {
+  profiles: MigrationProfileMapping[]
+}
 
 export interface MigrationStep {
   at: string
@@ -150,6 +177,8 @@ export interface DeviceMigrationRun {
   snoozeCount: number
   /** L'utilisateur a reporté le maximum de fois : la DSI doit relancer */
   snoozeExhausted: boolean
+  /** Profils transférés (bascule en place) */
+  profiles: MigrationProfileMapping[]
 }
 
 export interface MigrationPackageInfo {
@@ -171,6 +200,11 @@ export interface ScheduleMigrationRequest {
   mode: MigrationMode
   /** true (défaut) : prévenir l'utilisateur et attendre « Démarrer » ; false : agir hors session */
   promptUser?: boolean
+  /**
+   * Bascule en place : compte Ouihelp choisi par la DSI pour un profil (clé = SID du profil).
+   * null = ne pas transférer ce profil. Absent = correspondance automatique.
+   */
+  profileTargets?: Record<string, string | null>
 }
 
 /** Avertissement affiché à l'utilisateur en mode « session ouverte ». */
@@ -201,6 +235,13 @@ export interface DeviceAgentMigrationOrder {
   maxSnoozes: number
   /** Reports déjà demandés (le bouton « Plus tard » disparaît une fois le maximum atteint) */
   snoozeCount: number
+  /** Bascule en place : profils à transférer (SID ONELA → SID Ouihelp) */
+  profileMap: Array<{ oldSid: string; oldUpn: string | null; newSid: string; newUpn: string; newSam: string }>
+  /**
+   * Bascule en place : applications à désinstaller (nom exact tel que remonté par l'agent).
+   * L'agent n'exécute que la désinstallation enregistrée localement (MSI ou QuietUninstallString).
+   */
+  removeApps: string[]
 }
 
 /** Une ouverture de session constatée sur le poste. */
@@ -229,6 +270,15 @@ export interface DeviceAgentProfile {
   loaded: boolean
   /** Bureau + Documents + Téléchargements + dossiers OneDrive, en Mo (null = non mesuré) */
   localDataMb: number | null
+}
+
+/** Application installée (clés Uninstall HKLM, hors composants système et mises à jour). */
+export interface DeviceAgentApp {
+  name: string
+  version: string | null
+  publisher: string | null
+  /** Désinstallation silencieuse possible (MSI ou QuietUninstallString) */
+  uninstallable: boolean
 }
 
 /** Rapport envoyé par l'agent à chaque check-in (format v1). */
@@ -268,6 +318,37 @@ export interface DeviceAgentReport {
   profiles: DeviceAgentProfile[]
   /** Date de la mesure des tailles de profil (recalculées au plus 1 fois par jour) */
   profilesMeasuredAt: string | null
+  /** Applications installées (agent ≥ 1.2.0) */
+  apps?: DeviceAgentApp[]
+}
+
+// ── Catalogue des applications (bascule en place) ───────────────────────────
+
+/**
+ * Règle DSI par application, valable pour tout le parc. Clé = nom normalisé (sans numéro de
+ * version) pour qu'une mise à jour ne fasse pas réapparaître l'application comme nouvelle.
+ * keep : true = conservée, false = désinstallée à la bascule, null = pas encore revue (conservée).
+ */
+export interface DeviceAppCatalogEntry {
+  key: string
+  name: string
+  publisher: string | null
+  /** Nombre de postes (avec agent) où l'application est installée */
+  deviceCount: number
+  /** Dont postes où la désinstallation silencieuse est possible */
+  uninstallableCount: number
+  keep: boolean | null
+  updatedBy: string | null
+  updatedAt: string | null
+}
+
+export interface DeviceAppCatalogResponse {
+  apps: DeviceAppCatalogEntry[]
+}
+
+export interface UpdateAppRuleRequest {
+  keys: string[]
+  keep: boolean | null
 }
 
 export interface DeviceAgentSummary {

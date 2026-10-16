@@ -5,11 +5,13 @@ import {
   MIGRATION_MAX_SNOOZES,
   MIGRATION_PROMPT_MESSAGE,
   MIGRATION_SNOOZE_MINUTES,
+  type DeviceAgentApp,
   type DeviceAgentCheckinResponse,
   type DeviceAgentMigrationOrder,
   type DeviceAgentProfile,
   type DeviceAgentReport,
   type DeviceJoinType,
+  type MigrationMode,
   type MigrationStatus,
 } from '@dsi-app/shared'
 import { db } from '../../db/index'
@@ -20,6 +22,8 @@ import {
   type DeviceAgentRow,
 } from './schema'
 import { normSerial } from './inventoryService'
+import { appsToRemove, loadAppRules } from './appCatalog'
+import { parseProfileMap } from './profileMapping'
 import {
   ACTIVE_STATUSES,
   BREAKGLASS_USER,
@@ -118,6 +122,18 @@ export function sanitizeReport(raw: unknown): DeviceAgentReport | null {
         localDataMb: num(o['localDataMb']),
       }
     })
+  const apps: DeviceAgentApp[] = (Array.isArray(r['apps']) ? r['apps'] : [])
+    .slice(0, 600)
+    .map((a) => {
+      const o = obj(a)
+      return {
+        name: str(o['name']) ?? '',
+        version: str(o['version'], 100),
+        publisher: str(o['publisher']),
+        uninstallable: bool(o['uninstallable']),
+      }
+    })
+    .filter((a) => a.name)
   return {
     agentVersion: str(r['agentVersion'], 20) ?? '?',
     machineGuid: machineGuid.toLowerCase(),
@@ -171,6 +187,7 @@ export function sanitizeReport(raw: unknown): DeviceAgentReport | null {
     lastBoot: isoOrNull(r['lastBoot']),
     profiles,
     profilesMeasuredAt: isoOrNull(r['profilesMeasuredAt']),
+    ...(Array.isArray(r['apps']) ? { apps } : {}),
   }
 }
 
@@ -389,7 +406,7 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
   if (d.migrationStatus === 'cancelled') {
     return {
       status: 'cancelled',
-      mode: 'reset',
+      mode: (d.migrationMode as MigrationMode) ?? 'reset',
       packageSha256: '',
       ouihelpTenantId: '',
       breakglassUser: BREAKGLASS_USER,
@@ -400,6 +417,8 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
       snoozeMinutes: 0,
       maxSnoozes: 0,
       snoozeCount: 0,
+      profileMap: [],
+      removeApps: [],
     }
   }
   const [pkg] = await db
@@ -427,9 +446,21 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
       )
     }
   }
+  const mode: MigrationMode = d.migrationMode === 'inplace' ? 'inplace' : 'reset'
+  let removeApps: string[] = []
+  if (mode === 'inplace') {
+    const [agent] = await db
+      .select({ report: deviceAgents.report })
+      .from(deviceAgents)
+      .where(eq(deviceAgents.deviceMigrationId, deviceId))
+      .orderBy(desc(deviceAgents.lastCheckinAt))
+      .limit(1)
+    const report = agent?.report ? (JSON.parse(agent.report) as DeviceAgentReport) : null
+    removeApps = appsToRemove(report, await loadAppRules())
+  }
   return {
     status,
-    mode: 'reset',
+    mode,
     packageSha256: pkg.sha256,
     ouihelpTenantId: (process.env['AZURE_TENANT_ID'] ?? '').toLowerCase(),
     breakglassUser: BREAKGLASS_USER,
@@ -440,6 +471,16 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
     snoozeMinutes: MIGRATION_SNOOZE_MINUTES,
     maxSnoozes: MIGRATION_MAX_SNOOZES,
     snoozeCount: d.migrationSnoozes,
+    profileMap: parseProfileMap(d.migrationProfileMap)
+      .filter((m) => m.newSid && m.newUpn && m.newSam)
+      .map((m) => ({
+        oldSid: m.oldSid,
+        oldUpn: m.oldUpn,
+        newSid: m.newSid!,
+        newUpn: m.newUpn!,
+        newSam: m.newSam!,
+      })),
+    removeApps,
     ...(reportToken ? { reportToken } : {}),
   }
 }
@@ -539,6 +580,8 @@ interface ProgressBody {
   fatal?: unknown
   /** L'utilisateur a reporté la bascule (mode session ouverte) */
   snoozed?: unknown
+  /** Bascule en place : le poste est joint à Ouihelp (constaté par l'agent après redémarrage) */
+  joined?: unknown
 }
 
 deviceAgentRouter.post('/migration/progress', async (c) => {
@@ -561,8 +604,14 @@ deviceAgentRouter.post('/migration/progress', async (c) => {
     message: str(b.message, 1000) ?? '',
   }
 
-  if (b.fatal === true && ['staging', 'staged', 'ready'].includes(current)) {
+  if (b.fatal === true && ['staging', 'staged', 'ready', 'resetting', 'joining'].includes(current)) {
     await recordStep(deviceId, step, { status: 'failed', error: step.message })
+  } else if (b.joined === true && ['resetting', 'joining'].includes(current)) {
+    // Bascule en place : l'agent (conservé) constate la jonction Ouihelp
+    await recordStep(deviceId, step, { status: 'done', error: null })
+    finalizeAfterJoin(deviceId).catch((err) =>
+      console.error('[device-migration] finalize error:', err instanceof Error ? err.message : err)
+    )
   } else if (b.snoozed === true) {
     // L'utilisateur a reporté : on compte, l'avertissement reviendra plus tard
     await db
