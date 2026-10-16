@@ -25,6 +25,7 @@ import { CopyButton } from '@/modules/migration/components/CopyButton'
 import { deviceMigrationApi } from './api'
 import {
   useAbandonMigration,
+  useResumeMigration,
   useAppCatalog,
   useCancelMigration,
   useProfilePreview,
@@ -66,7 +67,7 @@ const CANCELLABLE: MigrationStatus[] = ['scheduled', 'staging', 'staged']
 /** Sans nouvelles du poste au-delà, la réinstallation a probablement buté (WinRE, réseau…) */
 const RESET_SILENCE_MS = 3 * 3600_000
 /** Version minimale de l'agent pour une bascule en place (même garde-fou que l'API). */
-const INPLACE_AGENT_VERSION = '1.2.1'
+const INPLACE_AGENT_VERSION = '1.2.2'
 
 // ── PPKG Ouihelp ─────────────────────────────────────────────────────────────
 
@@ -416,6 +417,7 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
   const schedule = useScheduleMigration()
   const cancel = useCancelMigration()
   const abandon = useAbandonMigration()
+  const resume = useResumeMigration()
   const [secret, setSecret] = useState<{ user: string; password: string } | null>(null)
   // true : prévenir l'utilisateur connecté et attendre « Démarrer » ; false : seulement hors session
   const [promptUser, setPromptUser] = useState(true)
@@ -530,6 +532,20 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
   const switchStarted =
     m?.mode === 'inplace' && (m.status === 'resetting' || m.status === 'joining')
 
+  // Bascule en place en échec après le point de non-retour : le poste a quitté ONELA, l'agent
+  // peut reprendre le travail restant (profils, jonction) au lieu d'une reprise manuelle.
+  const canResume = m?.mode === 'inplace' && m.status === 'failed' && m.profiles.length > 0
+
+  const onResume = async () => {
+    const res = await confirm({
+      title: 'Reprendre la bascule sur le poste ?',
+      message:
+        'L’agent repart de l’étape atteinte sur le poste : transfert du profil s’il reste à faire, puis jonction Ouihelp. Si le poste est encore rattaché à ONELA, il refusera et il faudra reprogrammer une bascule complète.',
+      confirmLabel: 'Reprendre',
+    })
+    if (res.confirmed) resume.mutate(d.id)
+  }
+
   const onAbandon = async () => {
     const res = await confirm({
       title: 'Abandonner cette bascule ?',
@@ -584,6 +600,11 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
             {m && ['cleanup', 'ready', 'resetting', 'joining'].includes(m.status) && (
               <Button size="sm" variant="outline" disabled={abandon.isPending} onClick={onAbandon}>
                 Abandonner
+              </Button>
+            )}
+            {canResume && (
+              <Button size="sm" variant="outline" disabled={resume.isPending} onClick={onResume}>
+                Reprendre la bascule
               </Button>
             )}
             {!active && (

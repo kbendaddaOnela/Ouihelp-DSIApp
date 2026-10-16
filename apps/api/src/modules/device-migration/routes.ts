@@ -33,7 +33,7 @@ import {
   type DeviceAgentRow,
   type DeviceMigrationRow,
 } from './schema'
-import { resolveProfileMap } from './profileMapping'
+import { parseProfileMap, resolveProfileMap } from './profileMapping'
 import { buildAppCatalog } from './appCatalog'
 import { autoTargetName, invalidComputerName, type AgencyCodes } from './naming'
 import {
@@ -55,7 +55,7 @@ export const deviceMigrationRouter = new Hono<{ Variables: RbacVariables }>()
 deviceMigrationRouter.use('*', authMiddleware, loadUserRole)
 
 /** Version minimale de l'agent pour une bascule en place (voir tools/device-agent). */
-const INPLACE_AGENT_VERSION = '1.2.1'
+const INPLACE_AGENT_VERSION = '1.2.2'
 
 const STALE_DAYS = 90
 const AGENT_SILENT_MS = 24 * 3600_000
@@ -634,6 +634,45 @@ deviceMigrationRouter.post(
         hardwareHash: null,
       })
       .where(eq(deviceMigrations.id, id))
+    return c.json({ ok: true })
+  }
+)
+
+/**
+ * Bascule en place en échec alors que le poste a DÉJÀ quitté ONELA : on redonne la main à
+ * l'agent, qui reprend là où il en est (transfert des profils, puis jonction). Il reconstruit
+ * son état depuis l'ordre si besoin, et refuse si le poste est encore rattaché à ONELA — dans
+ * ce cas c'est une reprogrammation complète qu'il faut, pas une reprise.
+ */
+deviceMigrationRouter.post(
+  '/devices/:id/migration/resume',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const d = await loadDevice(id)
+    if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
+    if (d.migrationMode !== 'inplace' || d.migrationStatus !== 'failed') {
+      return c.json(
+        { error: 'Conflict', message: 'Reprise réservée à une bascule en place en échec' },
+        409
+      )
+    }
+    if (!parseProfileMap(d.migrationProfileMap).some((m) => m.action === 'migrate')) {
+      return c.json(
+        { error: 'Conflict', message: 'Aucun profil à transférer : reprogrammer la bascule' },
+        409
+      )
+    }
+    await recordStep(
+      id,
+      {
+        step: 'reprise',
+        status: 'info',
+        source: 'dsi',
+        message: `Bascule reprise par ${c.get('dbUser').email} - l’agent repart de l’étape atteinte sur le poste`,
+      },
+      { status: 'resetting', error: null }
+    )
     return c.json({ ok: true })
   }
 )

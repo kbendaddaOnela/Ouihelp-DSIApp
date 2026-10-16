@@ -59,6 +59,9 @@ export const deviceMigrationApi = {
       })
       .then((r) => r.data),
 
+  resumeMigration: (id: string) =>
+    apiClient.post(`/device-migration/devices/${id}/migration/resume`).then((r) => r.data),
+
   abandonMigration: (id: string) =>
     apiClient.post(`/device-migration/devices/${id}/migration/abandon`).then((r) => r.data),
 
