@@ -119,6 +119,14 @@ export function useAbandonMigration() {
   })
 }
 
+export function useResumeMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: deviceMigrationApi.resumeMigration,
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}
+
 /** Aperçu des profils transférés ; recalculé quand la saisie DSI change. */
 export function useProfilePreview(
   id: string,

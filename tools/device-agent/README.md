@@ -170,7 +170,7 @@ intervention sur place.
 Le PPKG se téléverse dans la DSI App, bouton « PPKG Ouihelp ».
 
 
-## Bascule vers Ouihelp : mode « en place » (agent ≥ 1.2.1)
+## Bascule vers Ouihelp : mode « en place » (agent ≥ 1.2.2)
 
 **Windows, les applications et les fichiers restent en place.** Le poste quitte ONELA, reçoit le
 PPKG Ouihelp, et chaque profil Windows est donné au compte Ouihelp choisi par la DSI : l'utilisateur
@@ -225,6 +225,15 @@ Méthode reprise d'**IntuneMigration V9** (Steve Weiner), avec quatre différenc
 7. **Serveur** (*done*) : supprime les objets Intune et Entra ONELA, importe l'empreinte dans
    Autopilot Ouihelp (étiquette `OUIHELP`) et définit l'**utilisateur principal** de l'appareil dans
    Intune Ouihelp — l'inscription par jeton en bloc n'en désigne aucun.
+
+### Si la bascule s'arrête en route
+
+Le poste a quitté ONELA mais n'est pas arrivé chez Ouihelp : il reste joignable avec le **compte
+de secours** `dsi-secours` (mot de passe dans la fiche du poste). Dans la DSI App, le bouton
+**« Reprendre la bascule »** redonne la main à l'agent, qui repart de l'étape atteinte sur le
+poste (transfert du profil s'il reste à faire, puis jonction) ; il reconstruit au besoin son état
+local depuis l'ordre. Si le poste est **encore rattaché à ONELA**, la reprise est refusée : c'est
+une bascule complète qu'il faut reprogrammer, pour que le PPKG soit re-téléchargé.
 
 ### Garde-fous
 

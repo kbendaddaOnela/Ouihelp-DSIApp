@@ -37,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.1'
+$AgentVersion = '1.2.2'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1312,12 +1312,9 @@ function Invoke-DomainUnjoin([string]$User, [string]$Password) {
 function Install-OuihelpPackage([string]$Path) {
   # Une stratégie peut interdire l'ajout de paquets de provisionnement (correctif V9 9.1)
   Set-RegValue 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Security' 'AllowAddProvisioningPackage' 1
-  $name = [IO.Path]::GetFileNameWithoutExtension($Path)
-  # Nouvelle tentative après un échec : on retire d'abord NOTRE paquet déjà posé (et lui seul :
-  # les paquets du constructeur restent en place).
-  foreach ($p in @(Safe 'ppkgListe' { Get-ProvisioningPackage -AllInstalledPackages } @())) {
-    if ($p.PackageName -eq $name) { Safe 'ppkgRetrait' { Remove-ProvisioningPackage -PackageId $p.PackageId } }
-  }
+  # Le nom du paquet est celui qu'a choisi l'assistant WCD (ex. IntuneDeviceMigrationV9), pas le
+  # nom du fichier déposé par l'agent : on compare donc la liste avant et après, pas un nom.
+  $before = @(Safe 'ppkgAvant' { Get-ProvisioningPackage -AllInstalledPackages } @() | ForEach-Object { $_.PackageId })
   try {
     $null = Install-ProvisioningPackage -PackagePath $Path -ForceInstall -QuietInstall
   } catch {
@@ -1326,10 +1323,14 @@ function Install-OuihelpPackage([string]$Path) {
     if ($d.ExitCode -ne 0) { throw "DISM /Add-ProvisioningPackage : code $($d.ExitCode)" }
   }
   Start-Sleep -Seconds 5
-  $installed = @(Safe 'ppkgControle' { Get-ProvisioningPackage -AllInstalledPackages } @())
-  if (@($installed | Where-Object { $_.PackageName -eq $name }).Count -eq 0) {
-    throw 'PPKG installé mais absent de la liste des paquets du poste'
-  }
+  $after = @(Safe 'ppkgApres' { Get-ProvisioningPackage -AllInstalledPackages } @() | ForEach-Object { $_.PackageId })
+  $added = @($after | Where-Object { $before -notcontains $_ })
+  # La liste des paquets n'est pas toujours tenue à jour tout de suite, et une réinstallation
+  # du même paquet n'y ajoute rien : on ne bloque pas là-dessus. La seule preuve qui compte est
+  # la jonction au tenant Ouihelp, vérifiée par la phase « jonction » (dsregcmd).
+  if ($added.Count -gt 0) { return "paquet $($added -join ', ') ajouté" }
+  if ($after.Count -gt 0) { return "$($after.Count) paquet(s) installé(s) sur le poste" }
+  return 'installation acceptée, liste des paquets vide (contrôle à la jonction)'
 }
 
 $script:ProfileApiReady = $false
@@ -1500,8 +1501,8 @@ function Start-InplaceSwitch($Order) {
       Send-Progress 'domaine' 'ok' 'Poste sorti du domaine ONELA'
     }
 
-    Install-OuihelpPackage $InplacePpkg
-    Send-Progress 'ppkg' 'ok' 'PPKG Ouihelp installé : jonction au prochain démarrage'
+    $ppkgInfo = Install-OuihelpPackage $InplacePpkg
+    Send-Progress 'ppkg' 'ok' "PPKG Ouihelp installé ($ppkgInfo) : jonction au prochain démarrage"
   } catch {
     Write-Log "Bascule en place : $($_.Exception.Message)"
     $state.lastError = $_.Exception.Message
@@ -1628,6 +1629,39 @@ function Invoke-InplaceJoin($State) {
   if ($renamed) { & shutdown.exe /r /t 60 /c 'Bascule vers Ouihelp terminee : redemarrage' | Out-Null }
 }
 
+# Bascule relancée par la DSI alors que l'agent n'a plus son état local (abandon après plusieurs
+# échecs, agent réinstallé) : on le reconstruit depuis l'ordre reçu et on déduit la phase de
+# l'état réel du poste. Si le poste est encore dans ONELA, il n'y a rien à reprendre : la DSI
+# doit reprogrammer une bascule complète (le PPKG doit être re-téléchargé).
+function Restore-InplaceFromOrder($Order) {
+  $dsreg = Safe 'dsreg' { Get-DsregStatus }
+  $joinedOuihelp = $dsreg -and $dsreg.azureAdJoined -and $Order.ouihelpTenantId -and $dsreg.tenantId -eq $Order.ouihelpTenantId
+  $joinedOnela = $dsreg -and $dsreg.azureAdJoined -and -not $joinedOuihelp
+  $inDomain = [bool](Get-CimInstance Win32_ComputerSystem).PartOfDomain
+  if ($joinedOnela -or $inDomain) {
+    Send-Progress 'reprise' 'error' 'Poste encore rattaché à ONELA : reprogrammer une bascule complète plutôt que la reprendre' @{ fatal = $true }
+    return $null
+  }
+  $phase = if ($joinedOuihelp) { 'join' } else { 'profiles' }
+  $state = [ordered]@{
+    phase           = $phase
+    attempts        = 0
+    lastError       = ''
+    startedAt       = (Get-Date).ToString('o')
+    computerName    = [string]$Order.computerName
+    ouihelpTenantId = [string]$Order.ouihelpTenantId
+    profileMap      = @(@($Order.profileMap) | ForEach-Object {
+        [ordered]@{ oldSid = $_.oldSid; oldUpn = $_.oldUpn; newSid = $_.newSid; newUpn = $_.newUpn; newSam = $_.newSam }
+      })
+    removeProfiles  = @(@($Order.removeProfiles) | ForEach-Object {
+        [ordered]@{ sid = $_.sid; account = $_.account; upn = $_.upn }
+      })
+  }
+  Save-Inplace $state
+  Send-Progress 'reprise' 'ok' "Bascule reprise sur le poste à l'étape « $phase »"
+  return $state
+}
+
 # Phases 2 et 3 : reprises à chaque passage de l'agent, même sans ordre côté serveur - le poste
 # a déjà quitté ONELA, il doit aller au bout sous peine de rester entre les deux tenants.
 function Resume-InplaceMigration {
@@ -1684,7 +1718,10 @@ function Invoke-InplaceMigration($Order) {
       # Bascule interrompue au milieu de la phase 1 (le serveur est déjà passé en « resetting »,
       # l'état local est resté « prepared ») : on la reprend là où elle s'est arrêtée.
       $state = Get-Inplace
-      if ($state -and $state.phase -eq 'prepared') { Disable-Sleep; Start-InplaceSwitch $Order }
+      if (-not $state) { $state = Restore-InplaceFromOrder $Order }
+      if (-not $state) { return }
+      Disable-Sleep
+      if ($state.phase -eq 'prepared') { Start-InplaceSwitch $Order }
       else { Resume-InplaceMigration }
     }
   }
