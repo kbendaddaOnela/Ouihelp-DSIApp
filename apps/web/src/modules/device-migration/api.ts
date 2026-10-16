@@ -32,7 +32,13 @@ export const deviceMigrationApi = {
     const form = new FormData()
     form.append('file', file)
     if (tokenExpiresAt) form.append('tokenExpiresAt', tokenExpiresAt)
-    return apiClient.post('/device-migration/package', form).then((r) => r.data)
+    // Le client impose application/json par défaut : axios convertirait alors le FormData en
+    // JSON et le fichier serait perdu. multipart/form-data laisse le navigateur poser la frontière.
+    return apiClient
+      .post('/device-migration/package', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data)
   },
 
   scheduleMigration: (id: string, req: ScheduleMigrationRequest) =>
