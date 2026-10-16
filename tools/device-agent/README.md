@@ -19,7 +19,11 @@ Identité (MachineGuid, nom, n° de série, modèle), version de Windows, joncti
 (tenant, deviceId), inscription MDM et inscription automatique par GPO, client SCCM, TPM, Secure Boot,
 environnement de récupération (WinRE, indispensable pour une réinstallation à distance), BitLocker,
 réseau (Ethernet / Wi-Fi, SSID connecté, profils Wi-Fi enregistrés), disque, utilisateur connecté,
-**profils Windows** (compte AD / Entra / local, dernière utilisation, données locales en Mo).
+**profils Windows** (compte AD / Entra / local, dernière utilisation, données locales en Mo) et,
+depuis l'agent 1.2.0, les **applications installées** (clés Uninstall HKLM 32 et 64 bits, hors
+composants système et mises à jour, avec l'indication « désinstallation silencieuse possible »).
+Elles alimentent le catalogue du bouton « Applications » de la DSI App : une décision par
+application pour tout le parc, conservée ou désinstallée à la bascule en place.
 
 Les données locales = Bureau + Documents + Téléchargements + dossiers `OneDrive*`, **fichiers
 réellement présents sur le disque uniquement** (les fichiers OneDrive « en ligne uniquement » sont
@@ -95,7 +99,7 @@ Désinstaller : `powershell -ExecutionPolicy Bypass -File C:\ProgramData\DSI\Dsi
 - Si la clé fuite, un tiers peut au pire déclarer de faux postes dans l'inventaire. **Le lot 3 ne
   devra jamais remettre le PPKG Ouihelp sur la seule foi de cette clé.**
 
-## Bascule vers Ouihelp : réinstallation propre (agent ≥ 1.1.0, lot 3)
+## Bascule vers Ouihelp : mode « réinstallation propre » (agent ≥ 1.1.0, lot 3)
 
 Pilote : PC **Entra Joined** uniquement. Deux modes au choix à la programmation :
 
@@ -164,3 +168,76 @@ intervention sur place.
   poste sont restaurés).
 
 Le PPKG se téléverse dans la DSI App, bouton « PPKG Ouihelp ».
+
+
+## Bascule vers Ouihelp : mode « en place » (agent ≥ 1.2.0)
+
+**Windows, les applications et les fichiers restent en place.** Le poste quitte ONELA, reçoit le
+PPKG Ouihelp, et chaque profil Windows est donné au compte Ouihelp choisi par la DSI : l'utilisateur
+se connecte avec son adresse Ouihelp et retrouve son bureau. Pilote : PC **Entra Joined ou
+hybrides**. L'accord de l'utilisateur et les reports fonctionnent comme en réinstallation propre.
+
+Méthode reprise d'**IntuneMigration V9** (Steve Weiner), avec quatre différences :
+
+| V9 | Ici |
+|---|---|
+| L'utilisateur se connecte à Ouihelp pendant la bascule (`Connect-AzAccount`, `Az.Accounts`, session interactive obligatoire) pour donner son SID | Les SID Ouihelp sont lus par le **serveur** dans Graph et transmis dans l'ordre (`profileMap`) : aucune action de l'utilisateur, la bascule marche aussi hors session |
+| `config.json` avec les **secrets client Graph des deux tenants** déposé sur chaque PC | **Aucun secret Graph sur le poste** : tout ce qui touche aux tenants est fait par le serveur |
+| Ouverture de session automatique avec un mot de passe **en clair** dans `Winlogon\DefaultPassword` | Aucun autologon : l'agent survit à la bascule et enchaîne les étapes en SYSTEM à chaque réveil (2 min) |
+| Avancement dans un journal local | Chaque étape est **rendue à la DSI App** et reprise au passage suivant en cas d'échec ou de redémarrage |
+
+### Déroulé
+
+1. **DSI App** : fiche du poste > mode « En place » > « Programmer la bascule ». Le tableau des
+   profils montre, pour chaque profil ONELA du poste, le compte Ouihelp qui en héritera (trouvé par
+   la table des migrations de comptes, puis par l'adresse mail, ou saisi par la DSI). Un profil sans
+   correspondance bloque la programmation.
+2. **Agent** (*staging*) : neutralise la mise en veille, contrôle l'alimentation et **10 Go libres**,
+   télécharge le PPKG et vérifie son SHA-256, puis fige l'ordre dans
+   `C:\ProgramData\DSI\migration\inplace.json` (**sans aucun secret** : le mot de passe du compte
+   de secours n'est jamais écrit sur le disque). Rien de destructif à ce stade : annulation possible.
+3. **Serveur** (*cleanup* → *ready*) : retire le poste d'Autopilot ONELA.
+4. **Agent** (*resetting* = « bascule en cours sur le poste ») — **point de non-retour** :
+   - crée le compte local d'administration `dsi-secours` (mot de passe visible dans la DSI App,
+     bouton « Compte de secours ») : c'est le seul moyen d'ouvrir une session avant la jonction ;
+   - désinstalle les applications décochées dans le catalogue, avec la commande enregistrée
+     localement (MSI ou `QuietUninstallString`), et rend compte de chacune ;
+   - retire l'inscription Intune ONELA (certificat, clés `Enrollments`, tâches de synchronisation) ;
+   - `dsregcmd /leave`, puis sortie du domaine avec le compte de secours si le PC est hybride ;
+   - installe le PPKG Ouihelp (repli `dism.exe` si `Install-ProvisioningPackage` échoue) ;
+   - redémarre. Message d'attente sur l'écran de verrouillage pendant les deux redémarrages.
+5. **Agent** (phase « profils », session fermée) : pour chaque profil, retrait des jetons de
+   l'ancien tenant (`AAD.BrokerPlugin`), enregistrement du compte Ouihelp (`CreateProfile`, profil
+   créé puis supprimé), puis **`Win32_UserProfile.ChangeOwner`** vers le SID Ouihelp et nettoyage
+   des caches d'identité qui pointent encore sur l'ancien UPN. Puis redémarrage.
+6. **Agent** (phase « jonction ») : attend la jonction au tenant Ouihelp (`dsregcmd`), enregistre la
+   clé BitLocker chez Ouihelp, applique le nom DSI **après** le PPKG, rend compte « joint » et
+   retire ses fichiers de bascule.
+7. **Serveur** (*done*) : supprime les objets Intune et Entra ONELA, importe l'empreinte dans
+   Autopilot Ouihelp (étiquette `OUIHELP`) et définit l'**utilisateur principal** de l'appareil dans
+   Intune Ouihelp — l'inscription par jeton en bloc n'en désigne aucun.
+
+### Garde-fous
+
+- L'agent **n'exécute jamais une commande venue du serveur** : le serveur ne transmet que des noms
+  d'applications, des SID et des UPN. La désinstallation utilise la commande enregistrée par
+  l'installeur sur le poste.
+- Au-delà de 3 tentatives sur la bascule, 5 sur les profils et 20 sur la jonction, l'agent s'arrête
+  en rendant compte au lieu de retenter toutes les 2 min, et retire son message d'attente.
+- **Passé le point de non-retour, l'agent termine le travail local même si la DSI « abandonne » la
+  bascule dans l'app** : sinon le poste resterait entre les deux tenants. L'abandon le dit.
+- Un profil qui échoue garde son ancien propriétaire (l'utilisateur obtient un profil neuf) : c'est
+  écrit dans le journal du poste, les autres profils sont transférés.
+- Le jeton de jonction en bloc du PPKG expire (180 jours au plus). La DSI App **refuse de programmer**
+  une bascule avec un PPKG expiré, et signale celui qui expire dans moins de 30 jours.
+
+### Ce que la bascule en place ne fait pas
+
+- Les données déjà dans OneDrive ONELA ne suivent pas : c'est un compte, pas un fichier local.
+- L'appartenance aux groupes locaux, les applications installées par utilisateur (`AppData`) et les
+  réglages liés au SID d'origine peuvent demander une reprise ponctuelle.
+- Le profil n'est transféré qu'une fois : relancer une bascule sur un poste déjà basculé n'a pas
+  de sens, la DSI App l'empêche tant qu'une bascule est en cours.
+
+**À valider en pilote** (non testé sur un vrai PC) : `ChangeOwner` sur un profil hybride, la sortie
+du domaine avec le compte local de secours, et la jonction par PPKG juste après le `dsregcmd /leave`.

@@ -47,5 +47,22 @@ foreach ($name in $readings.Keys) {
   }
 }
 
+# Les tirets Unicode U+2011 à U+2014 (tiret insécable, tiret demi-cadratin, cadratin)
+# s'écrivent en UTF-8 avec un 3ᵉ octet
+# 0x91 à 0x94 : lus en ANSI, ce sont les guillemets courbes « ' » et « " », que PowerShell
+# accepte comme délimiteurs de chaîne. Un nombre impair avalait alors tout le reste du script
+# (la syntaxe ne cassait que par chance, quand ils allaient par deux).
+$dashes = @()
+$lines = $readings['UTF-8'] -split "`n"
+for ($i = 0; $i -lt $lines.Count; $i++) {
+  if ($lines[$i] -match '[\u2011-\u2014]') { $dashes += ($i + 1) }
+}
+if ($dashes.Count -gt 0) {
+  $ok = $false
+  Write-Host "ÉCHEC  tiret Unicode (U+2011 à U+2014) ligne(s) $($dashes -join ', ') : remplacer par un tiret simple"
+} else {
+  Write-Host 'OK     aucun tiret Unicode'
+}
+
 if ($ok) { Write-Host 'Script prêt à être déployé.'; exit 0 }
 exit 1

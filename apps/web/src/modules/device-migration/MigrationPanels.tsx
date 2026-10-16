@@ -476,12 +476,18 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
     schedule.mutate({ id: d.id, mode, promptUser, profileTargets: targets })
   }
 
+  // En place, après « bascule en cours », le poste a déjà quitté ONELA : l'agent termine le
+  // travail local (profils, jonction) même abandonné ici, sinon le poste resterait entre deux.
+  const switchStarted =
+    m?.mode === 'inplace' && (m.status === 'resetting' || m.status === 'joining')
+
   const onAbandon = async () => {
     const res = await confirm({
       title: 'Abandonner cette bascule ?',
       tone: 'danger',
-      message:
-        'La bascule passe en échec dans la DSI App pour pouvoir en programmer une autre. Rien n’est fait sur le poste ni dans les tenants : à reprendre à la main.',
+      message: switchStarted
+        ? 'La bascule passe en échec dans la DSI App pour pouvoir en programmer une autre. Le poste a déjà quitté ONELA : l’agent continue sur place (transfert des profils, jonction Ouihelp) et la finalisation côté tenants ne sera pas faite. À vérifier sur le poste.'
+        : 'La bascule passe en échec dans la DSI App pour pouvoir en programmer une autre. Rien n’est fait sur le poste ni dans les tenants : à reprendre à la main.',
       confirmLabel: 'Abandonner',
     })
     if (res.confirmed) abandon.mutate(d.id)

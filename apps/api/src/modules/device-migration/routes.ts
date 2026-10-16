@@ -523,11 +523,21 @@ deviceMigrationRouter.post(
     if (!d.serialNumber)
       return refuse('N° de série inconnu : impossible de vérifier Autopilot ONELA')
     const [pkg] = await db
-      .select({ id: deviceMigrationPackages.id })
+      .select({
+        id: deviceMigrationPackages.id,
+        tokenExpiresAt: deviceMigrationPackages.tokenExpiresAt,
+      })
       .from(deviceMigrationPackages)
       .where(eq(deviceMigrationPackages.active, 1))
       .limit(1)
     if (!pkg) return refuse('Aucun PPKG Ouihelp téléversé')
+    // Le jeton de jonction en bloc du PPKG a une durée de vie limitée (180 jours au plus).
+    // Expiré, le poste quitte ONELA puis ne rejoint jamais Ouihelp : on refuse avant d'y toucher.
+    if (pkg.tokenExpiresAt && pkg.tokenExpiresAt.getTime() < Date.now()) {
+      return refuse(
+        `Jeton du PPKG expiré le ${pkg.tokenExpiresAt.toLocaleDateString('fr-FR')} : téléverser un nouveau PPKG Ouihelp`
+      )
+    }
     const a = await latestAgent(id)
     if (!a || Date.now() - a.agent.lastCheckinAt.getTime() > 24 * 3600_000) {
       return refuse('Agent absent ou silencieux depuis plus de 24 h')

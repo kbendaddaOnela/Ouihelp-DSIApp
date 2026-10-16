@@ -29,6 +29,8 @@ export const BREAKGLASS_USER = 'dsi-secours'
 export const GROUP_TAG = process.env['DEVICE_MIGRATION_GROUP_TAG'] ?? 'OUIHELP'
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 const MAX_STEPS = 200
+/** Inscription Intune après la jonction : on la cherche pendant ~5 min (30 s entre deux essais). */
+const PRIMARY_USER_TRIES = 10
 
 /** Statuts pendant lesquels une bascule est en cours (une seule à la fois par poste). */
 export const ACTIVE_STATUSES: MigrationStatus[] = [
@@ -258,12 +260,103 @@ export async function cleanupOnelaBeforeReset(id: string): Promise<void> {
     )
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    // Bascule en place : le poste ne réinstalle pas Windows, il ne peut donc pas être rattrapé
+    // par le profil Autopilot ONELA. L'étape reste utile (ménage) mais ne doit pas bloquer.
+    if (d.migrationMode === 'inplace') {
+      await recordStep(
+        id,
+        {
+          step: 'autopilot-onela',
+          status: 'error',
+          source: 'serveur',
+          message: `${msg} - sans effet sur une bascule en place (pas de réinstallation) : on continue, entrée Autopilot ONELA à retirer à la main`,
+        },
+        { status: 'ready' }
+      )
+      return
+    }
     await recordStep(
       id,
       { step: 'autopilot-onela', status: 'error', source: 'serveur', message: msg },
       { status: 'failed', error: msg }
     )
   }
+}
+
+/**
+ * Appareil dans Intune Ouihelp, cherché par n° de série. Juste après la jonction, l'inscription
+ * Intune n'est pas encore faite : on réessaie pendant quelques minutes. Le filtre sur
+ * serialNumber n'est pas accepté partout, d'où le repli sur la liste des postes Windows.
+ */
+async function findOuihelpIntuneDevice(token: string, serial: string): Promise<string | null> {
+  const filtered = await graph(
+    token,
+    'GET',
+    `https://graph.microsoft.com/beta/deviceManagement/managedDevices?$filter=serialNumber eq '${encodeURIComponent(serial)}'&$select=id,serialNumber`
+  )
+  if (filtered.status === 200) {
+    const hit = (filtered.json as { value?: Array<{ id: string }> })?.value?.[0]
+    if (hit?.id) return hit.id
+    return null
+  }
+  const all = await graph(
+    token,
+    'GET',
+    `/deviceManagement/managedDevices?$filter=operatingSystem eq 'Windows'&$select=id,serialNumber&$top=999`
+  )
+  if (all.status !== 200) throw new Error(graphError('Lecture des appareils Intune Ouihelp', all))
+  const devices =
+    (all.json as { value?: Array<{ id: string; serialNumber?: string }> })?.value ?? []
+  return devices.find((x) => x.serialNumber?.trim().toUpperCase() === serial)?.id ?? null
+}
+
+/**
+ * Bascule en place : utilisateur principal de l'appareil dans Intune Ouihelp = le compte qui a
+ * hérité du profil Windows. Sans ça l'appareil reste sans utilisateur principal (il a été
+ * inscrit par un jeton en bloc, pas par une personne) et sort des groupes et rapports par
+ * utilisateur. Best-effort : la prochaine synchro d'inventaire montrera le résultat.
+ */
+async function setOuihelpPrimaryUser(
+  d: DeviceMigrationRow,
+  step: (status: 'ok' | 'error' | 'info', message: string) => Promise<void>
+): Promise<void> {
+  const main = parseProfileMap(d.migrationProfileMap).find((m) => m.newUpn)
+  if (!main?.newUpn) {
+    await step('info', 'Aucun profil transféré : utilisateur principal Intune non renseigné')
+    return
+  }
+  if (!d.serialNumber) {
+    await step('info', 'N° de série inconnu : utilisateur principal Intune non renseigné')
+    return
+  }
+  const token = await ouihelpToken()
+  let intuneId = d.ouihelpIntuneId ?? null
+  for (let i = 0; !intuneId && i < PRIMARY_USER_TRIES; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 30_000))
+    intuneId = await findOuihelpIntuneDevice(token, d.serialNumber)
+  }
+  if (!intuneId) {
+    await step(
+      'info',
+      `Appareil pas encore inscrit dans Intune Ouihelp : définir ${main.newUpn} comme utilisateur principal après la prochaine synchro`
+    )
+    return
+  }
+  const user = await graph(token, 'GET', `/users/${encodeURIComponent(main.newUpn)}?$select=id`)
+  const userId = (user.json as { id?: string })?.id
+  if (user.status !== 200 || !userId) {
+    await step('error', graphError(`Lecture du compte Ouihelp ${main.newUpn}`, user))
+    return
+  }
+  const r = await graph(token, 'POST', `/deviceManagement/managedDevices/${intuneId}/users/$ref`, {
+    '@odata.id': `${GRAPH}/users/${userId}`,
+  })
+  await step(
+    r.status < 300 ? 'ok' : 'error',
+    r.status < 300
+      ? `Utilisateur principal Intune Ouihelp : ${main.newUpn}`
+      : graphError('Utilisateur principal Intune Ouihelp', r)
+  )
 }
 
 /**
@@ -334,5 +427,16 @@ export async function finalizeAfterJoin(id: string): Promise<void> {
     }
   } else {
     await step('info', 'Pas d’empreinte matérielle : import Autopilot Ouihelp ignoré')
+  }
+
+  if (d.migrationMode === 'inplace') {
+    try {
+      await setOuihelpPrimaryUser(d, step)
+    } catch (err) {
+      await step(
+        'error',
+        `Utilisateur principal Intune Ouihelp : ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
   }
 }
