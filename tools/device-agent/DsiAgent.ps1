@@ -34,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.4'
+$AgentVersion = '1.1.5'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -795,8 +795,59 @@ $PromptScript = Join-Path $env:PUBLIC 'dsi-maj-pc.ps1'
 $PromptChoice = Join-Path $env:PUBLIC 'dsi-maj-choix.txt'
 $PromptSnoozeUntil = Join-Path $MigDir 'snooze-until'
 
+# Lance un processus dans la session active de l'utilisateur, depuis SYSTEM, via l'API Windows
+# (jeton de la session console dupliqué). Méthode fiable quel que soit le type de compte (AD,
+# Entra, local), contrairement à une tâche planifiée à jeton interactif. Renvoie le PID ou 0.
+$script:UserSessionLauncherReady = $false
+function Initialize-UserSessionLauncher {
+  if ($script:UserSessionLauncherReady) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace DsiNative {
+  public static class UserSession {
+    [StructLayout(LayoutKind.Sequential)] public struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle; public int dwX; public int dwY; public int dwXSize; public int dwYSize; public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
+    [StructLayout(LayoutKind.Sequential)] public struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+    [DllImport("kernel32.dll")] static extern int WTSGetActiveConsoleSessionId();
+    [DllImport("wtsapi32.dll", SetLastError=true)] static extern bool WTSQueryUserToken(int SessionId, out IntPtr phToken);
+    [DllImport("advapi32.dll", SetLastError=true)] static extern bool DuplicateTokenEx(IntPtr hToken, uint dwDesiredAccess, IntPtr lpTokenAttributes, int ImpersonationLevel, int TokenType, out IntPtr phNewToken);
+    [DllImport("userenv.dll", SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);
+    [DllImport("userenv.dll", SetLastError=true)] static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);
+    [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr hToken, string lpApplicationName, string lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr hObject);
+    public static int LaunchInConsoleSession(string commandLine) {
+      int sid = WTSGetActiveConsoleSessionId();
+      if (sid == -1) return -1;            // aucune session console active
+      IntPtr userToken, primaryToken = IntPtr.Zero, env = IntPtr.Zero;
+      if (!WTSQueryUserToken(sid, out userToken)) return -2;   // personne de connecté
+      try {
+        if (!DuplicateTokenEx(userToken, 0x02000000u, IntPtr.Zero, 2, 1, out primaryToken)) return -3;
+        CreateEnvironmentBlock(out env, primaryToken, false);
+        STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si); si.lpDesktop = @"winsta0\default";
+        PROCESS_INFORMATION pi;
+        bool ok = CreateProcessAsUser(primaryToken, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0x00000410u, env, null, ref si, out pi);
+        if (!ok) return -4;
+        CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+        return pi.dwProcessId;
+      } finally {
+        if (env != IntPtr.Zero) DestroyEnvironmentBlock(env);
+        if (primaryToken != IntPtr.Zero) CloseHandle(primaryToken);
+        CloseHandle(userToken);
+      }
+    }
+  }
+}
+'@
+  $script:UserSessionLauncherReady = $true
+}
+
+function Start-InUserSession([string]$CommandLine) {
+  Initialize-UserSessionLauncher
+  return [DsiNative.UserSession]::LaunchInConsoleSession($CommandLine)
+}
+
 # Affiche à l'utilisateur connecté, dans SA session, une fenêtre « Démarrer / Plus tard ».
-# Lancée depuis SYSTEM via une tâche planifiée à jeton interactif (pas de mot de passe stocké).
+# Renvoie $true si la fenêtre a bien été lancée dans la session active.
 function Show-MigrationPrompt([string]$User, $Order) {
   $allowSnooze = if ($Order.snoozeCount -lt $Order.maxSnoozes) { '$true' } else { '$false' }
   $later = [int]$Order.snoozeMinutes
@@ -835,16 +886,19 @@ if ($allowSnooze) {
 }
 [System.Windows.Forms.Application]::Run(`$f)
 "@
-  Set-Content -Path $PromptScript -Value $dialog -Encoding UTF8
+  # UTF-8 avec BOM : le message contient des accents, lus dans la session utilisateur
+  [IO.File]::WriteAllText($PromptScript, $dialog, (New-Object Text.UTF8Encoding($true)))
   Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
+  $ps = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $cmd = "`"$ps`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PromptScript`""
   try {
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PromptScript`""
-    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName 'DSI\Avertissement migration' -Action $action -Principal $principal -Force | Out-Null
-    Start-ScheduledTask -TaskName 'DSI\Avertissement migration'
-    Write-Log "Avertissement affiché à $User"
+    $pid2 = Start-InUserSession $cmd
+    if ($pid2 -gt 0) { Write-Log "Avertissement affiché à $User (processus $pid2)"; return $true }
+    Write-Log "Avertissement non affiché (code $pid2 : aucune session active ou lancement refusé)"
+    return $false
   } catch {
     Write-Log "Affichage de l'avertissement impossible : $($_.Exception.Message)"
+    return $false
   }
 }
 
@@ -924,8 +978,11 @@ function Invoke-Migration($Order) {
             # Pas encore de réponse : on (ré)affiche l'avertissement, sauf pendant un report en cours
             $until = if (Test-Path $PromptSnoozeUntil) { try { [datetime](Get-Content $PromptSnoozeUntil -Raw) } catch { [datetime]::MinValue } } else { [datetime]::MinValue }
             if ((Get-Date) -ge $until) {
-              Show-MigrationPrompt $user $Order
-              Send-Progress 'avertissement' 'info' "Avertissement affiché à $user (en attente de son accord)"
+              if (Show-MigrationPrompt $user $Order) {
+                Send-Progress 'avertissement' 'info' "Avertissement affiché à $user (en attente de son accord)"
+              } else {
+                Send-Progress 'avertissement' 'error' "Impossible d'afficher l'avertissement à $user (voir agent.log) : nouvel essai au prochain passage"
+              }
             }
             return
           }
