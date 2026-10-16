@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { UpdateDeviceMigrationRequest } from '@dsi-app/shared'
+import type { MigrationMode, UpdateAppRuleRequest, UpdateDeviceMigrationRequest } from '@dsi-app/shared'
 import { deviceMigrationApi } from './api'
 
 const LIVE_STATUSES = ['scheduled', 'staging', 'staged', 'cleanup', 'ready', 'resetting', 'joining']
@@ -80,8 +80,15 @@ export function useUploadMigrationPackage() {
 export function useScheduleMigration() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, promptUser }: { id: string; promptUser: boolean }) =>
-      deviceMigrationApi.scheduleMigration(id, { mode: 'reset', promptUser }),
+    mutationFn: ({
+      id,
+      ...req
+    }: {
+      id: string
+      mode: MigrationMode
+      promptUser: boolean
+      profileTargets?: Record<string, string | null>
+    }) => deviceMigrationApi.scheduleMigration(id, req),
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
 }
@@ -100,5 +107,39 @@ export function useUpdateTargetName() {
     mutationFn: ({ id, name }: { id: string; name: string | null }) =>
       deviceMigrationApi.updateTargetName(id, name),
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}
+
+export function useAbandonMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: deviceMigrationApi.abandonMigration,
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}
+
+/** Aperçu des profils transférés ; recalculé quand la saisie DSI change. */
+export function useProfilePreview(id: string, targets: Record<string, string | null>, enabled: boolean) {
+  return useQuery({
+    queryKey: ['device-migration-profiles', id, targets],
+    queryFn: () => deviceMigrationApi.previewProfiles(id, targets),
+    enabled,
+    staleTime: 60_000,
+  })
+}
+
+export function useAppCatalog(enabled: boolean) {
+  return useQuery({
+    queryKey: ['device-migration-apps'],
+    queryFn: deviceMigrationApi.apps,
+    enabled,
+  })
+}
+
+export function useUpdateAppRules() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (req: UpdateAppRuleRequest) => deviceMigrationApi.updateAppRules(req),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migration-apps'] }),
   })
 }

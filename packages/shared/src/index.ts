@@ -139,4 +139,10 @@ export type {
   ScheduleMigrationRequest,
   DeviceAgentMigrationOrder,
   UpdateTargetNameRequest,
+  MigrationProfileMapping,
+  MigrationProfilesResponse,
+  DeviceAgentApp,
+  DeviceAppCatalogEntry,
+  DeviceAppCatalogResponse,
+  UpdateAppRuleRequest,
 } from './types/deviceMigration'

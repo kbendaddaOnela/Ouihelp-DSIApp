@@ -12,6 +12,7 @@ import {
   LockOpen,
   Radio,
   Package,
+  LayoutGrid,
 } from 'lucide-react'
 import type {
   DeviceAgentReport,
@@ -24,7 +25,13 @@ import { usePermission } from '@/hooks/usePermission'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
-import { MIGRATION_CFG, MigrationPanel, PackagePanel } from './MigrationPanels'
+import {
+  AppsPanel,
+  MIGRATION_CFG,
+  MigrationPanel,
+  PackagePanel,
+  migrationLabel,
+} from './MigrationPanels'
 import {
   useDeviceMigrations,
   useDeviceSyncState,
@@ -536,6 +543,7 @@ export default function DeviceMigrationPage() {
   const [agentFilter, setAgentFilter] = useState<'' | 'with' | 'without' | 'warnings'>('')
   const [open, setOpen] = useState<string | null>(null)
   const [showPackage, setShowPackage] = useState(false)
+  const [showApps, setShowApps] = useState(false)
 
   const sync = syncData?.sync ?? data?.sync
   const lastSyncAt = syncData?.lastSyncAt ?? data?.lastSyncAt ?? null
@@ -633,6 +641,9 @@ export default function DeviceMigrationPage() {
           <Button size="sm" variant="outline" onClick={() => setShowPackage((v) => !v)}>
             <Package className="mr-1.5 h-4 w-4" /> PPKG Ouihelp
           </Button>
+          <Button size="sm" variant="outline" onClick={() => setShowApps((v) => !v)}>
+            <LayoutGrid className="mr-1.5 h-4 w-4" /> Applications
+          </Button>
           {canWrite && (
             <Button
               size="sm"
@@ -657,6 +668,7 @@ export default function DeviceMigrationPage() {
       </div>
 
       {showPackage && <PackagePanel canWrite={canWrite} />}
+      {showApps && <AppsPanel canWrite={canWrite} />}
 
       {(sync?.error || (sync?.warnings.length ?? 0) > 0) && (
         <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
@@ -927,7 +939,7 @@ export default function DeviceMigrationPage() {
                               MIGRATION_CFG[d.migration.status].cls
                             )}
                           >
-                            {MIGRATION_CFG[d.migration.status].label}
+                            {migrationLabel(d.migration)}
                           </div>
                         )}
                       </td>

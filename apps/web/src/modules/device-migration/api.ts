@@ -1,6 +1,9 @@
 import { apiClient } from '@/lib/api'
 import type {
+  DeviceAppCatalogResponse,
   MigrationPackageResponse,
+  MigrationProfilesResponse,
+  UpdateAppRuleRequest,
   ScheduleMigrationRequest,
   DeviceMigrationListResponse,
   DeviceMigrationSyncState,
@@ -43,6 +46,22 @@ export const deviceMigrationApi = {
 
   scheduleMigration: (id: string, req: ScheduleMigrationRequest) =>
     apiClient.post(`/device-migration/devices/${id}/migration`, req).then((r) => r.data),
+
+  previewProfiles: (id: string, profileTargets: Record<string, string | null>) =>
+    apiClient
+      .post<MigrationProfilesResponse>(`/device-migration/devices/${id}/migration/profiles`, {
+        profileTargets,
+      })
+      .then((r) => r.data),
+
+  abandonMigration: (id: string) =>
+    apiClient.post(`/device-migration/devices/${id}/migration/abandon`).then((r) => r.data),
+
+  apps: () =>
+    apiClient.get<DeviceAppCatalogResponse>('/device-migration/apps').then((r) => r.data),
+
+  updateAppRules: (req: UpdateAppRuleRequest) =>
+    apiClient.put('/device-migration/apps/rules', req).then((r) => r.data),
 
   cancelMigration: (id: string) =>
     apiClient.post(`/device-migration/devices/${id}/migration/cancel`).then((r) => r.data),
