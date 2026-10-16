@@ -54,6 +54,9 @@ import {
 export const deviceMigrationRouter = new Hono<{ Variables: RbacVariables }>()
 deviceMigrationRouter.use('*', authMiddleware, loadUserRole)
 
+/** Version minimale de l'agent pour une bascule en place (voir tools/device-agent). */
+const INPLACE_AGENT_VERSION = '1.2.1'
+
 const STALE_DAYS = 90
 const AGENT_SILENT_MS = 24 * 3600_000
 // Un PC vu par l'agent depuis moins de 7 jours est présent, même absent des API cloud (AD seul)
@@ -564,8 +567,14 @@ deviceMigrationRouter.post(
     let profileMap: MigrationProfileMapping[] = []
     if (mode === 'inplace') {
       if (!a.report) return refuse('Aucun rapport d’agent : profils inconnus')
-      if (a.report.agentVersion.localeCompare('1.2.0', undefined, { numeric: true }) < 0)
-        return refuse(`Agent ${a.report.agentVersion} trop ancien : la bascule en place demande l’agent 1.2.0`)
+      // 1.2.1 : c'est la version qui supprime les profils non repris. Une 1.2.0 transférerait
+      // le profil conservé sans faire le ménage, sans rien signaler.
+      if (
+        a.report.agentVersion.localeCompare(INPLACE_AGENT_VERSION, undefined, { numeric: true }) < 0
+      )
+        return refuse(
+          `Agent ${a.report.agentVersion} trop ancien : la bascule en place demande l’agent ${INPLACE_AGENT_VERSION}`
+        )
       profileMap = await resolveProfileMap(a.report.profiles, targets, mainSid)
       const main = profileMap.find((m) => m.action === 'migrate')
       if (!main)
