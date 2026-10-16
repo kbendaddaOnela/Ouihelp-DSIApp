@@ -34,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.5'
+$AgentVersion = '1.1.6'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -83,8 +83,9 @@ function Install-Agent {
     -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledPs`""
   $atStartup = New-ScheduledTaskTrigger -AtStartup
   $atStartup.Delay = 'PT5M'
-  # Toutes les 15 min : la cadence réelle vient du serveur (4 h, 15 min pendant une bascule)
-  $every30 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 15)
+  # Toutes les 2 min : réveil léger. L'inventaire complet reste espacé (nextCheckinAt, 4 h) ;
+  # seul le sondage de bascule (Invoke-MigrationPoll) agit à chaque réveil → bascule réactive.
+  $every30 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2)
   $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
   $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
@@ -419,17 +420,7 @@ function Invoke-Checkin {
     $minutes = if ($res.nextCheckinMinutes -gt 0) { [int]$res.nextCheckinMinutes } else { 240 }
     $state.nextCheckinAt = (Get-Date).AddMinutes($minutes).ToString('o')
     Write-Log "Check-in OK, prochain dans $minutes min"
-    # Ordre de bascule (lot 3) ; $null = : aucune sortie ne doit polluer le retour de la fonction
-    if ($res.migration) {
-      $null = Invoke-Migration $res.migration
-    }
-    elseif (Test-Path $PayloadDir) {
-      # Plus de bascule active (échec ou annulation côté serveur) mais des fichiers subsistent
-      # dans C:\Recovery\OEM (PPKG, clés Wi-Fi en clair, ResetConfig) : on les retire.
-      Remove-MigrationPayload
-      Restore-Sleep
-      Write-Log 'Bascule terminée côté serveur : fichiers de bascule retirés de C:\Recovery\OEM'
-    }
+    # La bascule est pilotée par le sondage léger Invoke-MigrationPoll (plus réactif), pas ici.
   } catch {
     $status = $null
     if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
@@ -1008,11 +999,32 @@ function Invoke-Migration($Order) {
   }
 }
 
+# Sondage léger de bascule : appelé à chaque réveil de la tâche (toutes les 2 min) pour réagir
+# vite à une programmation, sans envoyer le rapport d'inventaire complet (qui reste espacé).
+# Ne fait rien tant que l'agent n'est pas enrôlé (pas de jeton).
+function Invoke-MigrationPoll {
+  if (-not (Test-Path $TokenPath)) { return }
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  $order = Safe 'migrationPoll' { Invoke-Api 'GET' '/order' }
+  if ($order -and $order.migration) {
+    $null = Invoke-Migration $order.migration
+  }
+  elseif (Test-Path $PayloadDir) {
+    # Plus de bascule active (échec / annulation) mais des fichiers subsistent dans
+    # C:\Recovery\OEM (PPKG, clés Wi-Fi, ResetConfig) : on les retire.
+    Remove-MigrationPayload
+    Restore-Sleep
+    Write-Log 'Bascule terminée côté serveur : fichiers de bascule retirés de C:\Recovery\OEM'
+  }
+}
+
 # ═════════════════════════════════════════════════════════════════════════════
 
 try {
   if ($Uninstall) { Uninstall-Agent; exit 0 }
   if ($PSCommandPath -ne $InstalledPs) { Install-Agent; exit 0 }
+  # D'abord la bascule (réactif), puis le rapport d'inventaire (espacé par nextCheckinAt)
+  Invoke-MigrationPoll
   # Code de sortie ≠ 0 en cas d'échec : visible dans « Dernier résultat » de la tâche planifiée
   if (Invoke-Checkin) { exit 1 }
   exit 0
