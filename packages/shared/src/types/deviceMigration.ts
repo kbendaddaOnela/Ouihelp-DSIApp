@@ -131,14 +131,25 @@ export type MigrationStatus =
  */
 export type MigrationMode = 'inplace' | 'reset'
 
-/** Profil Windows ONELA → compte Ouihelp qui en hérite (bascule en place). */
+/**
+ * Devenir d'un profil Windows ONELA à la bascule en place :
+ * - migrate : profil conservé et donné au compte Ouihelp (un seul par poste, le dernier connecté) ;
+ * - delete  : profil supprimé du poste (clé ProfileList et dossier de C:\Users). Le compte ONELA
+ *   ne pourra de toute façon plus ouvrir de session une fois le poste sorti du tenant.
+ */
+export type MigrationProfileAction = 'migrate' | 'delete'
+
+/** Profil Windows ONELA du poste et ce qu'il devient à la bascule en place. */
 export interface MigrationProfileMapping {
   oldSid: string
   /** Compte tel que vu sur le PC (DOMAINE\compte ou UPN) */
   oldAccount: string | null
   oldUpn: string | null
   localDataMb: number | null
-  /** Compte Ouihelp retenu ; null = profil non transféré */
+  /** Dernière ouverture de session connue : c'est elle qui désigne le profil conservé */
+  lastLogonAt: string | null
+  action: MigrationProfileAction
+  /** Compte Ouihelp retenu (profil conservé uniquement) */
   newUpn: string | null
   newSid: string | null
   /** Partie avant « @ » du compte Ouihelp (nom du profil Windows) */
@@ -201,8 +212,13 @@ export interface ScheduleMigrationRequest {
   /** true (défaut) : prévenir l'utilisateur et attendre « Démarrer » ; false : agir hors session */
   promptUser?: boolean
   /**
+   * Bascule en place : profil conservé et transféré (SID). Absent = le dernier profil connecté.
+   * Tous les autres profils ONELA du poste sont supprimés.
+   */
+  mainProfileSid?: string | null
+  /**
    * Bascule en place : compte Ouihelp choisi par la DSI pour un profil (clé = SID du profil).
-   * null = ne pas transférer ce profil. Absent = correspondance automatique.
+   * Seul celui du profil conservé est utilisé. Absent = correspondance automatique.
    */
   profileTargets?: Record<string, string | null>
 }
@@ -235,8 +251,13 @@ export interface DeviceAgentMigrationOrder {
   maxSnoozes: number
   /** Reports déjà demandés (le bouton « Plus tard » disparaît une fois le maximum atteint) */
   snoozeCount: number
-  /** Bascule en place : profils à transférer (SID ONELA → SID Ouihelp) */
+  /** Bascule en place : profil à transférer (SID ONELA → SID Ouihelp). Un seul aujourd'hui. */
   profileMap: Array<{ oldSid: string; oldUpn: string | null; newSid: string; newUpn: string; newSam: string }>
+  /**
+   * Bascule en place : profils à supprimer du poste (clé ProfileList et dossier) juste après le
+   * transfert. L'agent ne supprime jamais un profil chargé, système ou local.
+   */
+  removeProfiles: Array<{ sid: string; account: string | null; upn: string | null }>
   /**
    * Bascule en place : applications à désinstaller (nom exact tel que remonté par l'agent).
    * L'agent n'exécute que la désinstallation enregistrée localement (MSI ou QuietUninstallString).

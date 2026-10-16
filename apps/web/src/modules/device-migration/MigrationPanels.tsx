@@ -200,17 +200,25 @@ const SOURCE_LABEL: Record<NonNullable<MigrationProfileMapping['source']>, strin
   manual: 'saisi',
 }
 
-/** Profils ONELA du poste → compte Ouihelp qui en hérite. Éditable avant programmation. */
+/**
+ * Profils ONELA du poste. Un seul est conservé et transféré au compte Ouihelp (par défaut le
+ * dernier connecté) ; les autres sont supprimés du poste à la bascule, clé de registre et
+ * dossier compris. Éditable avant programmation.
+ */
 function ProfileMap({
   profiles,
   editable,
   targets,
   setTargets,
+  mainSid,
+  setMainSid,
 }: {
   profiles: MigrationProfileMapping[]
   editable: boolean
   targets: Record<string, string | null>
   setTargets: (t: Record<string, string | null>) => void
+  mainSid: string | null
+  setMainSid: (sid: string | null) => void
 }) {
   const [editing, setEditing] = useState<string | null>(null)
   const [value, setValue] = useState('')
@@ -227,17 +235,35 @@ function ProfileMap({
       <thead>
         <tr className="text-left text-gray-400">
           <th className="py-1 pr-3 font-normal">Profil ONELA</th>
+          <th className="py-1 pr-3 font-normal">Dernière connexion</th>
           <th className="py-1 pr-3 font-normal">Données locales</th>
-          <th className="py-1 font-normal">Repris par le compte Ouihelp</th>
+          <th className="py-1 font-normal">À la bascule</th>
         </tr>
       </thead>
       <tbody>
         {profiles.map((p) => (
           <tr key={p.oldSid} className="border-t border-gray-100 align-top">
             <td className="py-1 pr-3 font-mono">{p.oldUpn ?? p.oldAccount ?? p.oldSid}</td>
+            <td className="py-1 pr-3 text-gray-500">
+              {p.lastLogonAt ? new Date(p.lastLogonAt).toLocaleDateString('fr-FR') : '—'}
+            </td>
             <td className="py-1 pr-3">{p.localDataMb == null ? '—' : `${p.localDataMb} Mo`}</td>
             <td className="py-1">
-              {editing === p.oldSid ? (
+              {p.action === 'delete' ? (
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="text-amber-700">
+                    Supprimé du poste (registre et dossier C:\Users)
+                  </span>
+                  {editable && (
+                    <button
+                      className="text-primary-600 hover:underline"
+                      onClick={() => setMainSid(p.oldSid)}
+                    >
+                      Conserver celui-ci
+                    </button>
+                  )}
+                </span>
+              ) : editing === p.oldSid ? (
                 <span className="flex flex-wrap items-center gap-2">
                   <input
                     className="w-64 rounded-md border border-gray-300 px-2 py-1"
@@ -261,12 +287,15 @@ function ProfileMap({
                 </span>
               ) : (
                 <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-gray-700">
+                    Conservé
+                    {editable && (mainSid === p.oldSid ? ' (choix DSI)' : ' (dernier connecté)')},
+                    repris par
+                  </span>
                   {p.newUpn ? (
                     <span className="font-mono text-gray-800">{p.newUpn}</span>
-                  ) : p.error ? (
-                    <span className="text-red-600">{p.error}</span>
                   ) : (
-                    <span className="text-gray-400">non transféré (profil laissé tel quel)</span>
+                    <span className="text-red-600">{p.error ?? 'compte Ouihelp à choisir'}</span>
                   )}
                   {p.newUpn && p.source && (
                     <span className="text-gray-400">({SOURCE_LABEL[p.source]})</span>
@@ -282,19 +311,12 @@ function ProfileMap({
                       >
                         Choisir le compte
                       </button>
-                      {p.oldSid in targets ? (
+                      {p.oldSid in targets && (
                         <button
                           className="text-gray-500 hover:underline"
                           onClick={() => setTarget(p.oldSid, undefined)}
                         >
                           Correspondance auto
-                        </button>
-                      ) : (
-                        <button
-                          className="text-gray-500 hover:underline"
-                          onClick={() => setTarget(p.oldSid, null)}
-                        >
-                          Ne pas transférer
                         </button>
                       )}
                     </>
@@ -395,22 +417,29 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
   const [promptUser, setPromptUser] = useState(true)
   const [mode, setMode] = useState<MigrationMode>('inplace')
   const [targets, setTargets] = useState<Record<string, string | null>>({})
+  // Profil conservé et transféré ; null = le dernier connecté, choisi par le serveur
+  const [mainSid, setMainSid] = useState<string | null>(null)
   const m = d.migration
   const active = !!m && ACTIVE.includes(m.status)
   const block = blockers(d, mode)
   const preview = useProfilePreview(
     d.id,
     targets,
+    mainSid,
     canWrite && !active && mode === 'inplace' && !!d.agent
   )
   const previewProfiles = preview.data?.profiles ?? []
+  const mainProfile = previewProfiles.find((p) => p.action === 'migrate')
+  const removedProfiles = previewProfiles.filter((p) => p.action === 'delete')
   const previewBlock =
     mode === 'inplace' && preview.data
-      ? previewProfiles.find((p) => p.error)
-        ? 'Correspondance des profils à corriger'
-        : !previewProfiles.some((p) => p.newSid)
-          ? 'Aucun profil à transférer'
-          : null
+      ? !mainProfile
+        ? 'Aucun profil d’utilisateur ONELA sur ce poste'
+        : mainProfile.error
+          ? `Profil conservé : ${mainProfile.error}`
+          : !mainProfile.newSid
+            ? 'Compte Ouihelp du profil conservé à choisir'
+            : null
       : null
   const silentReset =
     m?.status === 'resetting' &&
@@ -433,10 +462,20 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
                   <strong>{d.targetName}</strong>.
                 </p>
                 <p>
-                  <strong>Windows, applications et fichiers sont conservés.</strong> Chaque profil
-                  ONELA retenu est transféré au compte Ouihelp indiqué. Les applications décochées
-                  dans le catalogue « Applications » sont désinstallées.
+                  <strong>Windows, applications et fichiers sont conservés.</strong> Le profil de{' '}
+                  <strong>{mainProfile?.oldUpn ?? mainProfile?.oldAccount}</strong> est transféré au
+                  compte <strong>{mainProfile?.newUpn}</strong>. Les applications décochées dans le
+                  catalogue « Applications » sont désinstallées.
                 </p>
+                {removedProfiles.length > 0 && (
+                  <p className="text-amber-700">
+                    <strong>
+                      {removedProfiles.length} autre(s) profil(s) seront supprimés du poste
+                    </strong>{' '}
+                    (clé de registre et dossier de C:\Users, données locales comprises) :{' '}
+                    {removedProfiles.map((p) => p.oldUpn ?? p.oldAccount ?? p.oldSid).join(', ')}.
+                  </p>
+                )}
                 <p>
                   Deux redémarrages, puis l’utilisateur se connecte avec son adresse Ouihelp et
                   retrouve son bureau. Annulation possible jusqu’à l’étape « prêt ».
@@ -473,7 +512,13 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
       })
       return
     }
-    schedule.mutate({ id: d.id, mode, promptUser, profileTargets: targets })
+    schedule.mutate({
+      id: d.id,
+      mode,
+      promptUser,
+      profileTargets: targets,
+      mainProfileSid: mainSid,
+    })
   }
 
   // En place, après « bascule en cours », le poste a déjà quitté ONELA : l'agent termine le
@@ -592,7 +637,14 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
       <TargetName d={d} canWrite={canWrite} locked={active} />
 
       {m?.mode === 'inplace' && m.profiles.length > 0 && (active || m.status === 'done') ? (
-        <ProfileMap profiles={m.profiles} editable={false} targets={{}} setTargets={() => {}} />
+        <ProfileMap
+          profiles={m.profiles}
+          editable={false}
+          targets={{}}
+          setTargets={() => {}}
+          mainSid={null}
+          setMainSid={() => {}}
+        />
       ) : (
         canWrite &&
         !active &&
@@ -608,6 +660,8 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
             editable
             targets={targets}
             setTargets={setTargets}
+            mainSid={mainSid}
+            setMainSid={setMainSid}
           />
         ))
       )}

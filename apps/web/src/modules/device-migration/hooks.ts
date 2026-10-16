@@ -88,6 +88,7 @@ export function useScheduleMigration() {
       mode: MigrationMode
       promptUser: boolean
       profileTargets?: Record<string, string | null>
+      mainProfileSid?: string | null
     }) => deviceMigrationApi.scheduleMigration(id, req),
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
@@ -119,10 +120,15 @@ export function useAbandonMigration() {
 }
 
 /** Aperçu des profils transférés ; recalculé quand la saisie DSI change. */
-export function useProfilePreview(id: string, targets: Record<string, string | null>, enabled: boolean) {
+export function useProfilePreview(
+  id: string,
+  targets: Record<string, string | null>,
+  mainProfileSid: string | null,
+  enabled: boolean
+) {
   return useQuery({
-    queryKey: ['device-migration-profiles', id, targets],
-    queryFn: () => deviceMigrationApi.previewProfiles(id, targets),
+    queryKey: ['device-migration-profiles', id, targets, mainProfileSid],
+    queryFn: () => deviceMigrationApi.previewProfiles(id, targets, mainProfileSid),
     enabled,
     staleTime: 60_000,
   })

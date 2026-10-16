@@ -425,6 +425,7 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
       maxSnoozes: 0,
       snoozeCount: 0,
       profileMap: [],
+      removeProfiles: [],
       removeApps: [],
     }
   }
@@ -478,7 +479,7 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
     maxSnoozes: MIGRATION_MAX_SNOOZES,
     snoozeCount: d.migrationSnoozes,
     profileMap: parseProfileMap(d.migrationProfileMap)
-      .filter((m) => m.newSid && m.newUpn && m.newSam)
+      .filter((m) => m.action === 'migrate' && m.newSid && m.newUpn && m.newSam)
       .map((m) => ({
         oldSid: m.oldSid,
         oldUpn: m.oldUpn,
@@ -486,6 +487,10 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
         newUpn: m.newUpn!,
         newSam: m.newSam!,
       })),
+    // Seuls les profils explicitement marqués « delete » à la programmation sont supprimés.
+    removeProfiles: parseProfileMap(d.migrationProfileMap)
+      .filter((m) => m.action === 'delete')
+      .map((m) => ({ sid: m.oldSid, account: m.oldAccount, upn: m.oldUpn })),
     removeApps,
     ...(reportToken ? { reportToken } : {}),
   }

@@ -5,23 +5,29 @@ import { getMsToken, ouihelpCreds } from '../inventory/syncService'
 import { migrations } from '../migration/schema'
 
 /**
- * Bascule en place : quel compte Ouihelp hérite de chaque profil Windows ONELA.
+ * Bascule en place : quel profil Windows est conservé, et quel compte Ouihelp en hérite.
+ *
+ * Décision DSI (16/10/2026) : **un seul profil est transféré, celui du dernier utilisateur
+ * connecté** ; tous les autres profils ONELA du poste sont supprimés par l'agent (clé
+ * ProfileList et dossier de C:\Users). Un poste d'agence accumule des profils d'anciens
+ * salariés et d'intervenants, dont les comptes ONELA disparaissent de toute façon le 31/12.
  *
  * Le transfert (Win32_UserProfile.ChangeOwner, côté agent) demande le SID du compte Ouihelp.
  * Pour un compte Entra, c'est l'attribut `securityIdentifier` (S-1-12-1-…), lisible par Graph
  * avec les droits applicatifs : contrairement au script d'origine, l'utilisateur n'a pas à se
  * connecter à Ouihelp pendant la bascule.
  *
- * Correspondance ONELA → Ouihelp, dans l'ordre :
+ * Correspondance ONELA → Ouihelp du profil conservé, dans l'ordre :
  *  1. table `migrations` (création des comptes Ouihelp) : onela_upn / onela_email → goh_upn ;
  *  2. compte Ouihelp dont une adresse (mail ou proxyAddresses) est l'UPN ONELA ;
  *  3. saisie de la DSI à la programmation (prioritaire si fournie).
  */
 
 const GRAPH = 'https://graph.microsoft.com/v1.0'
-// Comptes techniques (support, admin) : ils se connectent pour dépanner, leur profil n'est
-// pas celui d'un utilisateur du poste. Même règle que les dernières connexions (routes.ts).
-const TECHNICAL_ACCOUNT = /^(admin|adm[._-]|administrat|support)/i
+// Comptes techniques (support, admin, comptes de service) : ils se connectent pour dépanner ou
+// faire tourner un outil, leur profil n'est pas celui d'un utilisateur du poste. Ils ne sont donc
+// jamais retenus comme profil conservé — mais la DSI peut toujours en désigner un à la main.
+const TECHNICAL_ACCOUNT = /^(admin|adm[._-]|administrat|support|svc[._-]?)/i
 
 interface OuihelpUser {
   id: string
@@ -68,48 +74,86 @@ async function upnFromAccountMigrations(onelaUpn: string): Promise<string | null
   return rows.find((r) => r.gohUpn)?.gohUpn?.toLowerCase() ?? null
 }
 
-/** Profils candidats au transfert : comptes AD / Entra d'utilisateurs (pas locaux, pas techniques). */
+/**
+ * Profils ONELA du poste : comptes AD / Entra. Les profils de comptes LOCAUX (compte de secours,
+ * administrateur local, comptes de service installés sur le poste) ne sont jamais touchés : ils
+ * continuent de fonctionner après la bascule.
+ */
+export function onelaProfiles(profiles: DeviceAgentProfile[]): DeviceAgentProfile[] {
+  return profiles.filter((p) => p.kind === 'ad' || p.kind === 'entra')
+}
+
+/** Profils qui peuvent être LE profil conservé : ceux d'un utilisateur, pas d'un compte technique. */
 export function candidateProfiles(profiles: DeviceAgentProfile[]): DeviceAgentProfile[] {
-  return profiles.filter((p) => {
-    if (p.kind !== 'ad' && p.kind !== 'entra') return false
+  return onelaProfiles(profiles).filter((p) => {
     const account = p.upn ?? p.account ?? ''
     const local = account.split('\\').pop()!.split('@')[0]!
     return !!account && !TECHNICAL_ACCOUNT.test(local)
   })
 }
 
+function logonTime(p: DeviceAgentProfile): number {
+  const at = p.lastLogonTime ?? p.lastUseTime
+  const t = at ? new Date(at).getTime() : NaN
+  return Number.isNaN(t) ? 0 : t
+}
+
 /**
- * Calcule la correspondance pour les profils du poste. `targets` (saisie DSI) : SID → UPN
- * Ouihelp, ou null pour ne pas transférer le profil.
+ * Profil conservé : celui choisi par la DSI s'il est encore là, sinon le dernier connecté
+ * (chargement du profil Windows, à défaut `LastUseTime`). Les comptes techniques (support,
+ * admin) ne sont jamais retenus automatiquement : ils se connectent pour dépanner.
+ */
+export function pickMainProfile(
+  profiles: DeviceAgentProfile[],
+  wantedSid?: string | null
+): DeviceAgentProfile | null {
+  const candidates = candidateProfiles(profiles)
+  if (wantedSid) {
+    const wanted = onelaProfiles(profiles).find((p) => p.sid === wantedSid)
+    if (wanted) return wanted
+  }
+  return [...candidates].sort((a, b) => logonTime(b) - logonTime(a))[0] ?? null
+}
+
+/**
+ * Devenir de chaque profil ONELA du poste : un seul est conservé et transféré (le dernier
+ * connecté, ou celui imposé par `mainSid`), les autres sont supprimés. `targets` (saisie DSI) :
+ * SID → compte Ouihelp du profil conservé.
  */
 export async function resolveProfileMap(
   profiles: DeviceAgentProfile[],
-  targets: Record<string, string | null> = {}
+  targets: Record<string, string | null> = {},
+  mainSid?: string | null
 ): Promise<MigrationProfileMapping[]> {
+  const main = pickMainProfile(profiles, mainSid)
   const c = ouihelpCreds()
   const token = await getMsToken(c.tid, c.cid, c.sec)
   const out: MigrationProfileMapping[] = []
-  for (const p of candidateProfiles(profiles)) {
+  for (const p of onelaProfiles(profiles)) {
     const base: MigrationProfileMapping = {
       oldSid: p.sid,
       oldAccount: p.account,
       oldUpn: p.upn ?? null,
       localDataMb: p.localDataMb,
+      lastLogonAt: p.lastLogonTime ?? p.lastUseTime,
+      action: p.sid === main?.sid ? 'migrate' : 'delete',
       newUpn: null,
       newSid: null,
       newSam: null,
       source: null,
       error: null,
     }
+    // Profil supprimé : aucun compte Ouihelp à chercher
+    if (base.action === 'delete') {
+      out.push(base)
+      continue
+    }
     try {
       let user: OuihelpUser | null = null
       let source: MigrationProfileMapping['source'] = null
-      if (Object.prototype.hasOwnProperty.call(targets, p.sid)) {
-        const wanted = targets[p.sid]?.trim().toLowerCase()
-        if (!wanted) {
-          out.push(base) // la DSI a choisi de ne pas transférer ce profil
-          continue
-        }
+      const wantedTarget = targets[p.sid]
+      if (wantedTarget) {
+        const wanted = wantedTarget.trim().toLowerCase()
         user = await ouihelpUserByUpn(token, wanted)
         source = 'manual'
         if (!user) throw new Error(`Compte Ouihelp ${wanted} introuvable`)
@@ -141,15 +185,12 @@ export async function resolveProfileMap(
       out.push({ ...base, error: err instanceof Error ? err.message : String(err) })
     }
   }
-  // Deux profils vers le même compte Ouihelp : ChangeOwner échouerait sur le second
-  const seen = new Map<string, string>()
-  for (const m of out) {
-    if (!m.newSid) continue
-    const prev = seen.get(m.newSid)
-    if (prev) m.error = `Même compte Ouihelp que le profil ${prev} : n'en transférer qu'un`
-    else seen.set(m.newSid, m.oldAccount ?? m.oldSid)
-  }
-  return out
+  // Le profil conservé en premier, les profils supprimés ensuite, du plus récent au plus ancien
+  return out.sort(
+    (a, b) =>
+      (a.action === 'migrate' ? 0 : 1) - (b.action === 'migrate' ? 0 : 1) ||
+      new Date(b.lastLogonAt ?? 0).getTime() - new Date(a.lastLogonAt ?? 0).getTime()
+  )
 }
 
 export function parseProfileMap(raw: string | null): MigrationProfileMapping[] {
