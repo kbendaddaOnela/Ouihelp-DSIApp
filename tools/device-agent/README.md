@@ -105,7 +105,7 @@ Pilote : PC **Entra Joined** uniquement. Deux modes au choix à la programmation
   après quoi le bouton « Plus tard » disparaît et la DSI voit « reports épuisés » pour relancer.
 - **Seulement hors session** : l'agent attend qu'aucune session ne soit ouverte.
 
-1. **DSI App** : fiche du poste > « Programmer la réinstallation ». L'agent repasse toutes les 15 min.
+1. **DSI App** : fiche du poste > « Programmer la réinstallation ». L'agent sonde la bascule toutes les 2 min (réaction quasi immédiate) ; l'inventaire complet reste espacé (~4 h).
 2. **Agent** (statut *staging*) : dès la programmation, il neutralise la **mise en veille**, la
    mise en veille prolongée, l'extinction de l'écran et l'action de fermeture du capot (via
    `powercfg`) — session fermée, le PC resterait sinon sur l'écran de verrouillage et s'endormirait.

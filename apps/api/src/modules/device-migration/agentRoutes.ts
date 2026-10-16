@@ -455,6 +455,17 @@ async function agentDevice(bearerHeader: string | undefined): Promise<string | n
   return agent?.deviceMigrationId ?? null
 }
 
+/**
+ * Sondage léger : l'agent l'interroge souvent (quelques minutes) pour réagir vite à une
+ * bascule programmée, sans envoyer son rapport d'inventaire complet. Renvoie l'ordre ou null.
+ */
+deviceAgentRouter.get('/order', async (c) => {
+  const deviceId = await agentDevice(c.req.header('Authorization'))
+  if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
+  const migration = await migrationOrderFor(deviceId)
+  return c.json({ migration: migration ?? null })
+})
+
 deviceAgentRouter.get('/migration', async (c) => {
   const deviceId = await agentDevice(c.req.header('Authorization'))
   if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
