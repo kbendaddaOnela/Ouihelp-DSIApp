@@ -392,8 +392,13 @@ deviceAgentRouter.post('/checkin', async (c) => {
 
 const MIGRATION_CHECKIN_MINUTES = 15
 const CLEANUP_STALE_MS = 10 * 60_000
-/** Statuts pour lesquels l'agent agit encore (après « ready », la réinitialisation l'efface). */
+/**
+ * Statuts pour lesquels l'agent agit encore. En réinstallation propre, la réinitialisation
+ * efface l'agent juste après « ready ». En bascule en place l'agent survit et enchaîne les
+ * étapes suivantes (transfert des profils, jonction) : il lui faut l'ordre jusqu'à « joining ».
+ */
 const AGENT_STATUSES = ['scheduled', 'staging', 'staged', 'cleanup', 'ready', 'cancelled']
+const AGENT_INPLACE_STATUSES = [...AGENT_STATUSES, 'resetting', 'joining']
 
 /**
  * Ordre de bascule à remettre à l'agent. Au 1er passage (« scheduled ») ou tant que l'agent
@@ -402,11 +407,13 @@ const AGENT_STATUSES = ['scheduled', 'staging', 'staged', 'cleanup', 'ready', 'c
  */
 async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigrationOrder | null> {
   const [d] = await db.select().from(deviceMigrations).where(eq(deviceMigrations.id, deviceId))
-  if (!d?.migrationStatus || !AGENT_STATUSES.includes(d.migrationStatus)) return null
+  const mode: MigrationMode = d?.migrationMode === 'inplace' ? 'inplace' : 'reset'
+  const statuses = mode === 'inplace' ? AGENT_INPLACE_STATUSES : AGENT_STATUSES
+  if (!d?.migrationStatus || !statuses.includes(d.migrationStatus)) return null
   if (d.migrationStatus === 'cancelled') {
     return {
       status: 'cancelled',
-      mode: (d.migrationMode as MigrationMode) ?? 'reset',
+      mode,
       packageSha256: '',
       ouihelpTenantId: '',
       breakglassUser: BREAKGLASS_USER,
@@ -446,7 +453,6 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
       )
     }
   }
-  const mode: MigrationMode = d.migrationMode === 'inplace' ? 'inplace' : 'reset'
   let removeApps: string[] = []
   if (mode === 'inplace') {
     const [agent] = await db

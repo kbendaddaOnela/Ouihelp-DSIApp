@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Agent DSI — inventaire des PC ONELA avant leur bascule vers le tenant Ouihelp (lot 2).
+  Agent DSI - inventaire des PC ONELA avant leur bascule vers le tenant Ouihelp (lot 2).
 
 .DESCRIPTION
   Un seul fichier, deux modes :
@@ -15,8 +15,11 @@
      (nextCheckinMinutes) ; les passages intermédiaires sortent immédiatement.
 
   Hors bascule, LECTURE SEULE : l'agent ne modifie rien sur le poste. Il n'exécute jamais de
-  commande reçue du serveur : la seule action possible est la bascule codée ci-dessous
-  (réinstallation propre vers Ouihelp), déclenchée uniquement si la DSI a programmé CE poste.
+  commande reçue du serveur : les seules actions possibles sont les deux bascules codées
+  ci-dessous, déclenchées uniquement si la DSI a programmé CE poste dans la DSI App :
+   - « inplace » : bascule en place, Windows / applications / fichiers conservés, chaque profil
+     Windows transféré au compte Ouihelp indiqué par la DSI App ;
+   - « reset »   : réinstallation propre (Supprimer tout).
 
 .PARAMETER Uninstall
   Supprime la tâche planifiée et C:\ProgramData\DSI.
@@ -34,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.8'
+$AgentVersion = '1.2.0'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -90,7 +93,7 @@ function Install-Agent {
   $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
   Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Action $action -Trigger @($atStartup, $every30) `
-    -Principal $principal -Settings $settings -Description 'Agent DSI ONELA — inventaire avant migration Ouihelp (lecture seule)' -Force | Out-Null
+    -Principal $principal -Settings $settings -Description 'Agent DSI ONELA - inventaire avant migration Ouihelp (lecture seule)' -Force | Out-Null
 
   # 1er rapport tout de suite, dans ce même processus : s'il échoue, le script Intune / GPO
   # sort en erreur avec la cause, visible à distance dans « État de l'appareil » d'Intune
@@ -122,7 +125,7 @@ function Save-State($State) {
 
 function Get-DsregStatus {
   $map = @{}
-  foreach ($line in (& dsregcmd.exe /status 2>$null)) {
+  foreach ($line in (& (Get-DsregPath) /status 2>$null)) {
     if ($line -match '^\s*([A-Za-z]+)\s*:\s*(.*?)\s*$' -and -not $map.ContainsKey($Matches[1])) {
       $map[$Matches[1]] = $Matches[2]
     }
@@ -350,6 +353,67 @@ function Get-Profiles($State) {
   return ,$result
 }
 
+# Désinstallation enregistrée pour une application : commande MSI ou QuietUninstallString.
+# Renvoie $null quand aucune désinstallation silencieuse n'est possible (installeur interactif).
+function Get-AppUninstall($Key) {
+  $id = Split-Path $Key.PSPath -Leaf
+  if ($Key.WindowsInstaller -eq 1 -and $id -match '^\{[0-9A-Fa-f-]{36}\}$') {
+    return [ordered]@{ file = 'msiexec.exe'; arguments = "/x $id /qn /norestart" }
+  }
+  $quiet = [string]$Key.QuietUninstallString
+  if (-not $quiet) { return $null }
+  if ($quiet -match '^\s*"([^"]+)"\s*(.*)$') { return [ordered]@{ file = $Matches[1]; arguments = $Matches[2].Trim() } }
+  if ($quiet -match '^\s*(\S+\.exe)\s*(.*)$') { return [ordered]@{ file = $Matches[1]; arguments = $Matches[2].Trim() } }
+  return [ordered]@{ file = 'cmd.exe'; arguments = "/c $quiet" }
+}
+
+# Applications installées : clés Uninstall HKLM 32 et 64 bits, hors composants système,
+# mises à jour et correctifs. Alimente le catalogue DSI (une décision par application pour
+# tout le parc) ; la bascule en place ne désinstalle que ce que la DSI a décoché.
+function Get-InstalledApps {
+  $paths = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  )
+  $byName = [ordered]@{}
+  foreach ($k in (Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue)) {
+    $name = [string]$k.DisplayName
+    if (-not $name) { continue }
+    if ($k.SystemComponent -eq 1 -or $k.ReleaseType -or $k.ParentKeyName) { continue }
+    if ($name -match '^(KB\d{6,}|Security Update|Update for|Hotfix|Mise . jour)') { continue }
+    if ($byName.Contains($name)) { continue }
+    $byName[$name] = [ordered]@{
+      name          = $name
+      version       = [string]$k.DisplayVersion
+      publisher     = [string]$k.Publisher
+      uninstallable = [bool](Get-AppUninstall $k)
+    }
+  }
+  return ,@($byName.Values)
+}
+
+# Désinstalle une application par son nom exact (tel que remonté dans le rapport), avec la
+# commande enregistrée localement. L'agent n'exécute jamais une commande venue du serveur :
+# le serveur ne transmet que des noms.
+function Uninstall-AppByName([string]$Name) {
+  $paths = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  )
+  $key = Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue | Where-Object { [string]$_.DisplayName -eq $Name } | Select-Object -First 1
+  if (-not $key) { return @{ ok = $true; message = 'déjà absente' } }
+  $cmd = Get-AppUninstall $key
+  if (-not $cmd) { return @{ ok = $false; message = 'pas de désinstallation silencieuse' } }
+  try {
+    $p = Start-Process -FilePath $cmd.file -ArgumentList $cmd.arguments -Wait -PassThru -WindowStyle Hidden
+    # 1605 = déjà désinstallée, 1614 = produit inconnu, 1641 / 3010 = redémarrage demandé
+    if ($p.ExitCode -in 0, 1605, 1614, 1641, 3010) { return @{ ok = $true; message = "code $($p.ExitCode)" } }
+    return @{ ok = $false; message = "code $($p.ExitCode)" }
+  } catch {
+    return @{ ok = $false; message = $_.Exception.Message }
+  }
+}
+
 function Get-Report($State) {
   $cs   = Get-CimInstance Win32_ComputerSystem
   $bios = Get-CimInstance Win32_BIOS
@@ -388,6 +452,7 @@ function Get-Report($State) {
     lastBoot     = $os.LastBootUpTime.ToUniversalTime().ToString('o')
     profiles     = $profiles
     profilesMeasuredAt = $State.profilesMeasuredAt
+    apps         = Safe 'apps' { Get-InstalledApps } @()
   }
 }
 
@@ -465,16 +530,22 @@ $PayloadDir = Join-Path $OemDir 'DSI'
 $ResetCfg   = Join-Path $OemDir 'ResetConfig.xml'
 $ResetCmd   = Join-Path $OemDir 'DsiReset.cmd'
 
+# Windows PowerShell 5.1 décode la réponse d'Invoke-RestMethod en ISO-8859-1 : les messages
+# français de la DSI App arrivaient avec « Ã  » au lieu de « à ». On lit les octets et on les
+# décode en UTF-8 avant d'analyser le JSON.
 function Invoke-Api([string]$Method, [string]$Path, $Body = $null, [string]$OutFile = $null) {
   $headers = @{ Authorization = 'Bearer ' + (Get-Content $TokenPath -Raw).Trim() }
   $uri = "$($ApiUrl.TrimEnd('/'))/api/device-agent$Path"
   if ($OutFile) { return Invoke-WebRequest -Method $Method -Uri $uri -Headers $headers -OutFile $OutFile -TimeoutSec 120 -UseBasicParsing }
+  $req = @{ Method = $Method; Uri = $uri; Headers = $headers; TimeoutSec = 60; UseBasicParsing = $true }
   if ($null -ne $Body) {
-    $json = $Body | ConvertTo-Json -Depth 4 -Compress
-    return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -Body ([Text.Encoding]::UTF8.GetBytes($json)) `
-      -ContentType 'application/json; charset=utf-8' -TimeoutSec 60 -UseBasicParsing
+    $req['Body'] = [Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 4 -Compress))
+    $req['ContentType'] = 'application/json; charset=utf-8'
   }
-  return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -TimeoutSec 60 -UseBasicParsing
+  $res = Invoke-WebRequest @req
+  $bytes = if ($res.RawContentStream) { $res.RawContentStream.ToArray() } else { [byte[]]@() }
+  if ($bytes.Length -eq 0) { return $null }
+  return [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
 }
 
 function Send-Progress([string]$Step, [string]$Status, [string]$Message, [hashtable]$Extra = @{}) {
@@ -1006,84 +1077,606 @@ function Start-Reset {
   }
 }
 
+# Session ouverte : accord de l'utilisateur. Renvoie $true quand l'agent peut agir (personne
+# connecté, ou accord déjà donné), $false sinon : l'avertissement est affiché ou réaffiché, un
+# report est en cours, ou le mode « hors session » attend la fermeture de la session.
+function Test-MigrationConsent($Order) {
+  $user = Get-InteractiveUser
+  if (-not $user) { return $true }
+  if (Test-Path $ConsentMarker) { return $true }
+  if (-not $Order.promptUser) {
+    Send-Progress 'attente' 'info' "Session ouverte ($user) : la bascule attend qu'elle soit fermée"
+    return $false
+  }
+  $choice = if (Test-Path $PromptChoice) { (Get-Content $PromptChoice -Raw -ErrorAction SilentlyContinue).Trim() } else { $null }
+  if ($choice -eq 'start') {
+    Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
+    Set-Content -Path $ConsentMarker -Value (Get-Date).ToString('o') -Encoding ASCII
+    Send-Progress 'accord' 'ok' "$user a cliqué « Démarrer » : bascule en cours"
+    return $true
+  }
+  if ($choice -eq 'snooze') {
+    Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
+    Set-Content -Path $PromptSnoozeUntil -Value (Get-Date).AddMinutes($Order.snoozeMinutes).ToString('o') -Encoding ASCII
+    Send-Progress 'report' 'info' "Mise à jour reportée par $user" @{ snoozed = $true }
+    return $false
+  }
+  # Pas encore de réponse : on (ré)affiche l'avertissement, sauf pendant un report en cours
+  $until = if (Test-Path $PromptSnoozeUntil) { try { [datetime](Get-Content $PromptSnoozeUntil -Raw) } catch { [datetime]::MinValue } } else { [datetime]::MinValue }
+  if ((Get-Date) -ge $until) {
+    switch (Show-MigrationPrompt $user $Order) {
+      'shown'  { Send-Progress 'avertissement' 'info' "Avertissement affiché à $user (en attente de son accord)" }
+      'failed' { Send-Progress 'avertissement' 'error' "Impossible d'afficher l'avertissement à $user ($($script:PromptError)) : nouvel essai au prochain passage" }
+      # 'open' : la fenêtre attend déjà une réponse, rien à faire
+    }
+  }
+  return $false
+}
+
 # Attend que le serveur ait retiré le PC d'Autopilot ONELA (8 min max par passage : la tâche
 # planifiée est limitée à 15 min, mesure des profils comprise).
-function Wait-ForReady {
+function Wait-ForReady([string]$Mode = 'reset', $Order = $null) {
   $deadline = (Get-Date).AddMinutes(8)
   while ((Get-Date) -lt $deadline) {
     $s = Safe 'migrationStatus' { Invoke-Api 'GET' '/migration' }
     switch ($s.status) {
-      'ready'     { Start-Reset; return }
-      'failed'    { Write-Log "Bascule en échec côté serveur : $($s.error)"; Remove-MigrationPayload; return }
-      'cancelled' { Remove-MigrationPayload; return }
+      'ready' {
+        if ($Mode -eq 'inplace') { Start-InplaceSwitch $Order } else { Start-Reset }
+        return
+      }
+      'failed' {
+        Write-Log "Bascule en échec côté serveur : $($s.error)"
+        if ($Mode -eq 'inplace') { Remove-InplacePayload } else { Remove-MigrationPayload }
+        return
+      }
+      'cancelled' {
+        if ($Mode -eq 'inplace') { Remove-InplacePayload } else { Remove-MigrationPayload }
+        return
+      }
     }
     Start-Sleep -Seconds 20
   }
   Write-Log 'Retrait Autopilot ONELA pas encore confirmé : nouvel essai au prochain passage'
 }
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Bascule EN PLACE (mode « inplace »)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Windows, les applications et les fichiers restent en place : le poste quitte ONELA, reçoit le
+# PPKG Ouihelp, et chaque profil Windows est donné au compte Ouihelp choisi par la DSI
+# (Win32_UserProfile.ChangeOwner). L'utilisateur retrouve son bureau en se connectant avec son
+# adresse Ouihelp.
+#
+# Méthode reprise d'IntuneMigration V9 (Steve Weiner), avec quatre différences :
+#  - les comptes cibles viennent de l'ordre de la DSI App (profileMap, SID Ouihelp lus par le
+#    serveur dans Graph) : l'utilisateur n'a PAS à se connecter à Ouihelp pendant la bascule
+#    (ni Az.Accounts, ni Connect-AzAccount, ni session interactive obligatoire) ;
+#  - aucun secret Graph sur le poste : toutes les opérations Graph sont faites par le serveur ;
+#  - pas d'ouverture de session automatique : V9 déposait un mot de passe en clair dans
+#    Winlogon (DefaultPassword). Ici l'agent survit à la bascule et enchaîne les étapes en
+#    SYSTEM à chaque réveil ; l'ouverture de session reste possible pour le compte de secours ;
+#  - chaque étape est rendue au serveur (journal de la DSI App) et reprise au passage suivant
+#    si le poste redémarre ou si une étape échoue.
+#
+# Trois phases, enregistrées dans inplace.json (aucun secret) :
+#  1. « prepared » → bascule : désinstallations, sortie MDM / Entra / domaine, PPKG, redémarrage ;
+#  2. « profiles » : transfert des profils aux SID Ouihelp (profil déchargé), redémarrage ;
+#  3. « join »     : jonction Ouihelp constatée, clé BitLocker, renommage, compte rendu « joined ».
+
+$InplacePath = Join-Path $MigDir 'inplace.json'
+$InplacePpkg = Join-Path $MigDir 'ouihelp.ppkg'
+$PoliciesKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+# Au-delà, l'agent s'arrête en rendant compte au lieu de retenter toutes les 2 min.
+$SwitchAttempts   = 3
+$ProfileAttempts  = 5
+$JoinAttempts     = 20
+# Espace libre exigé : désinstallations, nouveau profil, PPKG (rien n'est recopié en place).
+$InplaceFreeBytes = 10GB
+
+function Set-RegValue([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') {
+  if (-not (Test-Path $Path)) { $null = New-Item -Path $Path -Force }
+  Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force
+}
+
+function Get-Inplace {
+  if (Test-Path $InplacePath) {
+    try { return Get-Content $InplacePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+  }
+  return $null
+}
+
+function Save-Inplace($State) {
+  if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
+  $State | ConvertTo-Json -Depth 6 | Set-Content -Path $InplacePath -Encoding UTF8
+}
+
+# Compteur de tentatives de la phase en cours. $false = plafond atteint.
+function Test-PhaseAttempt($State, [int]$Max) {
+  $State.attempts = [int]$State.attempts + 1
+  Save-Inplace $State
+  return ($State.attempts -le $Max)
+}
+
+# Message sur l'écran de verrouillage pendant les deux redémarrages. On ne désactive PAS le
+# fournisseur d'identifiants (contrairement à V9) : il est aussi celui du compte de secours.
+# Les comptes ONELA, eux, ne peuvent plus s'authentifier dès la sortie du tenant.
+function Set-MigrationNotice([string]$Caption, [string]$Text) {
+  Safe 'notice' {
+    Set-RegValue $PoliciesKey 'legalnoticecaption' $Caption 'String'
+    Set-RegValue $PoliciesKey 'legalnoticetext' $Text 'String'
+  }
+}
+
+function Clear-MigrationNotice {
+  Remove-ItemProperty -Path $PoliciesKey -Name 'legalnoticecaption', 'legalnoticetext' -ErrorAction SilentlyContinue
+}
+
+function Remove-InplacePayload {
+  Get-Process -Name 'DsiMajPc' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Remove-Item $PromptChoice, $PromptScript -Force -ErrorAction SilentlyContinue
+  $null = & schtasks.exe /Delete /TN 'DSI\Avertissement migration' /F 2>$null
+  Remove-Item $MigDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Compte local d'administration de secours : seul moyen d'ouvrir une session tant que le poste
+# n'est pas joint à Ouihelp, et filet de sécurité si la bascule se bloque. Son mot de passe est
+# celui que la DSI App affiche sous « Compte de secours » - il n'est jamais écrit sur le disque.
+function New-BreakglassAccount([string]$User, [string]$Password) {
+  if (-not $User -or -not $Password) { throw 'Compte de secours absent de l''ordre de bascule' }
+  $secure = ConvertTo-SecureString $Password -AsPlainText -Force
+  if (Get-LocalUser -Name $User -ErrorAction SilentlyContinue) {
+    Set-LocalUser -Name $User -Password $secure -PasswordNeverExpires $true
+    Enable-LocalUser -Name $User
+  } else {
+    $null = New-LocalUser -Name $User -Password $secure -PasswordNeverExpires -AccountNeverExpires -FullName 'Compte de secours DSI'
+  }
+  $group = (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544').Translate([Security.Principal.NTAccount]).Value.Split('\')[-1]
+  Add-LocalGroupMember -Group $group -Member $User -ErrorAction SilentlyContinue
+}
+
+# Sortie de l'inscription MDM (Intune ONELA) : certificat d'appareil, clés d'inscription et
+# tâches de synchronisation. Sans ça le poste continue d'essayer de parler à Intune ONELA.
+function Remove-MdmEnrollment {
+  foreach ($c in @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue | Where-Object { $_.Issuer -match 'Microsoft Intune MDM Device CA' })) {
+    Remove-Item -LiteralPath $c.PSPath -Force -ErrorAction SilentlyContinue
+  }
+  $base = 'HKLM:\SOFTWARE\Microsoft\Enrollments'
+  foreach ($e in @(Get-ChildItem $base -ErrorAction SilentlyContinue)) {
+    $p = Get-ItemProperty -LiteralPath $e.PSPath -ErrorAction SilentlyContinue
+    if (-not $p.DiscoveryServiceFullURL) { continue }
+    $id = Split-Path $e.PSPath -Leaf
+    Safe 'mdmTasks' {
+      Get-ScheduledTask -TaskPath "\Microsoft\Windows\EnterpriseMgmt\$id\" -ErrorAction SilentlyContinue |
+        Unregister-ScheduledTask -Confirm:$false
+    }
+    foreach ($k in @(
+      "$base\$id", "$base\Status\$id",
+      "HKLM:\SOFTWARE\Microsoft\EnterpriseResourceManager\Tracked\$id",
+      "HKLM:\SOFTWARE\Microsoft\PolicyManager\AdmxInstalled\$id",
+      "HKLM:\SOFTWARE\Microsoft\PolicyManager\Providers\$id",
+      "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Accounts\$id",
+      "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Logger\$id",
+      "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Sessions\$id"
+    )) { Remove-Item -Path $k -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+# dsregcmd.exe n'existe pas dans SysWOW64 : depuis un processus 32 bits (script Intune non
+# forcé en 64 bits), System32 est redirigé et « /leave » ne faisait rien - le poste restait
+# dans le tenant d'origine sans aucune erreur (piège relevé dans le script V9).
+function Get-DsregPath {
+  if (-not [Environment]::Is64BitProcess -and (Test-Path "$env:WINDIR\Sysnative\dsregcmd.exe")) {
+    return "$env:WINDIR\Sysnative\dsregcmd.exe"
+  }
+  return "$env:WINDIR\System32\dsregcmd.exe"
+}
+
+function Invoke-EntraLeave {
+  $null = Start-Process -FilePath (Get-DsregPath) -ArgumentList '/leave' -Wait -NoNewWindow -PassThru
+  Start-Sleep -Seconds 5
+  $s = Safe 'dsregApresLeave' { Get-DsregStatus }
+  return -not ($s -and $s.azureAdJoined)
+}
+
+# Sortie du domaine ONELA avec le compte local de secours. La vue sur un contrôleur de domaine
+# fait échouer l'opération : on la coupe le temps de l'appel, puis on REMET les DNS d'origine
+# (V9 laissait le poste avec un DNS public statique).
+function Invoke-DomainUnjoin([string]$User, [string]$Password) {
+  $adapter = Safe 'adaptateur' { (Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).InterfaceAlias }
+  $dns = @()
+  if ($adapter) {
+    $dns = @(Safe 'dns' { (Get-DnsClientServerAddress -InterfaceAlias $adapter -AddressFamily IPv4).ServerAddresses } @())
+  }
+  $domain = (Get-CimInstance Win32_ComputerSystem).Domain
+  $broken = $false
+  if ($adapter -and $domain -and (Test-Connection -ComputerName $domain -Count 2 -Quiet -ErrorAction SilentlyContinue)) {
+    Safe 'dnsCoupe' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ServerAddresses ('8.8.8.8', '8.8.4.4') }
+    $broken = $true
+    Write-Log 'Vue sur le contrôleur de domaine coupée le temps de la sortie du domaine'
+  }
+  try {
+    $r = Get-CimInstance -ClassName Win32_ComputerSystem | Invoke-CimMethod -MethodName 'UnjoinDomainOrWorkGroup' `
+      -Arguments @{ FUnjoinOptions = [uint32]0; Username = "$env:COMPUTERNAME\$User"; Password = $Password }
+    if ($r.ReturnValue -ne 0) { throw "UnjoinDomainOrWorkGroup a renvoyé le code $($r.ReturnValue)" }
+  } finally {
+    if ($broken) {
+      if ($dns.Count -gt 0) { Safe 'dnsRetabli' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ServerAddresses $dns } }
+      else { Safe 'dnsReinit' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ResetServerAddresses } }
+      Write-Log 'DNS d''origine rétablis'
+    }
+  }
+}
+
+function Install-OuihelpPackage([string]$Path) {
+  # Une stratégie peut interdire l'ajout de paquets de provisionnement (correctif V9 9.1)
+  Set-RegValue 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Security' 'AllowAddProvisioningPackage' 1
+  $name = [IO.Path]::GetFileNameWithoutExtension($Path)
+  # Nouvelle tentative après un échec : on retire d'abord NOTRE paquet déjà posé (et lui seul :
+  # les paquets du constructeur restent en place).
+  foreach ($p in @(Safe 'ppkgListe' { Get-ProvisioningPackage -AllInstalledPackages } @())) {
+    if ($p.PackageName -eq $name) { Safe 'ppkgRetrait' { Remove-ProvisioningPackage -PackageId $p.PackageId } }
+  }
+  try {
+    $null = Install-ProvisioningPackage -PackagePath $Path -ForceInstall -QuietInstall
+  } catch {
+    Write-Log "Install-ProvisioningPackage en échec ($($_.Exception.Message)) : nouvelle tentative avec DISM"
+    $d = Start-Process -FilePath 'dism.exe' -ArgumentList "/Online /Add-ProvisioningPackage /PackagePath:`"$Path`"" -Wait -PassThru -NoNewWindow
+    if ($d.ExitCode -ne 0) { throw "DISM /Add-ProvisioningPackage : code $($d.ExitCode)" }
+  }
+  Start-Sleep -Seconds 5
+  $installed = @(Safe 'ppkgControle' { Get-ProvisioningPackage -AllInstalledPackages } @())
+  if (@($installed | Where-Object { $_.PackageName -eq $name }).Count -eq 0) {
+    throw 'PPKG installé mais absent de la liste des paquets du poste'
+  }
+}
+
+$script:ProfileApiReady = $false
+function Initialize-ProfileApi {
+  if ($script:ProfileApiReady) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace DsiNative {
+  public static class Profiles {
+    [DllImport("userenv.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern int CreateProfile(string pszUserSid, string pszUserName, StringBuilder pszProfilePath, uint cchProfilePath);
+  }
+}
+'@
+  $script:ProfileApiReady = $true
+}
+
+# Retire des caches d'identité les entrées qui désignent encore le compte ONELA : sinon
+# l'ancien UPN reste proposé sur l'écran de connexion et Windows mélange les deux comptes.
+function Remove-IdentityCache([string]$OldUpn) {
+  if (-not $OldUpn) { return }
+  foreach ($root in @('HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache', 'HKLM:\SOFTWARE\Microsoft\IdentityStore\Cache')) {
+    foreach ($sub in @(Get-ChildItem $root -Recurse -ErrorAction SilentlyContinue)) {
+      $p = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+      if (-not $p) { continue }
+      $names = @($p.IdentityName, $p.UserName) | Where-Object { $_ }
+      if ($names -contains $OldUpn) {
+        Remove-Item -LiteralPath $sub.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+}
+
+# Transfert d'un profil Windows ONELA au compte Ouihelp (méthode V9) :
+#  1. les jetons de l'ancien tenant (AAD.BrokerPlugin) sont retirés du profil ;
+#  2. Windows enregistre le compte Ouihelp en créant son profil, aussitôt supprimé : seule
+#     l'inscription compte, le dossier créé ne sert pas ;
+#  3. ChangeOwner donne le profil ONELA existant au SID Ouihelp. Au prochain démarrage, le
+#     nouveau compte retrouve bureau, documents et réglages de l'utilisateur.
+function Convert-UserProfile($Map) {
+  if (-not $Map.newSid -or -not $Map.newSam) { return @{ ok = $false; message = 'compte Ouihelp absent de l''ordre' } }
+  if ($Map.oldSid -eq $Map.newSid) { return @{ ok = $true; message = 'même compte, rien à faire' } }
+  $old = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $Map.oldSid }
+  if (-not $old) { return @{ ok = $false; message = 'profil absent du poste' } }
+  if ($old.Loaded) { return @{ ok = $false; message = 'profil encore chargé' } }
+
+  foreach ($b in @(Get-ChildItem (Join-Path $old.LocalPath 'AppData\Local\Packages') -Filter 'Microsoft.AAD.BrokerPlugin_*' -Directory -ErrorAction SilentlyContinue)) {
+    Remove-Item -LiteralPath $b.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  Initialize-ProfileApi
+  $sb = New-Object Text.StringBuilder 260
+  $created = [DsiNative.Profiles]::CreateProfile($Map.newSid, $Map.newSam, $sb, [uint32]$sb.Capacity)
+  # 0 = créé ; -2147024713 (0x800700B7) = déjà présent
+  if ($created -ne 0 -and $created -ne -2147024713) {
+    return @{ ok = $false; message = "CreateProfile a renvoyé $created" }
+  }
+  $new = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $Map.newSid }
+  if ($new) { Remove-CimInstance -InputObject $new -ErrorAction SilentlyContinue }
+
+  $old = Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $Map.oldSid }
+  $res = $old | Invoke-CimMethod -MethodName 'ChangeOwner' -Arguments @{ NewOwnerSID = $Map.newSid; Flags = [uint32]0 }
+  if ($res.ReturnValue -ne 0) { return @{ ok = $false; message = "ChangeOwner a renvoyé le code $($res.ReturnValue)" } }
+  Safe 'cacheIdentite' { Remove-IdentityCache $Map.oldUpn }
+  return @{ ok = $true; message = 'transféré' }
+}
+
+# Préparation (phase « staging ») : rien de destructif. PPKG téléchargé et vérifié, ordre figé
+# sur le poste (sans secret) pour que les phases suivantes survivent aux redémarrages.
+function New-InplacePayload($Order) {
+  if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
+  $null = Invoke-Api 'GET' '/migration/package' $null $InplacePpkg
+  $hash = (Get-FileHash -Path $InplacePpkg -Algorithm SHA256).Hash.ToLower()
+  if ($hash -ne $Order.packageSha256) {
+    Remove-Item $InplacePpkg -Force -ErrorAction SilentlyContinue
+    throw "PPKG altéré : empreinte $hash au lieu de $($Order.packageSha256)"
+  }
+  $state = [ordered]@{
+    phase           = 'prepared'
+    attempts        = 0
+    lastError       = ''
+    startedAt       = (Get-Date).ToString('o')
+    computerName    = [string]$Order.computerName
+    ouihelpTenantId = [string]$Order.ouihelpTenantId
+    profileMap      = @(@($Order.profileMap) | ForEach-Object {
+        [ordered]@{ oldSid = $_.oldSid; oldUpn = $_.oldUpn; newSid = $_.newSid; newUpn = $_.newUpn; newSam = $_.newSam }
+      })
+  }
+  Save-Inplace $state
+  return $state
+}
+
+# Phase 1 - point de non-retour : le poste quitte ONELA et reçoit le PPKG Ouihelp.
+function Start-InplaceSwitch($Order) {
+  $state = Get-Inplace
+  if (-not $state -or -not (Test-Path $InplacePpkg)) {
+    Send-Progress 'bascule' 'error' 'Préparation absente du poste : bascule à reprogrammer' @{ fatal = $true }
+    return
+  }
+  if (-not (Test-PhaseAttempt $state $SwitchAttempts)) {
+    Clear-MigrationNotice
+    $dsreg = Safe 'dsreg' { Get-DsregStatus }
+    $ou = if ($dsreg -and $dsreg.azureAdJoined) { 'poste encore dans ONELA' } else { 'poste sorti d''ONELA et pas encore joint à Ouihelp' }
+    Send-Progress 'bascule' 'error' "Bascule abandonnée après $SwitchAttempts tentatives ($ou) : $($state.lastError) - à reprendre sur place (compte de secours)" @{ fatal = $true }
+    Remove-InplacePayload
+    return
+  }
+  Send-Progress 'bascule' 'info' 'Bascule en place lancée : sortie d''ONELA puis PPKG Ouihelp' @{ resetTriggered = $true }
+  Set-MigrationNotice 'Bascule vers Ouihelp en cours' `
+    "Ce poste rejoint le tenant Ouihelp. Il redémarre deux fois tout seul : merci de ne pas l'éteindre. Ensuite, connectez-vous avec votre adresse et votre mot de passe Ouihelp."
+  try {
+    New-BreakglassAccount $Order.breakglassUser $Order.breakglassPassword
+    Write-Log "Compte local de secours $($Order.breakglassUser) prêt"
+
+    $remove = @($Order.removeApps)
+    if ($remove.Count -gt 0) {
+      $done = 0
+      $failed = @()
+      foreach ($name in $remove) {
+        $r = Uninstall-AppByName $name
+        if ($r.ok) { $done++ } else { $failed += "$name ($($r.message))" }
+      }
+      if ($failed.Count -eq 0) { Send-Progress 'applications' 'ok' "$done application(s) désinstallée(s)" }
+      else { Send-Progress 'applications' 'error' "$done désinstallée(s) ; échec sur : $($failed -join ' ; ')" }
+    }
+
+    Remove-MdmEnrollment
+    Send-Progress 'mdm' 'ok' 'Inscription Intune ONELA retirée du poste'
+
+    $dsreg = Safe 'dsreg' { Get-DsregStatus }
+    if ($dsreg -and $dsreg.azureAdJoined) {
+      if (-not (Invoke-EntraLeave)) { throw 'Sortie d''Entra ONELA refusée (dsregcmd /leave)' }
+      Send-Progress 'entra' 'ok' 'Poste sorti d''Entra ONELA'
+    }
+    if ((Get-CimInstance Win32_ComputerSystem).PartOfDomain) {
+      Invoke-DomainUnjoin $Order.breakglassUser $Order.breakglassPassword
+      Send-Progress 'domaine' 'ok' 'Poste sorti du domaine ONELA'
+    }
+
+    Install-OuihelpPackage $InplacePpkg
+    Send-Progress 'ppkg' 'ok' 'PPKG Ouihelp installé : jonction au prochain démarrage'
+  } catch {
+    Write-Log "Bascule en place : $($_.Exception.Message)"
+    $state.lastError = $_.Exception.Message
+    Save-Inplace $state
+    Send-Progress 'bascule' 'error' "Étape en échec : $($_.Exception.Message) - nouvelle tentative au prochain passage"
+    return
+  }
+  $state.phase = 'profiles'
+  $state.attempts = 0
+  Save-Inplace $state
+  Send-Progress 'redemarrage' 'info' 'Redémarrage pour le transfert des profils'
+  & shutdown.exe /r /t 30 /c 'Bascule vers Ouihelp : redemarrage' | Out-Null
+}
+
+# Phase 2 - transfert des profils, session fermée (un profil chargé ne peut pas changer de
+# propriétaire). Un profil en échec garde son ancien propriétaire : c'est rendu au serveur.
+function Invoke-InplaceProfiles($State) {
+  $user = Get-InteractiveUser
+  if ($user) {
+    Write-Log "Transfert des profils : session ouverte ($user), nouvel essai au prochain passage"
+    return
+  }
+  if (-not (Test-PhaseAttempt $State $ProfileAttempts)) {
+    Clear-MigrationNotice
+    Send-Progress 'profils' 'error' "Transfert des profils abandonné après $ProfileAttempts tentatives : poste joint à Ouihelp, profils à reprendre à la main" @{ fatal = $true }
+    Remove-InplacePayload
+    return
+  }
+  $maps = @($State.profileMap)
+  $ok = @()
+  $failed = @()
+  if ($maps.Count -eq 0) {
+    Send-Progress 'profils' 'info' 'Aucun profil à transférer : passage à la jonction'
+    $ok += 'aucun'
+  }
+  foreach ($m in $maps) {
+    $label = $m.oldUpn
+    if (-not $label) { $label = $m.oldSid }
+    $r = Convert-UserProfile $m
+    if ($r.ok) { $ok += "$label → $($m.newUpn)" } else { $failed += "$label : $($r.message)" }
+  }
+  if ($ok.Count -eq 0) {
+    Send-Progress 'profils' 'error' "Transfert en échec : $($failed -join ' ; ') - nouvelle tentative au prochain passage"
+    return
+  }
+  if ($failed.Count -gt 0) {
+    Send-Progress 'profils' 'error' "Transféré(s) : $($ok -join ', ') ; échec sur $($failed -join ' ; ')"
+  } else {
+    Send-Progress 'profils' 'ok' "Profil(s) transféré(s) : $($ok -join ', ')"
+  }
+  $State.phase = 'join'
+  $State.attempts = 0
+  Save-Inplace $State
+  Send-Progress 'redemarrage' 'info' 'Redémarrage vers l''écran de connexion Ouihelp'
+  & shutdown.exe /r /t 30 /c 'Bascule vers Ouihelp : redemarrage' | Out-Null
+}
+
+# Phase 3 - jonction Ouihelp constatée sur le poste : clé BitLocker séquestrée chez Ouihelp,
+# nom DSI appliqué (après le PPKG, qui peut imposer le sien), compte rendu « joined » au
+# serveur, qui termine côté tenants (suppression ONELA, Autopilot et utilisateur principal).
+function Invoke-InplaceJoin($State) {
+  $joined = $false
+  $deadline = (Get-Date).AddMinutes(5)
+  while ($true) {
+    $s = Safe 'dsregJonction' { Get-DsregStatus }
+    if ($s -and $s.azureAdJoined -and (-not $State.ouihelpTenantId -or $s.tenantId -eq $State.ouihelpTenantId)) {
+      $joined = $true
+      break
+    }
+    if ((Get-Date) -ge $deadline) { break }
+    Start-Sleep -Seconds 20
+  }
+  if (-not $joined) {
+    if (-not (Test-PhaseAttempt $State $JoinAttempts)) {
+      Clear-MigrationNotice
+      Send-Progress 'jonction' 'error' 'Poste sorti d''ONELA mais toujours pas joint à Ouihelp : PPKG à reprendre à la main (jeton en bloc expiré ?)' @{ fatal = $true }
+      Remove-InplacePayload
+      return
+    }
+    Send-Progress 'jonction' 'info' 'Jonction Ouihelp pas encore constatée : nouvelle tentative au prochain passage'
+    return
+  }
+
+  Safe 'bitlocker' {
+    $v = Get-BitLockerVolume -MountPoint $env:SystemDrive
+    foreach ($kp in @($v.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })) {
+      $null = BackupToAAD-BitLockerKeyProtector -MountPoint $env:SystemDrive -KeyProtectorId $kp.KeyProtectorId
+    }
+  }
+  $renamed = $false
+  if ($State.computerName -and $env:COMPUTERNAME -ne $State.computerName) {
+    try {
+      Rename-Computer -NewName $State.computerName -Force -ErrorAction Stop
+      $renamed = $true
+      Write-Log "Renommé en $($State.computerName) (effectif au redémarrage)"
+    } catch {
+      Write-Log "Renommage en $($State.computerName) impossible : $($_.Exception.Message)"
+    }
+  }
+  Clear-MigrationNotice
+  Send-Progress 'jonction' 'ok' "Poste joint à Entra Ouihelp, nom $($State.computerName) ; l'utilisateur se connecte avec son compte Ouihelp" @{ joined = $true }
+  Remove-InplacePayload
+  Restore-Sleep
+  if ($renamed) { & shutdown.exe /r /t 60 /c 'Bascule vers Ouihelp terminee : redemarrage' | Out-Null }
+}
+
+# Phases 2 et 3 : reprises à chaque passage de l'agent, même sans ordre côté serveur - le poste
+# a déjà quitté ONELA, il doit aller au bout sous peine de rester entre les deux tenants.
+function Resume-InplaceMigration {
+  $state = Get-Inplace
+  if (-not $state) { return }
+  switch ($state.phase) {
+    'profiles' { Invoke-InplaceProfiles $state }
+    'join'     { Invoke-InplaceJoin $state }
+  }
+}
+
+function Invoke-InplaceMigration($Order) {
+  switch ($Order.status) {
+    'cancelled' {
+      if (Test-Path $MigDir) {
+        Remove-InplacePayload
+        Restore-Sleep
+        Clear-MigrationNotice
+        Send-Progress 'nettoyage' 'ok' 'Bascule annulée : fichiers retirés du poste (poste inchangé)'
+      }
+    }
+    'staging' {
+      # Dès la préparation, le PC ne doit plus s'endormir (session fermée = écran de verrouillage)
+      Disable-Sleep
+      if (-not (Test-MigrationConsent $Order)) { return }
+      if (-not (Test-PowerOk)) { Send-Progress 'attente' 'info' 'Sur batterie sous 50 % : en attente du secteur'; return }
+      if (@($Order.profileMap).Count -eq 0) {
+        Send-Progress 'controle' 'error' 'Aucun profil à transférer dans l''ordre reçu' @{ fatal = $true }
+        return
+      }
+      $free = Safe 'disque' { (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'").FreeSpace }
+      if ($free -and $free -lt $InplaceFreeBytes) {
+        Send-Progress 'controle' 'error' ("Espace disque insuffisant ({0:N1} Go libres, {1:N0} Go attendus) : poste inchangé" -f ($free / 1GB), ($InplaceFreeBytes / 1GB)) @{ fatal = $true }
+        return
+      }
+      try {
+        $state = New-InplacePayload $Order
+      } catch {
+        Remove-InplacePayload
+        Send-Progress 'preparation' 'error' "Préparation impossible : $($_.Exception.Message)" @{ fatal = $true }
+        return
+      }
+      Send-Progress 'preparation' 'ok' "Prêt : PPKG vérifié, $(@($state.profileMap).Count) profil(s) à transférer" `
+        @{ staged = $true; hardwareHash = (Safe 'empreinte' { Get-HardwareHash }) }
+      Wait-ForReady 'inplace' $Order
+    }
+    { $_ -in 'staged', 'cleanup' } { Disable-Sleep; Wait-ForReady 'inplace' $Order }
+    'ready' {
+      Disable-Sleep
+      if (-not (Test-MigrationConsent $Order)) { return }
+      Start-InplaceSwitch $Order
+    }
+    { $_ -in 'resetting', 'joining' } {
+      # Bascule interrompue au milieu de la phase 1 (le serveur est déjà passé en « resetting »,
+      # l'état local est resté « prepared ») : on la reprend là où elle s'est arrêtée.
+      $state = Get-Inplace
+      if ($state -and $state.phase -eq 'prepared') { Disable-Sleep; Start-InplaceSwitch $Order }
+      else { Resume-InplaceMigration }
+    }
+  }
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+
+function Invoke-ResetMigration($Order) {
+  switch ($Order.status) {
+    'cancelled' {
+      if ((Test-Path $PayloadDir) -or (Test-Path $MigDir)) {
+        Remove-MigrationPayload
+        Restore-Sleep
+        Send-Progress 'nettoyage' 'ok' 'Bascule annulée : fichiers retirés du poste'
+      }
+    }
+    'staging' {
+      # Dès la préparation, le PC ne doit plus s'endormir (session fermée = écran de verrouillage)
+      Disable-Sleep
+      if (-not (Test-MigrationConsent $Order)) { return }
+      if (-not (Test-PowerOk)) { Send-Progress 'attente' 'info' 'Sur batterie sous 50 % : en attente du secteur'; return }
+      if ((Get-WinreEnabled) -eq $false) { Send-Progress 'controle' 'error' 'WinRE désactivé : réinitialisation impossible' @{ fatal = $true }; return }
+      try {
+        $wifiCount = New-MigrationPayload $Order
+        $hash = Get-HardwareHash
+      } catch {
+        Remove-MigrationPayload
+        Send-Progress 'preparation' 'error' "Préparation impossible : $($_.Exception.Message)" @{ fatal = $true }
+        return
+      }
+      Send-Progress 'preparation' 'ok' "Prêt : PPKG vérifié, $wifiCount Wi-Fi exporté(s), fichiers déposés dans C:\Recovery\OEM" @{ staged = $true; hardwareHash = $hash }
+      Wait-ForReady 'reset'
+    }
+    { $_ -in 'staged', 'cleanup' } { Disable-Sleep; Wait-ForReady 'reset' }
+    'ready' { Disable-Sleep; Start-Reset }
+  }
+}
+
 function Invoke-Migration($Order) {
   try {
-    switch ($Order.status) {
-      'cancelled' {
-        if ((Test-Path $PayloadDir) -or (Test-Path $MigDir)) {
-          Remove-MigrationPayload
-          Restore-Sleep
-          Send-Progress 'nettoyage' 'ok' 'Bascule annulée : fichiers retirés du poste'
-        }
-      }
-      'staging' {
-        # Dès la préparation, le PC ne doit plus s'endormir (session fermée = écran de verrouillage)
-        Disable-Sleep
-        $user = Get-InteractiveUser
-        if ($user) {
-          if (-not $Order.promptUser) {
-            Send-Progress 'attente' 'info' "Session ouverte ($user) : la préparation attend qu'elle soit fermée"; return
-          }
-          # Mode « session ouverte » : on prévient l'utilisateur et on attend son accord
-          $choice = if (Test-Path $PromptChoice) { (Get-Content $PromptChoice -Raw -ErrorAction SilentlyContinue).Trim() } else { $null }
-          if ($choice -eq 'start') {
-            Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
-            if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
-            Set-Content -Path $ConsentMarker -Value (Get-Date).ToString('o') -Encoding ASCII
-            Send-Progress 'accord' 'ok' "$user a cliqué « Démarrer » : préparation en cours"
-            # on poursuit la préparation ci-dessous
-          }
-          elseif ($choice -eq 'snooze') {
-            Remove-Item $PromptChoice -Force -ErrorAction SilentlyContinue
-            Set-Content -Path $PromptSnoozeUntil -Value (Get-Date).AddMinutes($Order.snoozeMinutes).ToString('o') -Encoding ASCII
-            Send-Progress 'report' 'info' "Mise à jour reportée par $user" @{ snoozed = $true }
-            return
-          }
-          else {
-            # Pas encore de réponse : on (ré)affiche l'avertissement, sauf pendant un report en cours
-            $until = if (Test-Path $PromptSnoozeUntil) { try { [datetime](Get-Content $PromptSnoozeUntil -Raw) } catch { [datetime]::MinValue } } else { [datetime]::MinValue }
-            if ((Get-Date) -ge $until) {
-              switch (Show-MigrationPrompt $user $Order) {
-                'shown'  { Send-Progress 'avertissement' 'info' "Avertissement affiché à $user (en attente de son accord)" }
-                'failed' { Send-Progress 'avertissement' 'error' "Impossible d'afficher l'avertissement à $user ($($script:PromptError)) : nouvel essai au prochain passage" }
-                # 'open' : la fenêtre attend déjà une réponse, rien à faire
-              }
-            }
-            return
-          }
-        }
-        if (-not (Test-PowerOk)) { Send-Progress 'attente' 'info' 'Sur batterie sous 50 % : en attente du secteur'; return }
-        if ((Get-WinreEnabled) -eq $false) { Send-Progress 'controle' 'error' 'WinRE désactivé : réinitialisation impossible' @{ fatal = $true }; return }
-        try {
-          $wifiCount = New-MigrationPayload $Order
-          $hash = Get-HardwareHash
-        } catch {
-          Remove-MigrationPayload
-          Send-Progress 'preparation' 'error' "Préparation impossible : $($_.Exception.Message)" @{ fatal = $true }
-          return
-        }
-        Send-Progress 'preparation' 'ok' "Prêt : PPKG vérifié, $wifiCount Wi-Fi exporté(s), fichiers déposés dans C:\Recovery\OEM" @{ staged = $true; hardwareHash = $hash }
-        Wait-ForReady
-      }
-      { $_ -in 'staged', 'cleanup' } { Disable-Sleep; Wait-ForReady }
-      'ready' { Disable-Sleep; Start-Reset }
-    }
+    if ($Order.mode -eq 'inplace') { Invoke-InplaceMigration $Order } else { Invoke-ResetMigration $Order }
   } catch {
     Write-Log "Bascule : erreur inattendue $($_.Exception.Message)"
   }
@@ -1098,13 +1691,24 @@ function Invoke-MigrationPoll {
   $order = Safe 'migrationPoll' { Invoke-Api 'GET' '/order' }
   if ($order -and $order.migration) {
     $null = Invoke-Migration $order.migration
+    return
   }
-  elseif (Test-Path $PayloadDir) {
-    # Plus de bascule active (échec / annulation) mais des fichiers subsistent dans
-    # C:\Recovery\OEM (PPKG, clés Wi-Fi, ResetConfig) : on les retire.
+  $inplace = Get-Inplace
+  if ($inplace -and @('profiles', 'join') -contains $inplace.phase) {
+    # Bascule en place déjà engagée (poste sorti d'ONELA) : on termine le travail local même
+    # si la DSI a abandonné la bascule côté serveur.
+    Write-Log "Bascule en place sans ordre côté serveur : poursuite locale (phase $($inplace.phase))"
+    Resume-InplaceMigration
+    return
+  }
+  if ($inplace -or (Test-Path $PayloadDir)) {
+    # Plus de bascule active (échec / annulation) et rien d'engagé sur le poste : on retire les
+    # fichiers déposés (PPKG, clés Wi-Fi, ResetConfig) et les réglages de bascule.
     Remove-MigrationPayload
+    Remove-InplacePayload
     Restore-Sleep
-    Write-Log 'Bascule terminée côté serveur : fichiers de bascule retirés de C:\Recovery\OEM'
+    Clear-MigrationNotice
+    Write-Log 'Bascule terminée côté serveur : fichiers de bascule retirés du poste'
   }
 }
 
