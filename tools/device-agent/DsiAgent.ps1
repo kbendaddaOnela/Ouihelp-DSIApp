@@ -34,7 +34,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.1.7'
+$AgentVersion = '1.1.8'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -895,9 +895,13 @@ namespace DsiNative {
           CreateEnvironmentBlock(out env, primaryToken, false);
           STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(si); si.lpDesktop = @"winsta0\default";
           PROCESS_INFORMATION pi;
-          if (!CreateProcessAsUser(primaryToken, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0x00000400u, env, null, ref si, out pi)) {
-            res.Add("session " + sid + " : CreateProcessAsUser erreur " + Marshal.GetLastWin32Error()); continue;
-          }
+          // CREATE_BREAKAWAY_FROM_JOB : la tâche planifiée de l'agent tourne dans un « job » dont les
+          // restrictions empêchent l'interface graphique de s'initialiser (code 0x8007045A).
+          // Si le job refuse la sortie (erreur 5), on retente sans.
+          bool ok = CreateProcessAsUser(primaryToken, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0x01000400u, env, null, ref si, out pi);
+          if (!ok && Marshal.GetLastWin32Error() == 5)
+            ok = CreateProcessAsUser(primaryToken, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0x00000400u, env, null, ref si, out pi);
+          if (!ok) { res.Add("session " + sid + " : CreateProcessAsUser erreur " + Marshal.GetLastWin32Error()); continue; }
           if (WaitForSingleObject(pi.hProcess, 4000) == 0) {
             uint code; GetExitCodeProcess(pi.hProcess, out code);
             res.Add("session " + sid + " : processus " + pi.dwProcessId + " arrêté aussitôt (code 0x" + code.ToString("X") + ")");
@@ -933,6 +937,24 @@ function Initialize-PromptExe {
   Set-Content -Path $stamp -Value (Get-Date).ToString('o') -Encoding ASCII
 }
 
+$PromptTaskPath = '\DSI\'
+$PromptTaskName = 'Avertissement migration'
+function Start-PromptViaTask([string]$User, [string]$Exe, [string]$Arguments) {
+  try {
+    $action = New-ScheduledTaskAction -Execute $Exe -Argument $Arguments
+    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+    Register-ScheduledTask -TaskPath $PromptTaskPath -TaskName $PromptTaskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+    Start-ScheduledTask -TaskPath $PromptTaskPath -TaskName $PromptTaskName
+    Start-Sleep -Seconds 5
+    if (Get-Process -Name 'DsiMajPc' -ErrorAction SilentlyContinue) { return 'OK' }
+    $info = Get-ScheduledTaskInfo -TaskPath $PromptTaskPath -TaskName $PromptTaskName
+    return ('fenêtre absente (résultat 0x{0:X})' -f ([int64]$info.LastTaskResult -band 4294967295))
+  } catch {
+    return "erreur $($_.Exception.Message)"
+  }
+}
+
 # Affiche à l'utilisateur connecté, dans SA session, une fenêtre « Démarrer / Plus tard ».
 # Renvoie 'shown' (lancée et toujours ouverte), 'open' (déjà affichée) ou 'failed'.
 function Show-MigrationPrompt([string]$User, $Order) {
@@ -947,7 +969,12 @@ function Show-MigrationPrompt([string]$User, $Order) {
     $lines = [DsiNative.UserSession]::Launch($cmd)
     Write-Log "Avertissement ($User) : $($lines -join ' ; ')"
     if (($lines | Where-Object { $_ -like '* OK' }).Count -gt 0) { return 'shown' }
-    $script:PromptError = $lines -join ' ; '
+    # Secours : tâche planifiée au nom de l'utilisateur, lancée par le Planificateur lui-même
+    # (donc hors du job de l'agent), dans sa session interactive.
+    $viaTask = Start-PromptViaTask $User $PromptExe "`"$PromptChoice`" `"$PromptMsg`" $([int]$Order.snoozeMinutes) $allow"
+    Write-Log "Avertissement ($User) par tâche planifiée : $viaTask"
+    if ($viaTask -eq 'OK') { return 'shown' }
+    $script:PromptError = "$($lines -join ' ; ') ; tâche planifiée : $viaTask"
     return 'failed'
   } catch {
     $script:PromptError = $_.Exception.Message
