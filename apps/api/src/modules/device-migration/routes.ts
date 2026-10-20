@@ -493,10 +493,16 @@ deviceMigrationRouter.post(
     }
     const targets = parseTargets(body.profileTargets)
     if (!targets)
-      return c.json({ error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' }, 400)
+      return c.json(
+        { error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' },
+        400
+      )
     const mainSid = parseMainSid(body.mainProfileSid)
     if (mainSid === undefined)
-      return c.json({ error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' }, 400)
+      return c.json(
+        { error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' },
+        400
+      )
     const a = await latestAgent(id)
     if (!a?.report)
       return c.json({ error: 'Not Found', message: 'Aucun rapport d’agent pour ce poste' }, 404)
@@ -520,14 +526,24 @@ deviceMigrationRouter.post(
     const id = c.req.param('id')
     const body = (await c.req.json().catch(() => null)) as ScheduleMigrationRequest | null
     const mode = body?.mode
-    if (mode !== 'reset' && mode !== 'inplace')
-      return c.json({ error: 'Bad Request', message: 'Mode « inplace » ou « reset » attendu' }, 400)
+    // Décision DSI (20/10/2026) : uniquement la bascule en place, plus de réinstallation propre
+    if (mode !== 'inplace')
+      return c.json(
+        { error: 'Bad Request', message: 'Seule la bascule en place est proposée' },
+        400
+      )
     const targets = parseTargets(body?.profileTargets)
     if (!targets)
-      return c.json({ error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' }, 400)
+      return c.json(
+        { error: 'Bad Request', message: 'profileTargets : SID → adresse ou null' },
+        400
+      )
     const mainSid = parseMainSid(body?.mainProfileSid)
     if (mainSid === undefined)
-      return c.json({ error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' }, 400)
+      return c.json(
+        { error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' },
+        400
+      )
     const d = await loadDevice(id)
     if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
 
@@ -535,8 +551,6 @@ deviceMigrationRouter.post(
     if (d.migrationStatus && ACTIVE_STATUSES.includes(d.migrationStatus as MigrationStatus)) {
       return refuse('Une bascule est déjà en cours pour ce poste')
     }
-    if (mode === 'reset' && d.joinType !== 'entra_joined')
-      return refuse('Réinstallation propre limitée aux PC Entra Joined')
     if (mode === 'inplace' && d.joinType !== 'entra_joined' && d.joinType !== 'hybrid')
       return refuse('Bascule en place limitée aux PC Entra Joined ou hybrides')
     if (!d.serialNumber)
@@ -561,8 +575,6 @@ deviceMigrationRouter.post(
     if (!a || Date.now() - a.agent.lastCheckinAt.getTime() > 24 * 3600_000) {
       return refuse('Agent absent ou silencieux depuis plus de 24 h')
     }
-    if (mode === 'reset' && a.report?.winreEnabled === false)
-      return refuse('WinRE désactivé : réinitialisation impossible')
 
     let profileMap: MigrationProfileMapping[] = []
     if (mode === 'inplace') {
@@ -577,8 +589,7 @@ deviceMigrationRouter.post(
         )
       profileMap = await resolveProfileMap(a.report.profiles, targets, mainSid)
       const main = profileMap.find((m) => m.action === 'migrate')
-      if (!main)
-        return refuse('Aucun profil d’utilisateur ONELA sur ce poste : rien à transférer')
+      if (!main) return refuse('Aucun profil d’utilisateur ONELA sur ce poste : rien à transférer')
       if (main.error) return refuse(`Profil ${main.oldAccount ?? main.oldSid} : ${main.error}`)
       if (!main.newSid)
         return refuse(`Profil ${main.oldAccount ?? main.oldSid} : compte Ouihelp à choisir`)
@@ -629,6 +640,16 @@ deviceMigrationRouter.post(
         migrationPromptUser: promptUser ? 1 : 0,
         migrationSnoozes: 0,
         migrationProfileMap: mode === 'inplace' ? JSON.stringify(profileMap) : null,
+        // Identifiants Entra ONELA du poste au moment de la programmation : le nettoyage final
+        // les recherche (l'inventaire peut être en retard sur une réinscription du PC)
+        migrationOnelaDeviceIds: JSON.stringify(
+          [
+            d.onelaEntraDeviceId,
+            a.report?.dsreg.tenantId === process.env['ONELA_TENANT_ID']?.toLowerCase()
+              ? a.report?.dsreg.deviceId
+              : null,
+          ].filter((x): x is string => !!x)
+        ),
         breakglassPassword: generateBreakglassPassword(),
         migrationTokenHash: null,
         hardwareHash: null,
@@ -678,6 +699,48 @@ deviceMigrationRouter.post(
 )
 
 /**
+ * Remet le poste « à migrer » : efface le suivi de la bascule terminée, en échec ou annulée
+ * (tests : PC remis sur ONELA). Ne touche ni au poste ni aux tenants.
+ */
+deviceMigrationRouter.post(
+  '/devices/:id/migration/clear',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const d = await loadDevice(id)
+    if (!d) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
+    if (!['done', 'failed', 'cancelled'].includes(d.migrationStatus ?? '')) {
+      return c.json(
+        { error: 'Conflict', message: 'Bascule en cours : l’annuler ou l’abandonner d’abord' },
+        409
+      )
+    }
+    await db
+      .update(deviceMigrations)
+      .set({
+        migrationStatus: null,
+        migrationMode: null,
+        migrationRequestedBy: null,
+        migrationRequestedAt: null,
+        migrationUpdatedAt: null,
+        migrationError: null,
+        migrationSteps: null,
+        migrationProfileMap: null,
+        migrationOnelaDeviceIds: null,
+        migrationSnoozes: 0,
+        migrationTokenHash: null,
+        hardwareHash: null,
+        breakglassPassword: null,
+      })
+      .where(eq(deviceMigrations.id, id))
+    console.log(
+      `[device-migration] suivi effacé pour ${d.displayName ?? id} par ${c.get('dbUser').email}`
+    )
+    return c.json({ ok: true })
+  }
+)
+
+/**
  * Bascule bloquée sur le poste (réinitialisation ratée, PC injoignable) : la DSI la marque en
  * échec pour pouvoir en reprogrammer une. Ne touche ni au poste ni aux tenants.
  */
@@ -718,7 +781,10 @@ deviceMigrationRouter.put('/apps/rules', requirePermission('migration:write'), a
     !body.keys.every((k) => typeof k === 'string' && k.length > 0 && k.length <= 255) ||
     (body.keep !== null && typeof body.keep !== 'boolean')
   ) {
-    return c.json({ error: 'Bad Request', message: 'keys (1 à 500) et keep (booléen ou null) requis' }, 400)
+    return c.json(
+      { error: 'Bad Request', message: 'keys (1 à 500) et keep (booléen ou null) requis' },
+      400
+    )
   }
   if (body.keep === null) {
     await db.delete(deviceAppRules).where(inArray(deviceAppRules.appKey, body.keys))

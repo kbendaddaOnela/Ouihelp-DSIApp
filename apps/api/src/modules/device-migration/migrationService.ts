@@ -28,6 +28,7 @@ export const BREAKGLASS_USER = 'dsi-secours'
 /** Étiquette Autopilot Ouihelp, la même que le script de migration Intune existant (groupes dynamiques) */
 export const GROUP_TAG = process.env['DEVICE_MIGRATION_GROUP_TAG'] ?? 'OUIHELP'
 const GRAPH = 'https://graph.microsoft.com/v1.0'
+const GRAPH_BETA = 'https://graph.microsoft.com/beta'
 const MAX_STEPS = 200
 /** Inscription Intune après la jonction : on la cherche pendant ~5 min (30 s entre deux essais). */
 const PRIMARY_USER_TRIES = 10
@@ -292,12 +293,14 @@ async function findOuihelpIntuneDevice(token: string, serial: string): Promise<s
   const filtered = await graph(
     token,
     'GET',
-    `https://graph.microsoft.com/beta/deviceManagement/managedDevices?$filter=serialNumber eq '${encodeURIComponent(serial)}'&$select=id,serialNumber`
+    `${GRAPH_BETA}/deviceManagement/managedDevices?$filter=serialNumber eq '${encodeURIComponent(serial)}'&$select=id,serialNumber,enrolledDateTime`
   )
   if (filtered.status === 200) {
-    const hit = (filtered.json as { value?: Array<{ id: string }> })?.value?.[0]
-    if (hit?.id) return hit.id
-    return null
+    // Plusieurs inscriptions pour le même n° de série (tests, réinscription) : la plus récente
+    const hits =
+      (filtered.json as { value?: Array<{ id: string; enrolledDateTime?: string }> })?.value ?? []
+    hits.sort((a, b) => (b.enrolledDateTime ?? '').localeCompare(a.enrolledDateTime ?? ''))
+    return hits[0]?.id ?? null
   }
   const all = await graph(
     token,
@@ -330,7 +333,8 @@ async function setOuihelpPrimaryUser(
     return
   }
   const token = await ouihelpToken()
-  let intuneId = d.ouihelpIntuneId ?? null
+  // Toujours relu : l'identifiant de l'inventaire peut dater d'une inscription précédente
+  let intuneId: string | null = null
   for (let i = 0; !intuneId && i < PRIMARY_USER_TRIES; i++) {
     if (i > 0) await new Promise((r) => setTimeout(r, 30_000))
     intuneId = await findOuihelpIntuneDevice(token, d.serialNumber)
@@ -348,15 +352,71 @@ async function setOuihelpPrimaryUser(
     await step('error', graphError(`Lecture du compte Ouihelp ${main.newUpn}`, user))
     return
   }
-  const r = await graph(token, 'POST', `/deviceManagement/managedDevices/${intuneId}/users/$ref`, {
-    '@odata.id': `${GRAPH}/users/${userId}`,
-  })
+  // L'utilisateur principal ne s'écrit qu'en beta (la v1.0 répond 404 ResourceNotFound)
+  const r = await graph(
+    token,
+    'POST',
+    `${GRAPH_BETA}/deviceManagement/managedDevices/${intuneId}/users/$ref`,
+    { '@odata.id': `${GRAPH_BETA}/users/${userId}` }
+  )
   await step(
     r.status < 300 ? 'ok' : 'error',
     r.status < 300
       ? `Utilisateur principal Intune Ouihelp : ${main.newUpn}`
       : graphError('Utilisateur principal Intune Ouihelp', r)
   )
+}
+
+/**
+ * Objets Entra ONELA du poste. Les identifiants de l'inventaire peuvent être périmés (PC
+ * rejoint ONELA entre-temps → nouvel objet) : on recherche par deviceId, en partant de tous
+ * ceux connus (inventaire + agent au moment de la programmation), et on supprime ce qui existe.
+ */
+async function deleteOnelaEntraDevices(
+  token: string,
+  d: DeviceMigrationRow,
+  step: (status: 'ok' | 'error' | 'info', message: string) => Promise<void>
+): Promise<void> {
+  let objects: DeviceEntraObject[] = []
+  try {
+    objects = JSON.parse(d.onelaEntraObjects ?? '[]') as DeviceEntraObject[]
+  } catch {
+    objects = []
+  }
+  let captured: string[] = []
+  try {
+    captured = JSON.parse(d.migrationOnelaDeviceIds ?? '[]') as string[]
+  } catch {
+    captured = []
+  }
+  const deviceIds = new Set(
+    [d.onelaEntraDeviceId, ...objects.map((o) => o.deviceId), ...captured]
+      .filter((x): x is string => !!x)
+      .map((x) => x.toLowerCase())
+  )
+  const found = new Map<string, string | null>() // objectId → trustType
+  for (const id of deviceIds) {
+    const r = await graph(token, 'GET', `/devices?$filter=deviceId eq '${id}'&$select=id,trustType`)
+    if (r.status !== 200) {
+      await step('error', graphError('Recherche Entra ONELA', r))
+      continue
+    }
+    for (const o of (r.json as { value?: Array<{ id: string; trustType?: string }> })?.value ?? [])
+      found.set(o.id, o.trustType ?? null)
+  }
+  if (found.size === 0) {
+    await step('ok', 'Aucun objet Entra ONELA restant pour ce poste')
+    return
+  }
+  for (const [objectId, trustType] of found) {
+    const r = await graph(token, 'DELETE', `/devices/${objectId}`)
+    await step(
+      r.status < 400 || r.status === 404 ? 'ok' : 'error',
+      r.status < 400 || r.status === 404
+        ? `Objet Entra ONELA ${trustType ?? ''} supprimé`
+        : graphError('Suppression Entra ONELA', r)
+    )
+  }
 }
 
 /**
@@ -380,21 +440,7 @@ export async function finalizeAfterJoin(id: string): Promise<void> {
           : graphError('Suppression Intune ONELA', r)
       )
     }
-    let objects: DeviceEntraObject[] = []
-    try {
-      objects = JSON.parse(d.onelaEntraObjects ?? '[]') as DeviceEntraObject[]
-    } catch {
-      objects = []
-    }
-    for (const o of objects) {
-      const r = await graph(ol, 'DELETE', `/devices/${o.objectId}`)
-      await step(
-        r.status < 400 || r.status === 404 ? 'ok' : 'error',
-        r.status < 400 || r.status === 404
-          ? `Objet Entra ONELA ${o.trustType ?? ''} supprimé`
-          : graphError('Suppression Entra ONELA', r)
-      )
-    }
+    await deleteOnelaEntraDevices(ol, d, step)
   } catch (err) {
     await step('error', `Nettoyage ONELA : ${err instanceof Error ? err.message : String(err)}`)
   }

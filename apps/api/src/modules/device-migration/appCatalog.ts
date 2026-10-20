@@ -40,7 +40,9 @@ export async function loadAppRules(): Promise<Map<string, boolean>> {
 
 export async function buildAppCatalog(): Promise<DeviceAppCatalogEntry[]> {
   const [agents, rules] = await Promise.all([
-    db.select({ report: deviceAgents.report, deviceId: deviceAgents.deviceMigrationId }).from(deviceAgents),
+    db
+      .select({ report: deviceAgents.report, deviceId: deviceAgents.deviceMigrationId })
+      .from(deviceAgents),
     db.select().from(deviceAppRules),
   ])
   const ruleByKey = new Map(rules.map((r) => [r.appKey, r]))
@@ -78,8 +80,9 @@ export async function buildAppCatalog(): Promise<DeviceAppCatalogEntry[]> {
 }
 
 /** Applications de CE poste à désinstaller (noms exacts remontés par son agent). */
-export function appsToRemove(report: DeviceAgentReport | null, rules: Map<string, boolean>): string[] {
-  return (report?.apps ?? [])
-    .filter((a) => rules.get(appKey(a.name)) === false)
-    .map((a) => a.name)
+export function appsToRemove(
+  report: DeviceAgentReport | null,
+  rules: Map<string, boolean>
+): string[] {
+  return (report?.apps ?? []).filter((a) => rules.get(appKey(a.name)) === false).map((a) => a.name)
 }
