@@ -37,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.3'
+$AgentVersion = '1.2.4'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1193,6 +1193,7 @@ $ProfileAttempts  = 5
 $JoinAttempts     = 20
 # Espace libre exigé : désinstallations, nouveau profil, PPKG (rien n'est recopié en place).
 $InplaceFreeBytes = 10GB
+$HelloKey = 'HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork'
 
 function Set-RegValue([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') {
   if (-not (Test-Path $Path)) { $null = New-Item -Path $Path -Force }
@@ -1591,6 +1592,12 @@ function Invoke-InplaceProfiles($State) {
     } else {
       Send-Progress 'profils-supprimes' 'error' "$($gone.Count) profil(s) supprimé(s) ; conservé(s) : $($kept -join ' ; ')"
     }
+  }
+  # Windows Hello : pas d'assistant de code PIN imposé à la 1re connexion Ouihelp (choix DSI).
+  # Stratégie locale, appliquée avant la connexion ; à doubler d'un profil Intune Ouihelp.
+  Safe 'hello' {
+    Set-RegValue $HelloKey 'Enabled' 0
+    Set-RegValue $HelloKey 'DisablePostLogonProvisioning' 1
   }
   $State.phase = 'join'
   $State.attempts = 0

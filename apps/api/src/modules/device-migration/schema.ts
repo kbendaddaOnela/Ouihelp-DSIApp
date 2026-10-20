@@ -85,6 +85,8 @@ export const deviceMigrations = mysqlTable(
     migrationSnoozes: int('migration_snoozes').default(0).notNull(),
     /** JSON MigrationProfileMapping[] — profils transférés (bascule en place), figé à la programmation */
     migrationProfileMap: text('migration_profile_map'),
+    /** JSON string[] — deviceId Entra ONELA relevés à la programmation (agent + inventaire) */
+    migrationOnelaDeviceIds: text('migration_onela_device_ids'),
 
     excluded: int('excluded').default(0).notNull(),
     excludeReason: varchar('exclude_reason', { length: 255 }),

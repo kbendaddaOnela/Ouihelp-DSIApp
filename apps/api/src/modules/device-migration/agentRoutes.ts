@@ -615,7 +615,10 @@ deviceAgentRouter.post('/migration/progress', async (c) => {
     message: str(b.message, 1000) ?? '',
   }
 
-  if (b.fatal === true && ['staging', 'staged', 'ready', 'resetting', 'joining'].includes(current)) {
+  if (
+    b.fatal === true &&
+    ['staging', 'staged', 'ready', 'resetting', 'joining'].includes(current)
+  ) {
     await recordStep(deviceId, step, { status: 'failed', error: step.message })
   } else if (b.joined === true && ['resetting', 'joining'].includes(current)) {
     // Bascule en place : l'agent (conservé) constate la jonction Ouihelp

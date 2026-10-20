@@ -25,6 +25,7 @@ import { CopyButton } from '@/modules/migration/components/CopyButton'
 import { deviceMigrationApi } from './api'
 import {
   useAbandonMigration,
+  useClearMigration,
   useResumeMigration,
   useAppCatalog,
   useCancelMigration,
@@ -413,15 +414,17 @@ function TargetName({
 }
 
 export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boolean }) {
-  const { confirm, alert } = useConfirm()
+  const { confirm } = useConfirm()
   const schedule = useScheduleMigration()
   const cancel = useCancelMigration()
   const abandon = useAbandonMigration()
+  const clear = useClearMigration()
   const resume = useResumeMigration()
   const [secret, setSecret] = useState<{ user: string; password: string } | null>(null)
   // true : prévenir l'utilisateur connecté et attendre « Démarrer » ; false : seulement hors session
   const [promptUser, setPromptUser] = useState(true)
-  const [mode, setMode] = useState<MigrationMode>('inplace')
+  // Décision DSI (20/10/2026) : uniquement la bascule en place
+  const mode: MigrationMode = 'inplace'
   const [targets, setTargets] = useState<Record<string, string | null>>({})
   // Profil conservé et transféré ; null = le dernier connecté, choisi par le serveur
   const [mainSid, setMainSid] = useState<string | null>(null)
@@ -456,68 +459,37 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
     const trigger = promptUser
       ? 'L’agent prévient l’utilisateur connecté et attend qu’il clique « Démarrer » (ou agit tout de suite si personne n’est connecté). '
       : 'L’agent agit dès qu’aucune session n’est ouverte. '
-    const res =
-      mode === 'inplace'
-        ? await confirm({
-            title: `Basculer ${d.displayName ?? 'ce poste'} vers Ouihelp (en place) ?`,
-            message: (
-              <div className="space-y-2 text-sm">
-                <p>
-                  {trigger}Le serveur retire le poste d’Autopilot ONELA, puis le poste quitte ONELA,
-                  rejoint Entra et Intune Ouihelp avec le PPKG, et prend le nom{' '}
-                  <strong>{d.targetName}</strong>.
-                </p>
-                <p>
-                  <strong>Windows, applications et fichiers sont conservés.</strong> Le profil de{' '}
-                  <strong>{mainProfile?.oldUpn ?? mainProfile?.oldAccount}</strong> est transféré au
-                  compte <strong>{mainProfile?.newUpn}</strong>. Les applications décochées dans le
-                  catalogue « Applications » sont désinstallées.
-                </p>
-                {removedProfiles.length > 0 && (
-                  <p className="text-amber-700">
-                    <strong>
-                      {removedProfiles.length} autre(s) profil(s) seront supprimés du poste
-                    </strong>{' '}
-                    (clé de registre et dossier de C:\Users, données locales comprises) :{' '}
-                    {removedProfiles.map((p) => p.oldUpn ?? p.oldAccount ?? p.oldSid).join(', ')}.
-                  </p>
-                )}
-                <p>
-                  Deux redémarrages, puis l’utilisateur se connecte avec son adresse Ouihelp et
-                  retrouve son bureau. Annulation possible jusqu’à l’étape « prêt ».
-                </p>
-              </div>
-            ),
-            confirmLabel: 'Programmer la bascule',
-          })
-        : await confirm({
-            title: `Réinstaller ${d.displayName ?? 'ce poste'} pour Ouihelp ?`,
-            tone: 'danger',
-            message: (
-              <div className="space-y-2 text-sm">
-                <p>
-                  {trigger}Le serveur retire le poste d’Autopilot ONELA, puis{' '}
-                  <strong>Windows est réinitialisé (« Supprimer tout »)</strong>.
-                </p>
-                <p>
-                  Toutes les données locales sont <strong>effacées</strong>. Le poste rejoint
-                  ensuite Entra et Intune Ouihelp tout seul ; l’utilisateur se connecte avec son
-                  compte Ouihelp.
-                </p>
-                <p>Annulation possible jusqu’à l’étape « prêt ».</p>
-              </div>
-            ),
-            checkbox: { label: 'J’ai compris que le poste sera entièrement effacé' },
-            confirmLabel: 'Programmer la réinstallation',
-          })
+    const res = await confirm({
+      title: `Basculer ${d.displayName ?? 'ce poste'} vers Ouihelp (en place) ?`,
+      message: (
+        <div className="space-y-2 text-sm">
+          <p>
+            {trigger}Le serveur retire le poste d’Autopilot ONELA, puis le poste quitte ONELA,
+            rejoint Entra et Intune Ouihelp avec le PPKG, et prend le nom{' '}
+            <strong>{d.targetName}</strong>.
+          </p>
+          <p>
+            <strong>Windows, applications et fichiers sont conservés.</strong> Le profil de{' '}
+            <strong>{mainProfile?.oldUpn ?? mainProfile?.oldAccount}</strong> est transféré au
+            compte <strong>{mainProfile?.newUpn}</strong>. Les applications décochées dans le
+            catalogue « Applications » sont désinstallées.
+          </p>
+          {removedProfiles.length > 0 && (
+            <p className="text-amber-700">
+              <strong>{removedProfiles.length} autre(s) profil(s) seront supprimés du poste</strong>{' '}
+              (clé de registre et dossier de C:\Users, données locales comprises) :{' '}
+              {removedProfiles.map((p) => p.oldUpn ?? p.oldAccount ?? p.oldSid).join(', ')}.
+            </p>
+          )}
+          <p>
+            Deux redémarrages, puis l’utilisateur se connecte avec son adresse Ouihelp et retrouve
+            son bureau. Annulation possible jusqu’à l’étape « prêt ».
+          </p>
+        </div>
+      ),
+      confirmLabel: 'Programmer la bascule',
+    })
     if (!res.confirmed) return
-    if (mode === 'reset' && !res.checked) {
-      await alert({
-        title: 'Non programmé',
-        message: 'Cochez la case de confirmation pour programmer la réinstallation.',
-      })
-      return
-    }
     schedule.mutate({
       id: d.id,
       mode,
@@ -558,12 +530,23 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
     if (res.confirmed) abandon.mutate(d.id)
   }
 
+  const onClear = async () => {
+    const res = await confirm({
+      title: 'Remettre ce poste « à migrer » ?',
+      message:
+        'Le suivi de la bascule (journal, profils, compte de secours) est effacé de la DSI App. Rien n’est fait sur le poste ni dans les tenants : à utiliser quand le PC a été remis sur ONELA.',
+      confirmLabel: 'Remettre à migrer',
+    })
+    if (res.confirmed) clear.mutate(d.id)
+  }
+
   return (
     <div className="space-y-3 border-t border-gray-200 px-4 py-3 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 font-semibold text-gray-700">
           <RotateCcw className="h-4 w-4" /> Bascule vers Ouihelp
-          {m && (m.mode === 'inplace' ? ' (en place, profil conservé)' : ' (réinstallation propre)')}
+          {m &&
+            (m.mode === 'inplace' ? ' (en place, profil conservé)' : ' (réinstallation propre)')}
           {m && (
             <span
               className={cn(
@@ -597,6 +580,11 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
                 Annuler la bascule
               </Button>
             )}
+            {m && ['done', 'failed', 'cancelled'].includes(m.status) && (
+              <Button size="sm" variant="outline" disabled={clear.isPending} onClick={onClear}>
+                Remettre à migrer
+              </Button>
+            )}
             {m && ['cleanup', 'ready', 'resetting', 'joining'].includes(m.status) && (
               <Button size="sm" variant="outline" disabled={abandon.isPending} onClick={onAbandon}>
                 Abandonner
@@ -610,7 +598,6 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
             {!active && (
               <Button
                 size="sm"
-                variant={mode === 'reset' ? 'destructive' : 'default'}
                 disabled={
                   block.length > 0 ||
                   schedule.isPending ||
@@ -618,26 +605,13 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
                 }
                 onClick={onSchedule}
               >
-                {m ? 'Reprogrammer' : mode === 'inplace' ? 'Programmer la bascule' : 'Programmer la réinstallation'}
+                {m ? 'Reprogrammer' : 'Programmer la bascule'}
               </Button>
             )}
           </div>
         )}
       </div>
 
-      {canWrite && !active && (
-        <div className="flex flex-wrap items-center gap-4 text-gray-600">
-          <span className="text-gray-400">Mode :</span>
-          <label className="flex items-center gap-1">
-            <input type="radio" checked={mode === 'inplace'} onChange={() => setMode('inplace')} />
-            En place (Windows, applications et profil conservés)
-          </label>
-          <label className="flex items-center gap-1">
-            <input type="radio" checked={mode === 'reset'} onChange={() => setMode('reset')} />
-            Réinstallation propre (tout est effacé)
-          </label>
-        </div>
-      )}
       {canWrite && !active && (
         <div className="flex flex-wrap items-center gap-4 text-gray-600">
           <span className="text-gray-400">Déclenchement :</span>
@@ -696,6 +670,7 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
           Non programmable : {[...block, ...(previewBlock ? [previewBlock] : [])].join(' · ')}
         </p>
       )}
+      {clear.error && <p className="text-red-600">{(clear.error as Error).message}</p>}
       {(schedule.error || cancel.error || abandon.error) && (
         <p className="text-red-600">
           {((schedule.error ?? cancel.error ?? abandon.error) as Error).message}

@@ -62,11 +62,13 @@ export const deviceMigrationApi = {
   resumeMigration: (id: string) =>
     apiClient.post(`/device-migration/devices/${id}/migration/resume`).then((r) => r.data),
 
+  clearMigration: (id: string) =>
+    apiClient.post(`/device-migration/devices/${id}/migration/clear`).then((r) => r.data),
+
   abandonMigration: (id: string) =>
     apiClient.post(`/device-migration/devices/${id}/migration/abandon`).then((r) => r.data),
 
-  apps: () =>
-    apiClient.get<DeviceAppCatalogResponse>('/device-migration/apps').then((r) => r.data),
+  apps: () => apiClient.get<DeviceAppCatalogResponse>('/device-migration/apps').then((r) => r.data),
 
   updateAppRules: (req: UpdateAppRuleRequest) =>
     apiClient.put('/device-migration/apps/rules', req).then((r) => r.data),

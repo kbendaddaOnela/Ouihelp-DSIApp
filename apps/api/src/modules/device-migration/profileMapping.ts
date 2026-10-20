@@ -39,7 +39,10 @@ interface OuihelpUser {
 
 const SELECT = '$select=id,userPrincipalName,securityIdentifier,accountEnabled,userType'
 
-async function graphGet<T>(token: string, url: string): Promise<{ status: number; body: T | null }> {
+async function graphGet<T>(
+  token: string,
+  url: string
+): Promise<{ status: number; body: T | null }> {
   const res = await fetch(`${GRAPH}${url}`, {
     headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
   })
@@ -172,7 +175,8 @@ export async function resolveProfileMap(
       } else {
         throw new Error('UPN ONELA inconnu pour ce profil : saisir le compte Ouihelp')
       }
-      if (!user.accountEnabled) throw new Error(`Compte Ouihelp ${user.userPrincipalName} désactivé`)
+      if (!user.accountEnabled)
+        throw new Error(`Compte Ouihelp ${user.userPrincipalName} désactivé`)
       // Un invité (#EXT#) porte souvent la même adresse que le compte ONELA : c'est l'ONELA
       // invité chez Ouihelp, pas le compte de la personne. Transférer le profil vers son SID
       // donnerait un profil que le compte Ouihelp réel n'ouvrirait jamais.

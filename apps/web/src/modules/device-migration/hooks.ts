@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { MigrationMode, UpdateAppRuleRequest, UpdateDeviceMigrationRequest } from '@dsi-app/shared'
+import type {
+  MigrationMode,
+  UpdateAppRuleRequest,
+  UpdateDeviceMigrationRequest,
+} from '@dsi-app/shared'
 import { deviceMigrationApi } from './api'
 
 const LIVE_STATUSES = ['scheduled', 'staging', 'staged', 'cleanup', 'ready', 'resetting', 'joining']
@@ -155,5 +159,14 @@ export function useUpdateAppRules() {
   return useMutation({
     mutationFn: (req: UpdateAppRuleRequest) => deviceMigrationApi.updateAppRules(req),
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migration-apps'] }),
+  })
+}
+
+/** Efface le suivi d'une bascule terminée / en échec / annulée : le poste redevient « à migrer ». */
+export function useClearMigration() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: deviceMigrationApi.clearMigration,
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
 }
