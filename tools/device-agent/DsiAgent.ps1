@@ -37,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.4'
+$AgentVersion = '1.2.5'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1229,6 +1229,47 @@ function Set-MigrationNotice([string]$Caption, [string]$Text) {
   }
 }
 
+# Écran de connexion après la bascule : sans ça, Windows propose la vignette du dernier compte
+# (le compte ONELA, qui ne peut plus se connecter) et l'utilisateur doit penser à cliquer
+# « Autre utilisateur ». On efface le dernier utilisateur et on masque son nom jusqu'à la
+# 1re connexion Ouihelp ; Restore-LogonUi rétablit ensuite le comportement normal.
+$LogonUiKey    = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI'
+$LogonUiMarker = Join-Path $Root 'logonui-reset'
+
+function Reset-LogonUi {
+  Safe 'logonui' {
+    # La valeur était-elle déjà imposée (GPO / Intune) ? Alors on ne la retirera pas après.
+    $preset = $null -ne (Get-ItemProperty $PoliciesKey -Name 'DontDisplayLastUserName' -ErrorAction SilentlyContinue)
+    Remove-ItemProperty -Path $LogonUiKey -Name 'LastLoggedOnUser', 'LastLoggedOnSAMUser', 'LastLoggedOnDisplayName', 'LastLoggedOnUserSID', 'SelectedUserSID', 'LastLoggedOnProvider' -ErrorAction SilentlyContinue
+    if (-not $preset) {
+      Set-RegValue $PoliciesKey 'DontDisplayLastUserName' 1
+      Set-Content -Path $LogonUiMarker -Value (Get-Date).ToString('o') -Encoding ASCII
+    }
+  }
+}
+
+function Restore-LogonUi {
+  if (-not (Test-Path $LogonUiMarker)) { return }
+  $u = Get-InteractiveUser
+  if (-not $u -or $u -match 'dsi-secours') { return }
+  Safe 'logonuiRestore' {
+    Remove-ItemProperty -Path $PoliciesKey -Name 'DontDisplayLastUserName' -ErrorAction SilentlyContinue
+    Remove-Item $LogonUiMarker -Force -ErrorAction SilentlyContinue
+    Write-Log "Écran de connexion rétabli après la 1re connexion de $u"
+  }
+}
+
+# Page d'état de l'inscription côté utilisateur (ESP) : inutile ici (le poste est déjà prêt) et
+# elle allonge la 1re connexion. Même réglage que le script V9 d'origine.
+function Skip-UserEsp {
+  Safe 'userEsp' {
+    foreach ($k in @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Enrollments' -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.Property -contains 'SkipUserStatusPage' })) {
+      Set-ItemProperty -Path $k.PSPath -Name 'SkipUserStatusPage' -Value -1 -Type DWord
+    }
+  }
+}
+
 function Clear-MigrationNotice {
   Remove-ItemProperty -Path $PoliciesKey -Name 'legalnoticecaption', 'legalnoticetext' -ErrorAction SilentlyContinue
 }
@@ -1593,6 +1634,19 @@ function Invoke-InplaceProfiles($State) {
       Send-Progress 'profils-supprimes' 'error' "$($gone.Count) profil(s) supprimé(s) ; conservé(s) : $($kept -join ' ; ')"
     }
   }
+  # Nom DSI appliqué maintenant (le PPKG, déjà installé, a pu imposer le sien) : effectif au
+  # redémarrage qui suit. Après la jonction, plus aucun redémarrage n'est imposé : il couperait
+  # la 1re connexion Ouihelp de l'utilisateur (écran noir).
+  if ($State.computerName -and $env:COMPUTERNAME -ne $State.computerName) {
+    try {
+      Rename-Computer -NewName $State.computerName -Force -ErrorAction Stop
+      Write-Log "Renommé en $($State.computerName) (effectif au redémarrage)"
+    } catch {
+      Write-Log "Renommage en $($State.computerName) impossible : $($_.Exception.Message)"
+    }
+  }
+  Skip-UserEsp
+  Reset-LogonUi
   # Windows Hello : pas d'assistant de code PIN imposé à la 1re connexion Ouihelp (choix DSI).
   # Stratégie locale, appliquée avant la connexion ; à doubler d'un profil Intune Ouihelp.
   Safe 'hello' {
@@ -1638,21 +1692,26 @@ function Invoke-InplaceJoin($State) {
       $null = BackupToAAD-BitLockerKeyProtector -MountPoint $env:SystemDrive -KeyProtectorId $kp.KeyProtectorId
     }
   }
-  $renamed = $false
+  # Renommage normalement fait avant le redémarrage (phase des profils) : ici seulement en
+  # secours, sans redémarrer (il prendra effet au prochain redémarrage normal du poste).
+  $pendingName = ''
   if ($State.computerName -and $env:COMPUTERNAME -ne $State.computerName) {
-    try {
-      Rename-Computer -NewName $State.computerName -Force -ErrorAction Stop
-      $renamed = $true
-      Write-Log "Renommé en $($State.computerName) (effectif au redémarrage)"
-    } catch {
-      Write-Log "Renommage en $($State.computerName) impossible : $($_.Exception.Message)"
+    $current = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName' -ErrorAction SilentlyContinue).ComputerName
+    if ($current -ne $State.computerName) {
+      try {
+        Rename-Computer -NewName $State.computerName -Force -ErrorAction Stop
+        Write-Log "Renommé en $($State.computerName) (effectif au prochain redémarrage)"
+      } catch {
+        Write-Log "Renommage en $($State.computerName) impossible : $($_.Exception.Message)"
+      }
     }
+    $pendingName = ' (nom effectif au prochain redémarrage)'
   }
+  Skip-UserEsp
   Clear-MigrationNotice
-  Send-Progress 'jonction' 'ok' "Poste joint à Entra Ouihelp, nom $($State.computerName) ; l'utilisateur se connecte avec son compte Ouihelp" @{ joined = $true }
+  Send-Progress 'jonction' 'ok' "Poste joint à Entra Ouihelp, nom $($State.computerName)$pendingName ; l'utilisateur se connecte avec son compte Ouihelp" @{ joined = $true }
   Remove-InplacePayload
   Restore-Sleep
-  if ($renamed) { & shutdown.exe /r /t 60 /c 'Bascule vers Ouihelp terminee : redemarrage' | Out-Null }
 }
 
 # Bascule relancée par la DSI alors que l'agent n'a plus son état local (abandon après plusieurs
@@ -1831,6 +1890,7 @@ try {
   if ($PSCommandPath -ne $InstalledPs) { Install-Agent; exit 0 }
   # D'abord la bascule (réactif), puis le rapport d'inventaire (espacé par nextCheckinAt)
   Invoke-MigrationPoll
+  Restore-LogonUi
   # Code de sortie ≠ 0 en cas d'échec : visible dans « Dernier résultat » de la tâche planifiée
   if (Invoke-Checkin) { exit 1 }
   exit 0

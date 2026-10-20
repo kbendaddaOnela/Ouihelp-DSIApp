@@ -404,8 +404,29 @@ async function deleteOnelaEntraDevices(
     for (const o of (r.json as { value?: Array<{ id: string; trustType?: string }> })?.value ?? [])
       found.set(o.id, o.trustType ?? null)
   }
+  // Secours par nom : un objet créé après la programmation (PC réinscrit, objet recréé par
+  // Intune) porte un deviceId inconnu. Le nom ONELA du poste contient la fin du n° de série :
+  // dans le tenant ONELA, un objet de ce nom est ce même PC (ou un doublon périmé).
+  const name = d.displayName?.trim()
+  if (name) {
+    const r = await graph(
+      token,
+      'GET',
+      `/devices?$filter=displayName eq '${encodeURIComponent(name.replace(/'/g, "''"))}'&$select=id,trustType`
+    )
+    if (r.status === 200) {
+      for (const o of (r.json as { value?: Array<{ id: string; trustType?: string }> })?.value ??
+        [])
+        found.set(o.id, o.trustType ?? null)
+    } else {
+      await step('error', graphError(`Recherche Entra ONELA « ${name} »`, r))
+    }
+  }
   if (found.size === 0) {
-    await step('ok', 'Aucun objet Entra ONELA restant pour ce poste')
+    await step(
+      'ok',
+      `Aucun objet Entra ONELA restant pour ce poste (recherché : ${deviceIds.size} deviceId${name ? `, nom ${name}` : ''})`
+    )
     return
   }
   for (const [objectId, trustType] of found) {
