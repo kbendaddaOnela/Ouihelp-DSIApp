@@ -69,6 +69,22 @@ async function ouihelpUserByAddress(token: string, address: string): Promise<Oui
   return hits.length === 1 ? hits[0]! : null
 }
 
+/**
+ * Le compte a-t-il un plan de service Intune actif (INTUNE_A, inclus dans EMS E3 / E5 et
+ * Microsoft 365 E3 / Business Premium) ? null = lecture impossible (on ne bloque pas).
+ */
+async function hasIntuneLicense(token: string, userId: string): Promise<boolean | null> {
+  const r = await graphGet<{
+    value: Array<{ servicePlans: Array<{ servicePlanName: string; provisioningStatus: string }> }>
+  }>(token, `/users/${userId}/licenseDetails?$select=servicePlans`)
+  if (r.status !== 200 || !r.body) return null
+  return r.body.value.some((l) =>
+    l.servicePlans.some(
+      (p) => p.servicePlanName.startsWith('INTUNE_A') && p.provisioningStatus !== 'Disabled'
+    )
+  )
+}
+
 /** UPN Ouihelp connu par la création des comptes (table migrations). */
 async function upnFromAccountMigrations(onelaUpn: string): Promise<string | null> {
   const rows = await db
@@ -183,6 +199,13 @@ export async function resolveProfileMap(
       if (user.userType === 'Guest' || /#EXT#/i.test(user.userPrincipalName))
         throw new Error(
           `${user.userPrincipalName} est un compte invité : saisir le compte Ouihelp de la personne`
+        )
+      // Sans licence Intune, le poste s'inscrit (jeton en bloc du PPKG) mais l'utilisateur ne
+      // reçoit ni ses stratégies ni ses applications, et ne peut pas en être l'utilisateur principal
+      const licensed = await hasIntuneLicense(token, user.id)
+      if (licensed === false)
+        throw new Error(
+          `${user.userPrincipalName} n'a pas de licence Intune (EMS E3 / Microsoft 365) : l'attribuer avant la bascule`
         )
       if (!user.securityIdentifier?.startsWith('S-1-12-1-'))
         throw new Error(`SID du compte Ouihelp ${user.userPrincipalName} illisible`)
