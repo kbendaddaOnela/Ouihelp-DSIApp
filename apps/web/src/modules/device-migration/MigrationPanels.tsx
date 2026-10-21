@@ -651,7 +651,7 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
               Lecteurs réseau, imprimantes et scripts apportés par les GPO disparaissent avec la
               sortie du domaine : à reprendre dans Intune Ouihelp si besoin.
               {d.agent?.report.sccmClient &&
-                ' Client SCCM présent : il n’est pas désinstallé par l’agent.'}
+                ' Client SCCM présent : l’agent le désinstalle pendant la bascule (agent 1.2.6 ou plus).'}
             </p>
           </div>
         </div>
