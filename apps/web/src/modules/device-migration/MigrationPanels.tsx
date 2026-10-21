@@ -635,6 +635,28 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
 
       <TargetName d={d} canWrite={canWrite} locked={active} />
 
+      {d.joinType === 'hybrid' && m?.status !== 'done' && (
+        <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+          <ShieldAlert className="h-4 w-4 shrink-0" />
+          <div className="space-y-1">
+            <p>
+              <strong>PC hybride</strong> : l’agent le sort du domaine ONELA, mais son compte
+              ordinateur reste actif dans l’AD. S’il est dans une OU synchronisée par Entra Connect,
+              l’objet Entra ONELA supprimé à la fin de la bascule sera recréé.{' '}
+              <strong>Désactiver ou supprimer le compte ordinateur</strong>
+              {d.displayName ? ` ${d.displayName}` : ''} dans l’AD (ou le sortir du périmètre de
+              synchro) après la bascule.
+            </p>
+            <p>
+              Lecteurs réseau, imprimantes et scripts apportés par les GPO disparaissent avec la
+              sortie du domaine : à reprendre dans Intune Ouihelp si besoin.
+              {d.agent?.report.sccmClient &&
+                ' Client SCCM présent : il n’est pas désinstallé par l’agent.'}
+            </p>
+          </div>
+        </div>
+      )}
+
       {m?.mode === 'inplace' && m.profiles.length > 0 && (active || m.status === 'done') ? (
         <ProfileMap
           profiles={m.profiles}
