@@ -73,11 +73,39 @@ function fmtDateTime(d: string | null) {
   return new Date(d).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
-/** Données locales de tous les profils non locaux (perdues à la bascule), en Mo */
+/** Données locales de tous les profils AD / Entra (export CSV), en Mo */
 function localDataMb(r: DeviceAgentReport): number | null {
   const sizes = r.profiles.filter((p) => p.kind !== 'local').map((p) => p.localDataMb)
   if (sizes.length === 0) return 0
   return sizes.some((v) => v == null) ? null : sizes.reduce<number>((a, b) => a + (b ?? 0), 0)
+}
+
+// Même règle que le serveur (profileMapping.ts) : comptes techniques jamais retenus d'office
+const TECHNICAL_ACCOUNT = /^(admin|adm[._-]|administrat|support|svc[._-]?)/i
+
+/**
+ * Bascule en place : le profil conservé est par défaut le dernier connecté parmi les comptes
+ * AD / Entra d'utilisateurs (comme pickMainProfile côté serveur) ; les autres profils AD / Entra
+ * sont supprimés. Renvoie les données locales de ces profils supprimés, en Mo.
+ */
+function deletedProfilesData(r: DeviceAgentReport): { mb: number | null; accounts: string[] } {
+  const onela = r.profiles.filter((p) => p.kind === 'ad' || p.kind === 'entra')
+  const at = (p: (typeof onela)[number]) => {
+    const t = new Date(p.lastLogonTime ?? p.lastUseTime ?? '').getTime()
+    return Number.isNaN(t) ? 0 : t
+  }
+  const main = onela
+    .filter((p) => {
+      const account = p.upn ?? p.account ?? ''
+      return !!account && !TECHNICAL_ACCOUNT.test(account.split('\\').pop()!.split('@')[0]!)
+    })
+    .sort((a, b) => at(b) - at(a))[0]
+  const deleted = onela.filter((p) => p.sid !== main?.sid && (p.localDataMb ?? 1) > 0)
+  const sizes = deleted.map((p) => p.localDataMb)
+  return {
+    mb: sizes.some((v) => v == null) ? null : sizes.reduce<number>((a, b) => a + (b ?? 0), 0),
+    accounts: deleted.map((p) => p.upn ?? p.account ?? p.sid),
+  }
 }
 
 function fmtMb(mb: number | null) {
@@ -88,7 +116,6 @@ function fmtMb(mb: number | null) {
 /** Points d'attention avant bascule, déduits du rapport de l'agent. */
 function agentWarnings(r: DeviceAgentReport): string[] {
   const w: string[] = []
-  if (r.winreEnabled === false) w.push('WinRE désactivé (pas de réinstallation à distance)')
   if (!r.tpm.present) w.push('Pas de TPM')
   else if (!r.tpm.ready) w.push('TPM non prêt')
   if (r.disk.freeGb != null && r.disk.freeGb < 20)
@@ -97,9 +124,11 @@ function agentWarnings(r: DeviceAgentReport): string[] {
     w.push(`Wi-Fi uniquement${r.network.ssid ? ` (${r.network.ssid})` : ''}`)
   if (!r.network.wifi && !r.network.ethernet)
     w.push('Aucune carte réseau active au dernier passage')
-  const data = localDataMb(r)
-  if (data != null && data >= 500)
-    w.push(`${fmtMb(data)} de données locales (perdues à la bascule)`)
+  const lost = deletedProfilesData(r)
+  if (lost.mb != null && lost.mb >= 500)
+    w.push(
+      `${fmtMb(lost.mb)} de données dans des profils qui seront supprimés (${lost.accounts.join(', ')})`
+    )
   if (r.sccmClient) w.push('Client SCCM présent')
   if (r.mdm.gpoAutoEnroll) w.push('Inscription Intune automatique par GPO (à neutraliser)')
   return w
