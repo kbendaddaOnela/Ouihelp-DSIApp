@@ -60,6 +60,7 @@ export const deviceMigrations = mysqlTable(
     ouihelpAutopilotId: varchar('ouihelp_autopilot_id', { length: 64 }),
     ouihelpLastSync: timestamp('ouihelp_last_sync'),
     ouihelpUserUpn: varchar('ouihelp_user_upn', { length: 255 }),
+    ouihelpDeviceName: varchar('ouihelp_device_name', { length: 255 }),
 
     // ── Bascule (lot 3) ── colonnes jamais touchées par la synchro d'inventaire
     /** MigrationStatus ; null = jamais programmée */

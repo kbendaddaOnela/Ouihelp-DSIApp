@@ -134,6 +134,19 @@ function agentWarnings(r: DeviceAgentReport): string[] {
   return w
 }
 
+/**
+ * Nom actuel d'un poste basculé : celui d'Intune Ouihelp, sinon le nom donné à la bascule,
+ * sinon celui que remonte l'agent une fois joint à Ouihelp. null = poste encore chez ONELA.
+ */
+function ouihelpName(d: DeviceMigrationRecord): string | null {
+  if (d.state !== 'migrated') return null
+  return (
+    d.ouihelpDeviceName ??
+    (d.migration?.status === 'done' ? d.targetName : null) ??
+    (d.agent?.joinedToOuihelp ? d.agent.report.hostname : null)
+  )
+}
+
 // Ordre de la liste : à migrer sans agent, à migrer avec agent, chez Ouihelp, inactifs,
 // disparus, exclus (tri stable : l'ordre alphabétique du serveur est gardé dans chaque groupe)
 const STATE_RANK: Record<DeviceMigrationState, number> = {
@@ -161,7 +174,8 @@ function migratedReasons(d: DeviceMigrationRecord): string[] {
 // ── Export CSV (séparateur « ; » pour Excel FR) ──────────────────────────────
 function exportCsv(devices: DeviceMigrationRecord[]) {
   const cols: Array<[string, (d: DeviceMigrationRecord) => string | number | null]> = [
-    ['Nom', (d) => d.displayName],
+    ['Nom', (d) => ouihelpName(d) ?? d.displayName],
+    ['Nom ONELA', (d) => d.displayName],
     ['N° de série', (d) => d.serialNumber],
     ['Fabricant', (d) => d.manufacturer],
     ['Modèle', (d) => d.model],
@@ -752,6 +766,8 @@ export default function DeviceMigrationPage() {
           (!needle ||
             [
               d.displayName,
+              d.ouihelpDeviceName,
+              d.targetName,
               d.serialNumber,
               d.onelaUserUpn,
               d.onelaUserName,
@@ -1003,7 +1019,12 @@ export default function DeviceMigrationPage() {
                         )}
                       </td>
                       <td className="px-3 py-2">
-                        <div className="font-medium text-gray-900">{d.displayName ?? '—'}</div>
+                        <div className="font-medium text-gray-900">
+                          {ouihelpName(d) ?? d.displayName ?? '—'}
+                        </div>
+                        {ouihelpName(d) && ouihelpName(d) !== d.displayName && (
+                          <div className="text-[11px] text-gray-400">ex-{d.displayName}</div>
+                        )}
                         <div className="text-[11px] text-gray-400">
                           {[d.manufacturer, d.model].filter(Boolean).join(' ') || '—'}
                           {d.serialNumber && (

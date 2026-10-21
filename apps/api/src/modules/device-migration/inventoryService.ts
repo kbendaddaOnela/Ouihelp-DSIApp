@@ -569,6 +569,7 @@ export async function runInventorySync(): Promise<void> {
         ouihelpAutopilotId: ohAutopilot?.id ?? null,
         ouihelpLastSync: toDate(ohIntune?.lastSyncDateTime),
         ouihelpUserUpn: ohIntune?.userPrincipalName?.toLowerCase() || null,
+        ouihelpDeviceName: ohIntune?.deviceName || null,
         lastSeenAt: startedAt,
       }
 
@@ -600,6 +601,7 @@ export async function runInventorySync(): Promise<void> {
           ouihelpAutopilotId: ohAutopilot?.id ?? null,
           ouihelpLastSync: toDate(ohIntune?.lastSyncDateTime),
           ouihelpUserUpn: ohIntune?.userPrincipalName?.toLowerCase() || null,
+          ouihelpDeviceName: ohIntune?.deviceName || null,
         })
         .where(eq(deviceMigrations.id, r.id))
     }
