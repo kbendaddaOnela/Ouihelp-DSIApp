@@ -120,8 +120,6 @@ function agentWarnings(r: DeviceAgentReport): string[] {
   else if (!r.tpm.ready) w.push('TPM non prêt')
   if (r.disk.freeGb != null && r.disk.freeGb < 20)
     w.push(`Disque presque plein (${r.disk.freeGb} Go libres)`)
-  if (r.network.wifi && !r.network.ethernet)
-    w.push(`Wi-Fi uniquement${r.network.ssid ? ` (${r.network.ssid})` : ''}`)
   if (!r.network.wifi && !r.network.ethernet)
     w.push('Aucune carte réseau active au dernier passage')
   const lost = deletedProfilesData(r)
@@ -132,6 +130,30 @@ function agentWarnings(r: DeviceAgentReport): string[] {
   if (r.sccmClient) w.push('Client SCCM présent')
   if (r.mdm.gpoAutoEnroll) w.push('Inscription Intune automatique par GPO (à neutraliser)')
   return w
+}
+
+// Ordre de la liste : à migrer sans agent, à migrer avec agent, chez Ouihelp, inactifs,
+// disparus, exclus (tri stable : l'ordre alphabétique du serveur est gardé dans chaque groupe)
+const STATE_RANK: Record<DeviceMigrationState, number> = {
+  to_migrate: 0,
+  migrated: 2,
+  stale: 3,
+  gone: 4,
+  excluded: 5,
+}
+
+function listRank(d: DeviceMigrationRecord): number {
+  return d.state === 'to_migrate' && d.agent ? 1 : STATE_RANK[d.state]
+}
+
+/** Ce qui classe le poste « Chez Ouihelp » (même règle que toRecord côté serveur). */
+function migratedReasons(d: DeviceMigrationRecord): string[] {
+  const why: string[] = []
+  if (d.ouihelpIntuneId) why.push(`Intune Ouihelp (${d.ouihelpIntuneId})`)
+  if (d.ouihelpAutopilotId) why.push(`Autopilot Ouihelp (${d.ouihelpAutopilotId})`)
+  if (d.agent?.joinedToOuihelp) why.push('agent : poste joint à Entra Ouihelp')
+  if (d.migration?.status === 'done') why.push('bascule terminée par la DSI App')
+  return why
 }
 
 // ── Export CSV (séparateur « ; » pour Excel FR) ──────────────────────────────
@@ -508,6 +530,13 @@ function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boo
             <span className="text-gray-400">Autopilot :</span>{' '}
             {d.ouihelpAutopilotId ? 'oui' : 'non'}
           </div>
+          {d.state === 'migrated' && (
+            <div className="text-[11px] text-gray-500">
+              Classé « Chez Ouihelp » par : {migratedReasons(d).join(' · ')}
+              {(d.ouihelpIntuneId || d.ouihelpAutopilotId) &&
+                ` — rapprochement par n° de série ${d.serialNumber ?? '?'}`}
+            </div>
+          )}
         </div>
         <div className="space-y-2">
           <div className="font-semibold text-gray-700">Périmètre</div>
@@ -621,30 +650,34 @@ export default function DeviceMigrationPage() {
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    return devices.filter(
-      (d) =>
-        (!state || d.state === state) &&
-        (!join || d.joinType === join) &&
-        (!region || d.region === region) &&
-        (!agency || d.agency === agency) &&
-        (!intune || (intune === 'in') === !!d.onelaIntuneId) &&
-        (!agentFilter ||
-          (agentFilter === 'with' && !!d.agent) ||
-          (agentFilter === 'without' && !d.agent) ||
-          (agentFilter === 'warnings' && !!d.agent && agentWarnings(d.agent.report).length > 0)) &&
-        (!needle ||
-          [
-            d.displayName,
-            d.serialNumber,
-            d.onelaUserUpn,
-            d.onelaUserName,
-            ...d.recentLogons.flatMap((l) => [l.account, l.name]),
-            d.onelaOfficeLocation,
-            d.agency,
-            d.model,
-            d.agent?.report.network.ssid,
-          ].some((v) => v?.toLowerCase().includes(needle)))
-    )
+    return devices
+      .filter(
+        (d) =>
+          (!state || d.state === state) &&
+          (!join || d.joinType === join) &&
+          (!region || d.region === region) &&
+          (!agency || d.agency === agency) &&
+          (!intune || (intune === 'in') === !!d.onelaIntuneId) &&
+          (!agentFilter ||
+            (agentFilter === 'with' && !!d.agent) ||
+            (agentFilter === 'without' && !d.agent) ||
+            (agentFilter === 'warnings' &&
+              !!d.agent &&
+              agentWarnings(d.agent.report).length > 0)) &&
+          (!needle ||
+            [
+              d.displayName,
+              d.serialNumber,
+              d.onelaUserUpn,
+              d.onelaUserName,
+              ...d.recentLogons.flatMap((l) => [l.account, l.name]),
+              d.onelaOfficeLocation,
+              d.agency,
+              d.model,
+              d.agent?.report.network.ssid,
+            ].some((v) => v?.toLowerCase().includes(needle)))
+      )
+      .sort((a, b) => listRank(a) - listRank(b))
   }, [devices, q, state, join, region, agency, agentFilter, intune])
 
   return (
