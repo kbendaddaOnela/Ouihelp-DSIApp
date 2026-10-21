@@ -394,6 +394,14 @@ deviceAgentRouter.post('/checkin', async (c) => {
     })
     .where(eq(deviceAgents.id, row.id))
 
+  if (await isDeletedDevice(deviceMigrationId)) {
+    const res: DeviceAgentCheckinResponse = {
+      agentId: row.id,
+      nextCheckinMinutes: DEFAULT_CHECKIN_MINUTES,
+      uninstall: true,
+    }
+    return c.json(res)
+  }
   const migration = await migrationOrderFor(deviceMigrationId)
   const res: DeviceAgentCheckinResponse = {
     agentId: row.id,
@@ -517,6 +525,15 @@ async function migrationOrderFor(deviceId: string): Promise<DeviceAgentMigration
 }
 
 /** Agent authentifié par son jeton (endpoints de bascule) → poste rattaché. */
+/** Poste supprimé de la DSI App par la DSI : son agent doit se désinstaller. */
+async function isDeletedDevice(id: string): Promise<boolean> {
+  const [d] = await db
+    .select({ deletedAt: deviceMigrations.deletedAt })
+    .from(deviceMigrations)
+    .where(eq(deviceMigrations.id, id))
+  return !!d?.deletedAt
+}
+
 async function agentDevice(bearerHeader: string | undefined): Promise<string | null> {
   const bearer = bearerHeader?.replace(/^Bearer\s+/i, '').trim()
   if (!bearer) return null
@@ -534,6 +551,7 @@ async function agentDevice(bearerHeader: string | undefined): Promise<string | n
 deviceAgentRouter.get('/order', async (c) => {
   const deviceId = await agentDevice(c.req.header('Authorization'))
   if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
+  if (await isDeletedDevice(deviceId)) return c.json({ migration: null, uninstall: true })
   const migration = await migrationOrderFor(deviceId)
   return c.json({ migration: migration ?? null })
 })

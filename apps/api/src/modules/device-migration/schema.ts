@@ -90,6 +90,12 @@ export const deviceMigrations = mysqlTable(
 
     excluded: int('excluded').default(0).notNull(),
     excludeReason: varchar('exclude_reason', { length: 255 }),
+    /**
+     * Supprimé de la DSI App par la DSI : la ligne est gardée (sinon la synchro la recréerait)
+     * mais masquée, et l'agent du poste reçoit l'ordre de se désinstaller
+     */
+    deletedAt: timestamp('deleted_at'),
+    deletedBy: varchar('deleted_by', { length: 255 }),
     firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
     lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),

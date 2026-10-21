@@ -222,6 +222,8 @@ async function ensureSchemaPatches() {
     { table: 'device_migrations', column: 'migration_snoozes', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_snoozes\` int NOT NULL DEFAULT 0` },
     { table: 'device_migrations', column: 'migration_onela_device_ids', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_onela_device_ids\` text` },
     { table: 'device_migrations', column: 'migration_profile_map', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`migration_profile_map\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
+    { table: 'device_migrations', column: 'deleted_at', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`deleted_at\` timestamp NULL` },
+    { table: 'device_migrations', column: 'deleted_by', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`deleted_by\` varchar(255)` },
     { table: 'device_migrations', column: 'intune_logons', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`intune_logons\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
   ]
   for (const p of columnPatches) {
@@ -828,6 +830,8 @@ async function ensureSchemaPatches() {
         \`migration_onela_device_ids\` text,
         \`excluded\` int NOT NULL DEFAULT 0,
         \`exclude_reason\` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+        \`deleted_at\` timestamp NULL,
+        \`deleted_by\` varchar(255),
         \`first_seen_at\` timestamp NOT NULL DEFAULT (now()),
         \`last_seen_at\` timestamp NOT NULL DEFAULT (now()),
         \`created_at\` timestamp NOT NULL DEFAULT (now()),

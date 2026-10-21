@@ -55,6 +55,14 @@ export function useUpdateDeviceMigration() {
   })
 }
 
+export function useDeleteDevice() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: deviceMigrationApi.deleteDevice,
+    onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
+  })
+}
+
 export function useResetDeviceAgent() {
   const qc = useQueryClient()
   return useMutation({
