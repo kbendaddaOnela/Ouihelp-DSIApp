@@ -37,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.5'
+$AgentVersion = '1.2.6'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1299,6 +1299,50 @@ function New-BreakglassAccount([string]$User, [string]$Password) {
 
 # Sortie de l'inscription MDM (Intune ONELA) : certificat d'appareil, clés d'inscription et
 # tâches de synchronisation. Sans ça le poste continue d'essayer de parler à Intune ONELA.
+# Client Configuration Manager (SCCM) ONELA : sans désinstallation, il continue de chercher le
+# serveur ONELA et peut disputer à Intune Ouihelp les mises à jour et les applications.
+# Désinstallation officielle (ccmsetup /uninstall), puis nettoyage manuel si le service reste,
+# comme le script V9. Renvoie $null (pas de client), $true (retiré) ou $false (toujours là).
+function Remove-SccmClient {
+  if (-not (Get-Service -Name 'CcmExec' -ErrorAction SilentlyContinue)) { return $null }
+  $setup = Join-Path $env:WINDIR 'ccmsetup\ccmsetup.exe'
+  if (Test-Path $setup) {
+    Safe 'ccmsetup' {
+      $null = Start-Process -FilePath $setup -ArgumentList '/uninstall' -WindowStyle Hidden -PassThru
+      # ccmsetup relance un processus en arrière-plan : on attend qu'il ait fini (10 min max)
+      Start-Sleep -Seconds 10
+      $deadline = (Get-Date).AddMinutes(10)
+      while ((Get-Date) -lt $deadline -and (Get-Process -Name 'ccmsetup' -ErrorAction SilentlyContinue)) {
+        Start-Sleep -Seconds 15
+      }
+    }
+  }
+  if (Get-Service -Name 'CcmExec' -ErrorAction SilentlyContinue) {
+    Write-Log 'SCCM : client toujours présent après ccmsetup /uninstall, nettoyage manuel'
+    foreach ($svc in 'CcmExec', 'smstsmgr', 'CmRcService', 'ccmsetup') {
+      Safe "sccmService:$svc" {
+        if (Get-Service -Name $svc -ErrorAction SilentlyContinue) {
+          Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+          $null = & sc.exe delete $svc
+        }
+      }
+    }
+    foreach ($dir in 'CCM', 'ccmsetup', 'ccmcache') {
+      Remove-Item (Join-Path $env:WINDIR $dir) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item (Join-Path $env:WINDIR 'SMSCFG.ini') -Force -ErrorAction SilentlyContinue
+    foreach ($key in 'HKLM:\SOFTWARE\Microsoft\CCM', 'HKLM:\SOFTWARE\Microsoft\CCMSetup', 'HKLM:\SOFTWARE\Microsoft\SMS') {
+      Remove-Item $key -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Safe 'sccmWmi' {
+      Get-CimInstance -Namespace 'root' -ClassName '__Namespace' -Filter "Name='ccm'" -ErrorAction SilentlyContinue |
+        Remove-CimInstance -ErrorAction SilentlyContinue
+    }
+    Safe 'sccmCerts' { Get-ChildItem 'Cert:\LocalMachine\SMS' -ErrorAction SilentlyContinue | Remove-Item -Force }
+  }
+  return -not (Get-Service -Name 'CcmExec' -ErrorAction SilentlyContinue)
+}
+
 function Remove-MdmEnrollment {
   foreach ($c in @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue | Where-Object { $_.Issuer -match 'Microsoft Intune MDM Device CA' })) {
     Remove-Item -LiteralPath $c.PSPath -Force -ErrorAction SilentlyContinue
@@ -1520,6 +1564,17 @@ function Start-InplaceSwitch($Order) {
   $state = Get-Inplace
   if (-not $state -or -not (Test-Path $InplacePpkg)) {
     Send-Progress 'bascule' 'error' 'Préparation absente du poste : bascule à reprogrammer' @{ fatal = $true }
+    return
+  }
+  # Client SCCM ONELA : dans un passage à part (jusqu'à 10 min, la tâche est limitée à 15),
+  # une seule fois, sans compter parmi les tentatives de bascule. Non bloquant mais signalé.
+  if (-not $state.sccmDone -and (Get-Service -Name 'CcmExec' -ErrorAction SilentlyContinue)) {
+    Send-Progress 'sccm' 'info' 'Désinstallation du client SCCM (Configuration Manager) ONELA'
+    $sccm = Remove-SccmClient
+    if ($sccm -eq $false) { Send-Progress 'sccm' 'error' 'Client SCCM toujours présent après désinstallation : à retirer à la main' }
+    else { Send-Progress 'sccm' 'ok' 'Client SCCM ONELA désinstallé' }
+    $state | Add-Member -NotePropertyName sccmDone -NotePropertyValue $true -Force
+    Save-Inplace $state
     return
   }
   if (-not (Test-PhaseAttempt $state $SwitchAttempts)) {
