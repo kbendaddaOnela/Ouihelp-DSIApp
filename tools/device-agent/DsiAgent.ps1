@@ -32,12 +32,27 @@ param(
   [switch]$Force
 )
 
+# Toujours en PowerShell 64 bits. Lancé en 32 bits (console « Windows PowerShell (x86) », script
+# Intune sans l'option 64 bits), Windows redirige HKLM\SOFTWARE vers WOW6432Node : plus de
+# MachineGuid (rapport refusé, 400) ni de Get-LocalUser, et dsregcmd est introuvable. On se
+# relance donc dans le PowerShell 64 bits (Sysnative), avec les mêmes options.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+  $ps64 = Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+  if (Test-Path $ps64) {
+    $relaunch = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    if ($Uninstall) { $relaunch += '-Uninstall' }
+    if ($Force) { $relaunch += '-Force' }
+    & $ps64 @relaunch
+    exit $LASTEXITCODE
+  }
+}
+
 # ── Configuration (à renseigner avant déploiement) ───────────────────────────
 $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App, sans /api
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.9'
+$AgentVersion = '1.2.10'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
