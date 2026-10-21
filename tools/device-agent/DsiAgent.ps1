@@ -37,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.7'
+$AgentVersion = '1.2.8'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1551,7 +1551,60 @@ $SwitchAttempts   = 3
 $ProfileAttempts  = 5
 $JoinAttempts     = 20
 # Espace libre exigé : désinstallations, nouveau profil, PPKG (rien n'est recopié en place).
+# Marge demandée avant la bascule. Le transfert de profil ne copie rien (changement de
+# propriétaire) : c'est la place dont Windows aura besoin ensuite (stratégies et applications
+# Intune Ouihelp, mises à jour, fichier d'échange).
 $InplaceFreeBytes = 10GB
+$CleanupMarker = Join-Path $MigDir 'cleanup-done'
+
+function Get-FreeBytes {
+  return Safe 'disque' { [long](Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'").FreeSpace }
+}
+
+# Supprime le contenu d'un dossier (fichiers verrouillés ignorés). Renvoie les octets libérés.
+function Clear-FolderContent([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return [long]0 }
+  $before = [long](Safe "taille:$Path" { (Get-ChildItem -LiteralPath $Path -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum } 0)
+  Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  $after = [long](Safe "taille:$Path" { (Get-ChildItem -LiteralPath $Path -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum } 0)
+  return [Math]::Max([long]0, $before - $after)
+}
+
+# Nettoyage avant bascule, comme le script V9 : rien qui appartienne à l'utilisateur (ni
+# Téléchargements, ni corbeille, ni C:\Temp). Renvoie un résumé de ce qui a été libéré.
+function Invoke-DiskCleanup($Order) {
+  $parts = @()
+  # 1. Fichiers temporaires de Windows et de chaque profil
+  $tmp = Clear-FolderContent (Join-Path $env:WINDIR 'Temp')
+  foreach ($u in @(Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directory -Force -ErrorAction SilentlyContinue)) {
+    $tmp += Clear-FolderContent (Join-Path $u.FullName 'AppData\Local\Temp')
+  }
+  $parts += ('temporaires {0:N1} Go' -f ($tmp / 1GB))
+  # 2. Mises à jour Windows déjà installées (téléchargements) et cache d'optimisation de distribution
+  $wu = [long]0
+  Safe 'wuCache' {
+    Stop-Service -Name 'wuauserv', 'bits' -Force -ErrorAction SilentlyContinue
+    $script:wuFreed = Clear-FolderContent (Join-Path $env:WINDIR 'SoftwareDistribution\Download')
+    Start-Service -Name 'bits', 'wuauserv' -ErrorAction SilentlyContinue
+  }
+  if ($script:wuFreed) { $wu = $script:wuFreed }
+  Safe 'doCache' { Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue }
+  $parts += ('mises à jour {0:N1} Go' -f ($wu / 1GB))
+  # 3. Profils que la DSI a déjà marqués à supprimer : ils l'auraient été après le transfert,
+  #    on avance simplement leur suppression. Le profil conservé n'est jamais touché.
+  $remove = @(@($Order.removeProfiles) | Where-Object { $_ -and $_.sid })
+  if ($remove.Count -gt 0) {
+    $keep = @(@($Order.profileMap) | Where-Object { $_ } | ForEach-Object { $_.oldSid; $_.newSid })
+    $gone = 0
+    foreach ($rp in $remove) {
+      $r = Remove-OldProfile $rp $keep
+      if ($r.ok) { $gone++ } else { Write-Log "Nettoyage : profil $($rp.sid) conservé ($($r.message))" }
+    }
+    $parts += "$gone profil(s) supprimé(s)"
+  }
+  return ($parts -join ', ')
+}
 $HelloKey = 'HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork'
 
 function Set-RegValue([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord') {
@@ -2199,9 +2252,22 @@ function Invoke-InplaceMigration($Order) {
         Send-Progress 'controle' 'error' 'Aucun profil à transférer dans l''ordre reçu' @{ fatal = $true }
         return
       }
-      $free = Safe 'disque' { (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'").FreeSpace }
+      $free = Get-FreeBytes
+      # Pas assez de place : un passage de nettoyage (fichiers temporaires, caches de mises à
+      # jour, profils déjà marqués à supprimer), une seule fois, puis nouveau contrôle au passage
+      # suivant (la tâche est limitée à 15 min).
+      if ($free -and $free -lt $InplaceFreeBytes -and -not (Test-Path $CleanupMarker)) {
+        Write-UiProgress 'prep' $Order
+        Send-Progress 'nettoyage' 'info' ("Espace disque faible ({0:N1} Go libres) : nettoyage avant la bascule" -f ($free / 1GB))
+        $report = Invoke-DiskCleanup $Order
+        if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
+        Set-Content -Path $CleanupMarker -Value (Get-Date).ToString('o') -Encoding ASCII
+        $after = Get-FreeBytes
+        Send-Progress 'nettoyage' 'ok' ("{0:N1} Go libérés ({1}) : {2:N1} Go libres" -f (($after - $free) / 1GB), $report, ($after / 1GB))
+        return
+      }
       if ($free -and $free -lt $InplaceFreeBytes) {
-        Send-Progress 'controle' 'error' ("Espace disque insuffisant ({0:N1} Go libres, {1:N0} Go attendus) : poste inchangé" -f ($free / 1GB), ($InplaceFreeBytes / 1GB)) @{ fatal = $true }
+        Send-Progress 'controle' 'error' ("Espace disque insuffisant même après nettoyage ({0:N1} Go libres, {1:N0} Go attendus) : libérer de la place sur le poste (Téléchargements, corbeille, vieux fichiers), puis reprogrammer. Poste inchangé" -f ($free / 1GB), ($InplaceFreeBytes / 1GB)) @{ fatal = $true }
         return
       }
       try {
