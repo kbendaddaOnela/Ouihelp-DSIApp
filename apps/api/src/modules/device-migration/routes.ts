@@ -328,6 +328,7 @@ function toRecord(
     ouihelpAutopilotId: r.ouihelpAutopilotId,
     ouihelpLastSync: iso(r.ouihelpLastSync),
     ouihelpUserUpn: r.ouihelpUserUpn,
+    ouihelpDeviceName: r.ouihelpDeviceName,
     excluded: r.excluded === 1,
     excludeReason: r.excludeReason,
     firstSeenAt: r.firstSeenAt.toISOString(),

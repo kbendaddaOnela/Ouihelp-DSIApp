@@ -81,6 +81,8 @@ export interface DeviceMigrationRecord {
   ouihelpAutopilotId: string | null
   ouihelpLastSync: string | null
   ouihelpUserUpn: string | null
+  /** Nom du poste dans Intune Ouihelp (après bascule, c'est son nom actuel) */
+  ouihelpDeviceName: string | null
 
   excluded: boolean
   excludeReason: string | null
