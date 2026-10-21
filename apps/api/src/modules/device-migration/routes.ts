@@ -111,6 +111,50 @@ function computeTargetNames(
   return out
 }
 
+/**
+ * 1 poste = 1 ligne. Un PC réinscrit (réinstallation, nouvelle jonction Entra) laisse dans
+ * ONELA d'anciens objets Entra / Autopilot sans n° de série : la synchro en fait des lignes
+ * à part (clé aad:…), « Inconnu » puis « Disparu ». On les range sous la ligne du poste qui
+ * porte le même nom, en historique :
+ *  - sous la ligne avec n° de série de ce nom (la plus récemment vue s'il y en a plusieurs :
+ *    des n° de série différents sont des PC physiques différents, jamais fusionnés) ;
+ *  - sinon entre elles, sous la plus récente (ou celle qui porte une bascule en cours).
+ * Les postes supprimés de la DSI App ne sont plus listés.
+ */
+export function groupDeviceRows(
+  rows: DeviceMigrationRow[]
+): Array<{ primary: DeviceMigrationRow; others: DeviceMigrationRow[] }> {
+  const live = rows.filter((r) => !r.deletedAt)
+  const nameOf = (r: DeviceMigrationRow) => r.displayName?.trim().toUpperCase() || null
+  const newest = (a: DeviceMigrationRow, b: DeviceMigrationRow) =>
+    Number(ACTIVE_STATUSES.includes((b.migrationStatus ?? '') as MigrationStatus)) -
+      Number(ACTIVE_STATUSES.includes((a.migrationStatus ?? '') as MigrationStatus)) ||
+    b.lastSeenAt.getTime() - a.lastSeenAt.getTime()
+
+  const groups = new Map<string, { primary: DeviceMigrationRow; others: DeviceMigrationRow[] }>()
+  const serialByName = new Map<string, DeviceMigrationRow[]>()
+  for (const r of live) {
+    if (!r.serialNumber) continue
+    groups.set(r.id, { primary: r, others: [] })
+    const name = nameOf(r)
+    if (name) serialByName.set(name, [...(serialByName.get(name) ?? []), r])
+  }
+  const orphans = new Map<string, DeviceMigrationRow[]>()
+  for (const r of live) {
+    if (r.serialNumber) continue
+    const name = nameOf(r)
+    const owners = name ? serialByName.get(name) : undefined
+    if (owners) groups.get([...owners].sort(newest)[0]!.id)!.others.push(r)
+    else if (name) orphans.set(name, [...(orphans.get(name) ?? []), r])
+    else groups.set(r.id, { primary: r, others: [] })
+  }
+  for (const list of orphans.values()) {
+    const [primary, ...others] = [...list].sort(newest)
+    groups.set(primary!.id, { primary: primary!, others })
+  }
+  return [...groups.values()]
+}
+
 async function loadAgencyRef(): Promise<AgencyRef> {
   const agencyRows = await db
     .select({ name: agencies.name, trigramme: agencies.trigramme, region: agencies.region })
@@ -293,6 +337,7 @@ function toRecord(
     targetName: target?.name ?? null,
     targetNameAuto: target?.auto ?? true,
     targetNameConflict: target?.conflict ?? null,
+    history: [],
   }
 }
 
@@ -311,7 +356,11 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
   ])
   const nameByUpn = new Map<string, string>()
   for (const u of onelaUsers) if (u.displayName) nameByUpn.set(u.upn.toLowerCase(), u.displayName)
-  const targetNames = computeTargetNames(rows, agencyRef)
+  const groups = groupDeviceRows(rows)
+  const targetNames = computeTargetNames(
+    groups.map((g) => g.primary),
+    agencyRef
+  )
   // Plusieurs agents pour un poste (réinstallation de Windows) : le plus récent gagne
   const agentByDevice = new Map<string, DeviceAgentRow>()
   for (const a of agentRows) {
@@ -319,10 +368,43 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
     const prev = agentByDevice.get(a.deviceMigrationId)
     if (!prev || a.lastCheckinAt > prev.lastCheckinAt) agentByDevice.set(a.deviceMigrationId, a)
   }
-  const devices = rows
-    .map((r) =>
-      toRecord(r, lastSyncAt, agencyRef, agentByDevice.get(r.id), nameByUpn, targetNames.get(r.id))
-    )
+  const devices = groups
+    .map(({ primary, others }) => {
+      // Agent rattaché à une ancienne ligne du poste : il reste celui du poste
+      const agent = [primary, ...others]
+        .map((r) => agentByDevice.get(r.id))
+        .filter((a): a is DeviceAgentRow => !!a)
+        .sort((a, b) => b.lastCheckinAt.getTime() - a.lastCheckinAt.getTime())[0]
+      const record = toRecord(
+        primary,
+        lastSyncAt,
+        agencyRef,
+        agent,
+        nameByUpn,
+        targetNames.get(primary.id)
+      )
+      record.history = others
+        .map((o) => {
+          const h = toRecord(o, lastSyncAt, agencyRef, undefined, nameByUpn, undefined)
+          return {
+            id: h.id,
+            deviceKey: h.deviceKey,
+            joinType: h.joinType,
+            state: h.state,
+            lastActivityAt: h.lastActivityAt,
+            firstSeenAt: h.firstSeenAt,
+            lastSeenAt: h.lastSeenAt,
+            onelaEntraObjects: h.onelaEntraObjects,
+            onelaIntuneId: h.onelaIntuneId,
+            onelaAutopilotId: h.onelaAutopilotId,
+            ouihelpIntuneId: h.ouihelpIntuneId,
+            ouihelpAutopilotId: h.ouihelpAutopilotId,
+            migrationStatus: o.migrationStatus,
+          }
+        })
+        .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+      return record
+    })
     .sort((a, b) => (a.displayName ?? '').localeCompare(b.displayName ?? ''))
   const body: DeviceMigrationListResponse = {
     devices,
@@ -361,6 +443,42 @@ deviceMigrationRouter.patch('/devices/:id', requirePermission('migration:write')
     .set({ excluded: body.excluded ? 1 : 0, excludeReason: reason })
     .where(eq(deviceMigrations.id, id))
   return c.json({ ok: true })
+})
+
+// ── Suppression d'un poste de la DSI App ──
+// La ligne est masquée (et non effacée : la synchro la recréerait depuis ONELA), avec ses
+// anciennes lignes regroupées. Au passage suivant, l'agent du poste reçoit l'ordre de se
+// désinstaller (tâche planifiée et dossier C:\ProgramData\DSI retirés).
+deviceMigrationRouter.delete('/devices/:id', requirePermission('migration:write'), async (c) => {
+  const id = c.req.param('id')
+  const rows = await db.select().from(deviceMigrations)
+  const group = groupDeviceRows(rows).find((g) => g.primary.id === id)
+  if (!group) return c.json({ error: 'Not Found', message: 'Poste introuvable' }, 404)
+  const busy = [group.primary, ...group.others].find((r) =>
+    ACTIVE_STATUSES.includes((r.migrationStatus ?? '') as MigrationStatus)
+  )
+  if (busy)
+    return c.json(
+      {
+        error: 'Conflict',
+        message: 'Bascule en cours sur ce poste : l’annuler ou l’abandonner d’abord',
+      },
+      409
+    )
+  const ids = [group.primary.id, ...group.others.map((r) => r.id)]
+  const by = c.get('dbUser').email
+  await db
+    .update(deviceMigrations)
+    .set({ deletedAt: new Date(), deletedBy: by })
+    .where(inArray(deviceMigrations.id, ids))
+  const agents = await db
+    .select({ id: deviceAgents.id })
+    .from(deviceAgents)
+    .where(inArray(deviceAgents.deviceMigrationId, ids))
+  console.log(
+    `[device-migration] poste ${group.primary.displayName ?? id} supprimé par ${by} (${ids.length} ligne(s), ${agents.length} agent(s) à désinstaller)`
+  )
+  return c.json({ ok: true, agents: agents.length })
 })
 
 // ── Réinitialisation de l'agent : efface son jeton, il se ré-enrôle au check-in suivant ──
@@ -595,7 +713,7 @@ deviceMigrationRouter.post(
         return refuse(`Profil ${main.oldAccount ?? main.oldSid} : compte Ouihelp à choisir`)
     }
 
-    const allRows = await db.select().from(deviceMigrations)
+    const allRows = groupDeviceRows(await db.select().from(deviceMigrations)).map((g) => g.primary)
     const target = computeTargetNames(allRows, await loadAgencyRef()).get(id)
     if (!target?.name)
       return refuse('Nom Ouihelp impossible à déduire : saisir le nom du poste à la main')

@@ -13,6 +13,7 @@ import {
   Radio,
   Package,
   LayoutGrid,
+  Trash2,
 } from 'lucide-react'
 import type {
   DeviceAgentReport,
@@ -38,6 +39,7 @@ import {
   useStartDeviceSync,
   useUpdateDeviceMigration,
   useResetDeviceAgent,
+  useDeleteDevice,
 } from './hooks'
 
 const inputCls =
@@ -450,6 +452,87 @@ function LastUserCell({ d }: { d: DeviceMigrationRecord }) {
   )
 }
 
+const HISTORY_SOURCE: Record<string, string> = {
+  aad: 'objet Entra',
+  intune: 'inscription Intune',
+  autopilot: 'Autopilot',
+  agent: 'agent',
+  sn: 'n° de série',
+}
+
+/** Anciennes traces du poste (inscriptions précédentes), regroupées sous sa ligne. */
+function DeviceHistory({ d }: { d: DeviceMigrationRecord }) {
+  if (d.history.length === 0) return null
+  return (
+    <div className="space-y-1 border-t border-gray-200 px-4 py-3 text-xs">
+      <div className="font-semibold text-gray-700">
+        Historique du poste ({d.history.length} ancienne(s) trace(s) dans ONELA)
+      </div>
+      <p className="text-gray-400">
+        Objets laissés par des inscriptions précédentes (réinstallation, nouvelle jonction),
+        rattachés à ce poste par son nom. Ils ne comptent pas comme des postes à part.
+      </p>
+      {d.history.map((h) => {
+        const source = HISTORY_SOURCE[h.deviceKey.split(':')[0]!] ?? h.deviceKey
+        return (
+          <div key={h.id} className="text-gray-600">
+            <span className={cn('mr-2 rounded px-1.5 py-0.5', STATE_CFG[h.state].cls)}>
+              {STATE_CFG[h.state].label}
+            </span>
+            {source} · {JOIN_CFG[h.joinType].label} · vu du {fmtDate(h.firstSeenAt)} au{' '}
+            {fmtDate(h.lastSeenAt)} · dernière activité {fmtDate(h.lastActivityAt)}
+            {h.onelaIntuneId && ' · Intune ONELA'}
+            {h.onelaAutopilotId && ' · Autopilot ONELA'}
+            {(h.ouihelpIntuneId || h.ouihelpAutopilotId) && ' · vu chez Ouihelp'}
+            {h.migrationStatus && ` · bascule ${h.migrationStatus}`}
+            {h.onelaEntraObjects.map((o) => (
+              <span key={o.objectId} className="ml-2 font-mono text-[11px] text-gray-400">
+                {o.trustType ?? '?'} {o.deviceId.slice(0, 8)}…
+              </span>
+            ))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function DeleteDeviceButton({ d }: { d: DeviceMigrationRecord }) {
+  const { confirm } = useConfirm()
+  const del = useDeleteDevice()
+  const busy = !!d.migration && !['done', 'failed', 'cancelled'].includes(d.migration.status)
+  const onDelete = async () => {
+    const res = await confirm({
+      title: `Supprimer ${d.displayName ?? 'ce poste'} de la DSI App ?`,
+      tone: 'danger',
+      message: `Le poste disparaît de la liste${
+        d.history.length ? ` avec ses ${d.history.length} ancienne(s) trace(s)` : ''
+      } et la synchro ne le fera pas revenir. ${
+        d.agent
+          ? 'Son agent DSI se désinstalle au prochain passage (2 min s’il est allumé ; agent 1.2.11 ou plus récent). '
+          : ''
+      }Rien n’est supprimé dans ONELA ni chez Ouihelp.`,
+      confirmLabel: 'Supprimer',
+    })
+    if (res.confirmed) del.mutate(d.id)
+  }
+  return (
+    <div className="space-y-1">
+      <Button
+        size="sm"
+        variant="outline"
+        className="text-red-600"
+        disabled={busy || del.isPending}
+        title={busy ? 'Bascule en cours : l’annuler ou l’abandonner d’abord' : undefined}
+        onClick={onDelete}
+      >
+        <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Supprimer de l’appli
+      </Button>
+      {del.error && <p className="text-red-600">{(del.error as Error).message}</p>}
+    </div>
+  )
+}
+
 function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boolean }) {
   const update = useUpdateDeviceMigration()
   const [reason, setReason] = useState(d.excludeReason ?? '')
@@ -577,8 +660,10 @@ function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boo
               </div>
             ))}
           {update.error && <p className="text-red-600">{(update.error as Error).message}</p>}
+          {canWrite && <DeleteDeviceButton d={d} />}
         </div>
       </div>
+      <DeviceHistory d={d} />
       <AgentPanel d={d} canWrite={canWrite} />
       <MigrationPanel d={d} canWrite={canWrite} />
     </div>

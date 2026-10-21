@@ -96,6 +96,28 @@ export interface DeviceMigrationRecord {
   targetNameAuto: boolean
   /** Autre poste qui aurait le même nom (bloque la programmation) */
   targetNameConflict: string | null
+  /**
+   * Anciennes lignes du même poste (objets Entra / Intune / Autopilot d'inscriptions
+   * précédentes, sans n° de série), regroupées sous cette ligne par nom de poste
+   */
+  history: DeviceHistoryEntry[]
+}
+
+/** Ancienne trace d'un poste, affichée dans sa fiche (1 poste = 1 ligne). */
+export interface DeviceHistoryEntry {
+  id: string
+  deviceKey: string
+  joinType: DeviceJoinType
+  state: DeviceMigrationState
+  lastActivityAt: string | null
+  firstSeenAt: string
+  lastSeenAt: string
+  onelaEntraObjects: DeviceEntraObject[]
+  onelaIntuneId: string | null
+  onelaAutopilotId: string | null
+  ouihelpIntuneId: string | null
+  ouihelpAutopilotId: string | null
+  migrationStatus: string | null
 }
 
 export interface UpdateTargetNameRequest {
@@ -252,7 +274,13 @@ export interface DeviceAgentMigrationOrder {
   /** Reports déjà demandés (le bouton « Plus tard » disparaît une fois le maximum atteint) */
   snoozeCount: number
   /** Bascule en place : profil à transférer (SID ONELA → SID Ouihelp). Un seul aujourd'hui. */
-  profileMap: Array<{ oldSid: string; oldUpn: string | null; newSid: string; newUpn: string; newSam: string }>
+  profileMap: Array<{
+    oldSid: string
+    oldUpn: string | null
+    newSid: string
+    newUpn: string
+    newSam: string
+  }>
   /**
    * Bascule en place : profils à supprimer du poste (clé ProfileList et dossier) juste après le
    * transfert. L'agent ne supprime jamais un profil chargé, système ou local.
@@ -390,6 +418,8 @@ export interface DeviceAgentCheckinResponse {
   nextCheckinMinutes: number
   /** Présent uniquement si une bascule est programmée pour ce poste */
   migration?: DeviceAgentMigrationOrder
+  /** Poste supprimé de la DSI App : l'agent se désinstalle (agent ≥ 1.2.11) */
+  uninstall?: boolean
 }
 
 export interface DeviceMigrationSyncState {

@@ -52,7 +52,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.10'
+$AgentVersion = '1.2.11'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -121,6 +121,28 @@ function Install-Agent {
 function Uninstall-Agent {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
   if (Test-Path $Root) { Remove-Item $Root -Recurse -Force }
+}
+
+# Poste supprimé de la DSI App : la DSI ne veut plus de remontée, l'agent se retire (tâche
+# planifiée, C:\ProgramData\DSI et C:\ProgramData\DSI-Ui). Jamais pendant une bascule en
+# place déjà engagée : le poste est sorti d'ONELA, l'agent doit finir le travail.
+function Invoke-RemoteUninstall {
+  $inplace = Get-Inplace
+  if ($inplace -and @('profiles', 'join') -contains $inplace.phase) {
+    Write-Log "Désinstallation demandée par la DSI App ignorée : bascule en place engagée (phase $($inplace.phase))"
+    return
+  }
+  Write-Log 'Poste supprimé de la DSI App : désinstallation de l''agent'
+  Safe 'uninstallCleanup' {
+    Remove-MigrationPayload
+    Remove-InplacePayload
+    Restore-Sleep
+    Clear-MigrationNotice
+    Restore-LogonUi
+  }
+  if (Test-Path $PromptDir) { Remove-Item $PromptDir -Recurse -Force -ErrorAction SilentlyContinue }
+  Uninstall-Agent
+  exit 0
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -500,6 +522,7 @@ function Invoke-Checkin {
     $minutes = if ($res.nextCheckinMinutes -gt 0) { [int]$res.nextCheckinMinutes } else { 240 }
     $state.nextCheckinAt = (Get-Date).AddMinutes($minutes).ToString('o')
     Write-Log "Check-in OK, prochain dans $minutes min"
+    if ($res.uninstall) { Invoke-RemoteUninstall }
     # La bascule est pilotée par le sondage léger Invoke-MigrationPoll (plus réactif), pas ici.
   } catch {
     $status = $null
@@ -2369,6 +2392,7 @@ function Invoke-MigrationPoll {
   if (-not (Test-Path $TokenPath)) { return }
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   $order = Safe 'migrationPoll' { Invoke-Api 'GET' '/order' }
+  if ($order -and $order.uninstall) { Invoke-RemoteUninstall }
   if ($order -and $order.migration) {
     $null = Invoke-Migration $order.migration
     return
