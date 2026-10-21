@@ -299,13 +299,33 @@ deviceAgentRouter.post('/checkin', async (c) => {
 
   const body = await c.req.text()
   if (body.length > MAX_BODY) return c.json({ error: 'Payload Too Large' }, 413)
-  let report: DeviceAgentReport | null = null
+  // Cause précise renvoyée à l'agent (écrite dans son agent.log) : sans elle, un 400 sur un
+  // poste est indiagnosticable à distance
+  let parsed: unknown
   try {
-    report = sanitizeReport(JSON.parse(body))
-  } catch {
-    report = null
+    parsed = JSON.parse(body)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const at = /position (\d+)/.exec(msg)?.[1]
+    const around = at ? body.slice(Math.max(0, Number(at) - 60), Number(at) + 60) : ''
+    console.warn(`[device-agent] rapport JSON illisible : ${msg} — ${around}`)
+    return c.json(
+      {
+        error: 'Bad Request',
+        message: `Rapport JSON illisible : ${msg}${around ? ` — près de « ${around} »` : ''}`,
+      },
+      400
+    )
   }
-  if (!report) return c.json({ error: 'Bad Request', message: 'Rapport invalide' }, 400)
+  const report = sanitizeReport(parsed)
+  if (!report) {
+    const r = obj(parsed)
+    const reason = !str(r['hostname'])
+      ? 'hostname absent'
+      : `machineGuid invalide (${JSON.stringify(r['machineGuid'] ?? null).slice(0, 80)})`
+    console.warn(`[device-agent] rapport refusé : ${reason}`)
+    return c.json({ error: 'Bad Request', message: `Rapport refusé : ${reason}` }, 400)
+  }
 
   const agent = await findAgent(report)
   const bearer = c.req

@@ -37,7 +37,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.8'
+$AgentVersion = '1.2.9'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -500,7 +500,13 @@ function Invoke-Checkin {
       $state.nextCheckinAt = (Get-Date).AddHours(24).ToString('o')
       $failure = 'Poste déjà enregistré sans jeton local (409) : cliquer « Réinitialiser l''agent » dans la DSI App'
     } elseif ($status) {
-      $failure = "Réponse HTTP $status de $ApiUrl : $($_.Exception.Message)"
+      # Corps de la réponse : le serveur y explique la cause (ex. rapport refusé et pourquoi)
+      $detail = $null
+      if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+        $detail = $_.ErrorDetails.Message
+        try { $m = ($detail | ConvertFrom-Json).message; if ($m) { $detail = $m } } catch { }
+      }
+      $failure = "Réponse HTTP $status de $ApiUrl : $(if ($detail) { $detail } else { $_.Exception.Message })"
     } else {
       $failure = "DSI App injoignable ($ApiUrl) : réseau, proxy ou filtrage ($($_.Exception.Message))"
     }
