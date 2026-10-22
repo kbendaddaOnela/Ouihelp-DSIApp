@@ -32,19 +32,39 @@ param(
   [switch]$Force
 )
 
-# Toujours en PowerShell 64 bits. Lancé en 32 bits (console « Windows PowerShell (x86) », script
-# Intune sans l'option 64 bits), Windows redirige HKLM\SOFTWARE vers WOW6432Node : plus de
-# MachineGuid (rapport refusé, 400) ni de Get-LocalUser, et dsregcmd est introuvable. On se
-# relance donc dans le PowerShell 64 bits (Sysnative), avec les mêmes options.
+# Relance, avec les mêmes options, dans deux cas :
+#  - fichier lu sans son BOM UTF-8 (copié par le Bloc-notes, un presse-papiers, un mail…) :
+#    Windows PowerShell 5.1 le lit en ANSI et tous les accents sortent en « Ã© » dans les
+#    fenêtres et le journal. On le réécrit avec son BOM (à défaut, une copie dans TEMP) ;
+#  - PowerShell 32 bits (console « Windows PowerShell (x86) », script Intune sans l'option
+#    64 bits) : HKLM\SOFTWARE redirigé vers WOW6432Node, plus de MachineGuid (rapport refusé,
+#    400) ni de Get-LocalUser, dsregcmd introuvable. On passe au PowerShell 64 bits (Sysnative).
+$self = $PSCommandPath
+$exe = (Get-Process -Id $PID).Path
+$relaunchNeeded = $false
+if ('é'.Length -ne 1 -and $self) {
+  $bytes = [IO.File]::ReadAllBytes($self)
+  if (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) {
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    $utf8Bom = New-Object Text.UTF8Encoding $true
+    try { [IO.File]::WriteAllText($self, $text, $utf8Bom) }
+    catch {
+      $self = Join-Path $env:TEMP 'DsiAgent-bom.ps1'
+      [IO.File]::WriteAllText($self, $text, $utf8Bom)
+    }
+    $relaunchNeeded = $true
+  }
+}
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
   $ps64 = Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
-  if (Test-Path $ps64) {
-    $relaunch = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
-    if ($Uninstall) { $relaunch += '-Uninstall' }
-    if ($Force) { $relaunch += '-Force' }
-    & $ps64 @relaunch
-    exit $LASTEXITCODE
-  }
+  if (Test-Path $ps64) { $exe = $ps64; $relaunchNeeded = $true }
+}
+if ($relaunchNeeded) {
+  $relaunch = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $self)
+  if ($Uninstall) { $relaunch += '-Uninstall' }
+  if ($Force) { $relaunch += '-Force' }
+  & $exe @relaunch
+  exit $LASTEXITCODE
 }
 
 # ── Configuration (à renseigner avant déploiement) ───────────────────────────
@@ -52,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.12'
+$AgentVersion = '1.2.13'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
