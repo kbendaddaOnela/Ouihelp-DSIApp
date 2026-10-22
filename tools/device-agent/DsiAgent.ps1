@@ -52,7 +52,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.11'
+$AgentVersion = '1.2.12'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -618,27 +618,46 @@ function Test-PowerOk {
 # plus → bascule figée. On neutralise veille / mise en veille prolongée / extinction de
 # l'écran sur secteur ET sur batterie, le temps de la bascule. Idempotent, rejoué à chaque
 # passage. Réglages perdus de toute façon à la réinstallation ; on les rétablit à l'annulation.
+# powercfg sans jamais bloquer la bascule. Sous Windows PowerShell 5.1 avec
+# $ErrorActionPreference = 'Stop', un message sur stderr redirigé (2>$null) devient une
+# exception : c'est le cas quand une GPO impose les réglages d'alimentation (« Il existe des
+# paramètres de remplacement de stratégie de groupe… »), et la bascule s'arrêtait là à
+# chaque passage. Renvoie $true si powercfg a accepté le réglage.
+function Invoke-PowerCfg([string[]]$Arguments) {
+  $ErrorActionPreference = 'Continue'
+  try {
+    $null = & powercfg.exe @Arguments 2>&1
+    return $LASTEXITCODE -eq 0
+  } catch { return $false }
+}
+
 function Disable-Sleep {
+  $refused = 0
   foreach ($c in @(
     'standby-timeout-ac 0', 'standby-timeout-dc 0',
     'hibernate-timeout-ac 0', 'hibernate-timeout-dc 0',
     'monitor-timeout-ac 0', 'monitor-timeout-dc 0',
     'disk-timeout-ac 0', 'disk-timeout-dc 0'
   )) {
-    $null = & powercfg.exe /change $c.Split(' ')[0] $c.Split(' ')[1] 2>$null
+    if (-not (Invoke-PowerCfg (@('/change') + $c.Split(' ')))) { $refused++ }
   }
   # Fermeture du capot = « ne rien faire » sur secteur et sur batterie (indices 0/1)
   foreach ($pa in @('SUB_BUTTONS LIDACTION')) {
-    $null = & powercfg.exe /setacvalueindex SCHEME_CURRENT $pa.Split(' ')[0] $pa.Split(' ')[1] 0 2>$null
-    $null = & powercfg.exe /setdcvalueindex SCHEME_CURRENT $pa.Split(' ')[0] $pa.Split(' ')[1] 0 2>$null
+    $sub, $setting = $pa.Split(' ')
+    if (-not (Invoke-PowerCfg @('/setacvalueindex', 'SCHEME_CURRENT', $sub, $setting, '0'))) { $refused++ }
+    if (-not (Invoke-PowerCfg @('/setdcvalueindex', 'SCHEME_CURRENT', $sub, $setting, '0'))) { $refused++ }
   }
-  $null = & powercfg.exe /setactive SCHEME_CURRENT 2>$null
-  Write-Log 'Veille / extinction écran / action capot neutralisées pour la bascule'
+  $null = Invoke-PowerCfg @('/setactive', 'SCHEME_CURRENT')
+  if ($refused) {
+    Write-Log "Veille : $refused réglage(s) d'alimentation refusé(s) (imposés par GPO), bascule poursuivie"
+  } else {
+    Write-Log 'Veille / extinction écran / action capot neutralisées pour la bascule'
+  }
 }
 
 function Restore-Sleep {
   # Rétablit les délais par défaut du profil équilibré (après une annulation)
-  $null = & powercfg.exe /restoredefaultschemes 2>$null
+  $null = Invoke-PowerCfg @('/restoredefaultschemes')
   Write-Log 'Réglages d''alimentation par défaut rétablis'
 }
 
