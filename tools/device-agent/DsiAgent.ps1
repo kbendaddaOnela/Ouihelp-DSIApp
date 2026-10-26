@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.13'
+$AgentVersion = '1.2.14'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -2133,7 +2133,15 @@ function Start-InplaceSwitch($Order) {
   Save-Inplace $state
   Send-Progress 'redemarrage' 'info' 'Redémarrage pour le transfert des profils'
   Write-UiProgress 'reboot' $Order '' (Get-Date).AddSeconds(30)
-  & shutdown.exe /r /t 30 /c 'Bascule vers Ouihelp : redemarrage' | Out-Null
+  Restart-AfterDelay 30
+}
+
+# Redémarrage sans la boîte Windows « Vous allez être déconnecté » : `shutdown /t 30` l'affiche
+# par-dessus la fenêtre de progression, qui montre déjà son propre compte à rebours. L'agent
+# attend lui-même puis redémarre aussitôt (/t 0 : pas de boîte ; /f comme le faisait /t 30).
+function Restart-AfterDelay([int]$Seconds) {
+  Start-Sleep -Seconds $Seconds
+  & shutdown.exe /r /t 0 /f /d p:4:1 /c 'Bascule vers Ouihelp : redemarrage' | Out-Null
 }
 
 # Phase 2 - transfert des profils, session fermée (un profil chargé ne peut pas changer de
@@ -2215,7 +2223,7 @@ function Invoke-InplaceProfiles($State) {
   $State.attempts = 0
   Save-Inplace $State
   Send-Progress 'redemarrage' 'info' 'Redémarrage vers l''écran de connexion Ouihelp'
-  & shutdown.exe /r /t 30 /c 'Bascule vers Ouihelp : redemarrage' | Out-Null
+  Restart-AfterDelay 30
 }
 
 # Phase 3 - jonction Ouihelp constatée sur le poste : clé BitLocker séquestrée chez Ouihelp,
