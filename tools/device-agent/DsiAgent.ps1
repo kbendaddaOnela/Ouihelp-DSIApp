@@ -32,19 +32,39 @@ param(
   [switch]$Force
 )
 
-# Toujours en PowerShell 64 bits. Lancé en 32 bits (console « Windows PowerShell (x86) », script
-# Intune sans l'option 64 bits), Windows redirige HKLM\SOFTWARE vers WOW6432Node : plus de
-# MachineGuid (rapport refusé, 400) ni de Get-LocalUser, et dsregcmd est introuvable. On se
-# relance donc dans le PowerShell 64 bits (Sysnative), avec les mêmes options.
+# Relance, avec les mêmes options, dans deux cas :
+#  - fichier lu sans son BOM UTF-8 (copié par le Bloc-notes, un presse-papiers, un mail…) :
+#    Windows PowerShell 5.1 le lit en ANSI et tous les accents sortent en « Ã© » dans les
+#    fenêtres et le journal. On le réécrit avec son BOM (à défaut, une copie dans TEMP) ;
+#  - PowerShell 32 bits (console « Windows PowerShell (x86) », script Intune sans l'option
+#    64 bits) : HKLM\SOFTWARE redirigé vers WOW6432Node, plus de MachineGuid (rapport refusé,
+#    400) ni de Get-LocalUser, dsregcmd introuvable. On passe au PowerShell 64 bits (Sysnative).
+$self = $PSCommandPath
+$exe = (Get-Process -Id $PID).Path
+$relaunchNeeded = $false
+if ('é'.Length -ne 1 -and $self) {
+  $bytes = [IO.File]::ReadAllBytes($self)
+  if (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) {
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    $utf8Bom = New-Object Text.UTF8Encoding $true
+    try { [IO.File]::WriteAllText($self, $text, $utf8Bom) }
+    catch {
+      $self = Join-Path $env:TEMP 'DsiAgent-bom.ps1'
+      [IO.File]::WriteAllText($self, $text, $utf8Bom)
+    }
+    $relaunchNeeded = $true
+  }
+}
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
   $ps64 = Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
-  if (Test-Path $ps64) {
-    $relaunch = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
-    if ($Uninstall) { $relaunch += '-Uninstall' }
-    if ($Force) { $relaunch += '-Force' }
-    & $ps64 @relaunch
-    exit $LASTEXITCODE
-  }
+  if (Test-Path $ps64) { $exe = $ps64; $relaunchNeeded = $true }
+}
+if ($relaunchNeeded) {
+  $relaunch = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $self)
+  if ($Uninstall) { $relaunch += '-Uninstall' }
+  if ($Force) { $relaunch += '-Force' }
+  & $exe @relaunch
+  exit $LASTEXITCODE
 }
 
 # ── Configuration (à renseigner avant déploiement) ───────────────────────────
@@ -52,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.11'
+$AgentVersion = '1.2.13'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -618,27 +638,46 @@ function Test-PowerOk {
 # plus → bascule figée. On neutralise veille / mise en veille prolongée / extinction de
 # l'écran sur secteur ET sur batterie, le temps de la bascule. Idempotent, rejoué à chaque
 # passage. Réglages perdus de toute façon à la réinstallation ; on les rétablit à l'annulation.
+# powercfg sans jamais bloquer la bascule. Sous Windows PowerShell 5.1 avec
+# $ErrorActionPreference = 'Stop', un message sur stderr redirigé (2>$null) devient une
+# exception : c'est le cas quand une GPO impose les réglages d'alimentation (« Il existe des
+# paramètres de remplacement de stratégie de groupe… »), et la bascule s'arrêtait là à
+# chaque passage. Renvoie $true si powercfg a accepté le réglage.
+function Invoke-PowerCfg([string[]]$Arguments) {
+  $ErrorActionPreference = 'Continue'
+  try {
+    $null = & powercfg.exe @Arguments 2>&1
+    return $LASTEXITCODE -eq 0
+  } catch { return $false }
+}
+
 function Disable-Sleep {
+  $refused = 0
   foreach ($c in @(
     'standby-timeout-ac 0', 'standby-timeout-dc 0',
     'hibernate-timeout-ac 0', 'hibernate-timeout-dc 0',
     'monitor-timeout-ac 0', 'monitor-timeout-dc 0',
     'disk-timeout-ac 0', 'disk-timeout-dc 0'
   )) {
-    $null = & powercfg.exe /change $c.Split(' ')[0] $c.Split(' ')[1] 2>$null
+    if (-not (Invoke-PowerCfg (@('/change') + $c.Split(' ')))) { $refused++ }
   }
   # Fermeture du capot = « ne rien faire » sur secteur et sur batterie (indices 0/1)
   foreach ($pa in @('SUB_BUTTONS LIDACTION')) {
-    $null = & powercfg.exe /setacvalueindex SCHEME_CURRENT $pa.Split(' ')[0] $pa.Split(' ')[1] 0 2>$null
-    $null = & powercfg.exe /setdcvalueindex SCHEME_CURRENT $pa.Split(' ')[0] $pa.Split(' ')[1] 0 2>$null
+    $sub, $setting = $pa.Split(' ')
+    if (-not (Invoke-PowerCfg @('/setacvalueindex', 'SCHEME_CURRENT', $sub, $setting, '0'))) { $refused++ }
+    if (-not (Invoke-PowerCfg @('/setdcvalueindex', 'SCHEME_CURRENT', $sub, $setting, '0'))) { $refused++ }
   }
-  $null = & powercfg.exe /setactive SCHEME_CURRENT 2>$null
-  Write-Log 'Veille / extinction écran / action capot neutralisées pour la bascule'
+  $null = Invoke-PowerCfg @('/setactive', 'SCHEME_CURRENT')
+  if ($refused) {
+    Write-Log "Veille : $refused réglage(s) d'alimentation refusé(s) (imposés par GPO), bascule poursuivie"
+  } else {
+    Write-Log 'Veille / extinction écran / action capot neutralisées pour la bascule'
+  }
 }
 
 function Restore-Sleep {
   # Rétablit les délais par défaut du profil équilibré (après une annulation)
-  $null = & powercfg.exe /restoredefaultschemes 2>$null
+  $null = Invoke-PowerCfg @('/restoredefaultschemes')
   Write-Log 'Réglages d''alimentation par défaut rétablis'
 }
 
