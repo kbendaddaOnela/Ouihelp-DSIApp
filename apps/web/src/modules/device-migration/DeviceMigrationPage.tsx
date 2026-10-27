@@ -431,17 +431,24 @@ function sameAccount(a: string | null | undefined, b: string | null | undefined)
   return !!a && !!b && a.toLowerCase() === b.toLowerCase()
 }
 
-/** Dernier utilisateur réel ; l'utilisateur principal Intune n'est rappelé que s'il diffère. */
+/**
+ * Dernier utilisateur réel ; l'utilisateur principal Intune n'est rappelé que s'il diffère.
+ * Poste basculé : c'est l'utilisateur principal Intune Ouihelp qui compte (celui d'ONELA est
+ * la même personne sous son ancien compte, ou un technicien qui n'a plus de rôle).
+ */
 function LastUserCell({ d }: { d: DeviceMigrationRecord }) {
   const last = d.lastUser
-  const primaryDiffers = d.onelaUserUpn && !sameAccount(d.onelaUserUpn, last?.account)
+  const migrated = d.state === 'migrated'
+  const primaryUpn = migrated ? d.ouihelpUserUpn : d.onelaUserUpn
+  const primaryName = migrated ? null : d.onelaUserName
+  const primaryDiffers = !!primaryUpn && !!last && !sameAccount(primaryUpn, last.account)
   if (!last) {
     return (
       <>
-        <div className="text-gray-400">{d.onelaUserName ?? '—'}</div>
-        {d.onelaUserUpn && (
+        <div className="text-gray-400">{primaryName ?? primaryUpn ?? '—'}</div>
+        {primaryUpn && (
           <div className="text-[11px] text-gray-400">
-            inscrit par {d.onelaUserUpn} · pas de connexion connue
+            inscrit par {primaryUpn} · pas de connexion connue
           </div>
         )}
       </>
@@ -459,7 +466,7 @@ function LastUserCell({ d }: { d: DeviceMigrationRecord }) {
           className="text-[11px] text-amber-600"
           title="Utilisateur principal Intune (celui qui a inscrit le PC)"
         >
-          inscrit par {d.onelaUserName ?? d.onelaUserUpn}
+          inscrit par {primaryName ?? primaryUpn}
         </div>
       )}
     </>
