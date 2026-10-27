@@ -349,11 +349,12 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
     getLastSyncAt(),
     loadAgencyRef(),
     db.select().from(deviceAgents),
-    // Noms des comptes vus par l'agent (UPN seul) : cache utilisateurs du module inventaire
+    // Noms des comptes vus par l'agent (UPN seul) : cache utilisateurs du module inventaire,
+    // ONELA et Ouihelp (après la bascule, l'agent remonte le compte Ouihelp)
     db
       .select({ upn: cachedUsers.upn, displayName: cachedUsers.displayName })
       .from(cachedUsers)
-      .where(eq(cachedUsers.source, 'onela')),
+      .where(inArray(cachedUsers.source, ['onela', 'ouihelp'])),
   ])
   const nameByUpn = new Map<string, string>()
   for (const u of onelaUsers) if (u.displayName) nameByUpn.set(u.upn.toLowerCase(), u.displayName)
