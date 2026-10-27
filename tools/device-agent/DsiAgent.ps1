@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.17'
+$AgentVersion = '1.2.18'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -562,7 +562,18 @@ function Get-Report($State) {
     profiles     = $profiles
     profilesMeasuredAt = $State.profilesMeasuredAt
     apps         = Safe 'apps' { Get-InstalledApps } @()
+    antivirus    = Safe 'antivirus' { Get-Antivirus } @()
   }
+}
+
+# Antivirus inscrits auprès du Centre de sécurité Windows. Un antivirus tiers (Avast, McAfee…)
+# peut mettre l'agent en quarantaine ou bloquer la bascule : la DSI App le signale.
+# productState : l'octet 0x00F000 vaut 1 quand la protection en temps réel est active.
+function Get-Antivirus {
+  $list = Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop
+  return ,@($list | ForEach-Object {
+    [ordered]@{ name = [string]$_.displayName; enabled = ((([int]$_.productState) -shr 12) -band 0xF) -eq 1 }
+  })
 }
 
 # ═════════════════════════════════════════════════════════════════════════════

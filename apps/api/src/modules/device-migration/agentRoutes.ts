@@ -134,6 +134,13 @@ export function sanitizeReport(raw: unknown): DeviceAgentReport | null {
       }
     })
     .filter((a) => a.name)
+  const antivirus = (Array.isArray(r['antivirus']) ? r['antivirus'] : [])
+    .slice(0, 20)
+    .map((a) => {
+      const o = obj(a)
+      return { name: str(o['name']) ?? '', enabled: bool(o['enabled']) }
+    })
+    .filter((a) => a.name)
   return {
     agentVersion: str(r['agentVersion'], 20) ?? '?',
     machineGuid: machineGuid.toLowerCase(),
@@ -188,6 +195,7 @@ export function sanitizeReport(raw: unknown): DeviceAgentReport | null {
     profiles,
     profilesMeasuredAt: isoOrNull(r['profilesMeasuredAt']),
     ...(Array.isArray(r['apps']) ? { apps } : {}),
+    ...(Array.isArray(r['antivirus']) ? { antivirus } : {}),
   }
 }
 

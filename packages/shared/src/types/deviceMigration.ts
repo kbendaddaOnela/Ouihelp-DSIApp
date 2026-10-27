@@ -373,6 +373,8 @@ export interface DeviceAgentReport {
   profilesMeasuredAt: string | null
   /** Applications installées (agent ≥ 1.2.0) */
   apps?: DeviceAgentApp[]
+  /** Antivirus inscrits au Centre de sécurité Windows (agent ≥ 1.2.18) */
+  antivirus?: Array<{ name: string; enabled: boolean }>
 }
 
 // ── Catalogue des applications (bascule en place) ───────────────────────────
