@@ -440,8 +440,12 @@ function LastUserCell({ d }: { d: DeviceMigrationRecord }) {
   const last = d.lastUser
   const migrated = d.state === 'migrated'
   const primaryUpn = migrated ? d.ouihelpUserUpn : d.onelaUserUpn
-  const primaryName = migrated ? null : d.onelaUserName
-  const primaryDiffers = !!primaryUpn && !!last && !sameAccount(primaryUpn, last.account)
+  const primaryName = migrated ? d.ouihelpUserName : d.onelaUserName
+  // Même personne sous deux comptes (ONELA puis Ouihelp) : pas d'alerte
+  const samePerson =
+    !!primaryName && !!last?.name && primaryName.toLowerCase() === last.name.toLowerCase()
+  const primaryDiffers =
+    !!primaryUpn && !!last && !sameAccount(primaryUpn, last.account) && !samePerson
   if (!last) {
     return (
       <>

@@ -24,6 +24,7 @@ import type { RbacVariables } from '../../middleware/rbac'
 import { db } from '../../db/index'
 import { agencies } from '../accounts/schema'
 import { cachedUsers } from '../inventory/schema'
+import { migrations } from '../migration/schema'
 import { randomUUID, createHash } from 'crypto'
 import {
   deviceAgents,
@@ -329,6 +330,7 @@ function toRecord(
     ouihelpLastSync: iso(r.ouihelpLastSync),
     ouihelpUserUpn: r.ouihelpUserUpn,
     ouihelpDeviceName: r.ouihelpDeviceName,
+    ouihelpUserName: r.ouihelpUserUpn ? (nameByUpn.get(r.ouihelpUserUpn) ?? null) : null,
     excluded: r.excluded === 1,
     excludeReason: r.excludeReason,
     firstSeenAt: r.firstSeenAt.toISOString(),
@@ -344,7 +346,7 @@ function toRecord(
 
 // ── Inventaire complet (quelques centaines de postes : filtrage côté front) ──
 deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async (c) => {
-  const [rows, lastSyncAt, agencyRef, agentRows, onelaUsers] = await Promise.all([
+  const [rows, lastSyncAt, agencyRef, agentRows, onelaUsers, createdAccounts] = await Promise.all([
     db.select().from(deviceMigrations),
     getLastSyncAt(),
     loadAgencyRef(),
@@ -355,9 +357,18 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
       .select({ upn: cachedUsers.upn, displayName: cachedUsers.displayName })
       .from(cachedUsers)
       .where(inArray(cachedUsers.source, ['onela', 'ouihelp'])),
+    // Comptes Ouihelp créés par la DSI App : le cache Ouihelp n'est rafraîchi qu'à la synchro du
+    // module inventaire, les comptes récents (…@mig.onela.com) n'y sont souvent pas encore
+    db
+      .select({ gohUpn: migrations.gohUpn, displayName: migrations.onelaDisplayName })
+      .from(migrations),
   ])
   const nameByUpn = new Map<string, string>()
   for (const u of onelaUsers) if (u.displayName) nameByUpn.set(u.upn.toLowerCase(), u.displayName)
+  for (const a of createdAccounts) {
+    const upn = a.gohUpn?.toLowerCase()
+    if (upn && a.displayName && !nameByUpn.has(upn)) nameByUpn.set(upn, a.displayName)
+  }
   const groups = groupDeviceRows(rows)
   const targetNames = computeTargetNames(
     groups.map((g) => g.primary),
@@ -377,6 +388,11 @@ deviceMigrationRouter.get('/devices', requirePermission('migration:read'), async
         .map((r) => agentByDevice.get(r.id))
         .filter((a): a is DeviceAgentRow => !!a)
         .sort((a, b) => b.lastCheckinAt.getTime() - a.lastCheckinAt.getTime())[0]
+      // Profil transféré à la bascule : le compte Ouihelp porte le nom de l'ancien compte ONELA
+      for (const m of parseProfileMap(primary.migrationProfileMap)) {
+        const name = m.oldUpn ? nameByUpn.get(m.oldUpn.toLowerCase()) : undefined
+        if (m.newUpn && name && !nameByUpn.has(m.newUpn)) nameByUpn.set(m.newUpn, name)
+      }
       const record = toRecord(
         primary,
         lastSyncAt,
