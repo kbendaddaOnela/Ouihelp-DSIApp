@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.15'
+$AgentVersion = '1.2.16'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -159,6 +159,7 @@ function Invoke-RemoteUninstall {
     Restore-Sleep
     Clear-MigrationNotice
     Restore-LogonUi
+    Remove-AdDnsRule
   }
   if (Test-Path $PromptDir) { Remove-Item $PromptDir -Recurse -Force -ErrorAction SilentlyContinue }
   Uninstall-Agent
@@ -1934,7 +1935,45 @@ function Invoke-EntraLeave {
 # Sortie du domaine ONELA avec le compte local de secours. La vue sur un contrôleur de domaine
 # fait échouer l'opération : on la coupe le temps de l'appel, puis on REMET les DNS d'origine
 # (V9 laissait le poste avec un DNS public statique).
+# PC du siège (nom ONL-…) encore joints à l'AD : les noms du domaine ONELA sont résolus par le
+# DNS de l'AD (10.11.135.97), sans quoi le PC ne contacte pas son contrôleur de domaine (UPN
+# des profils introuvables, relation d'approbation en échec). Règle NRPT limitée au domaine
+# plutôt qu'un DNS fixe sur la carte : un portable garde les DNS de chaque réseau (DHCP) et le
+# reste d'Internet n'en dépend pas. Retirée avant la sortie du domaine, à la jonction Ouihelp,
+# à la désinstallation de l'agent, et dès que le poste n'est plus dans le domaine.
+$SiegeAdDns = '10.11.135.97'
+$AdDnsComment = 'DSI-AD-siege'
+
+function Remove-AdDnsRule {
+  Safe 'adDnsRetrait' {
+    $rules = @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.Comment -eq $AdDnsComment })
+    if ($rules.Count -eq 0) { return }
+    foreach ($r in $rules) { Remove-DnsClientNrptRule -Name $r.Name -Force }
+    Clear-DnsClientCache
+    Write-Log "DNS de l'AD ($SiegeAdDns) retiré"
+  }
+}
+
+function Sync-AdDnsRule {
+  # Bascule engagée : on n'y touche plus (la sortie du domaine la retire elle-même)
+  if (Get-Inplace) { return }
+  $cs = Get-CimInstance Win32_ComputerSystem
+  if (-not ($cs.PartOfDomain -and $env:COMPUTERNAME -like 'ONL-*')) { Remove-AdDnsRule; return }
+  $domain = [string]$cs.Domain
+  Safe 'adDns' {
+    $rules = @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.Comment -eq $AdDnsComment })
+    $ok = $rules.Count -eq 1 -and @($rules[0].NameServers) -contains $SiegeAdDns -and @($rules[0].Namespace) -contains ".$domain"
+    if ($ok) { return }
+    foreach ($r in $rules) { Remove-DnsClientNrptRule -Name $r.Name -Force }
+    Add-DnsClientNrptRule -Namespace @(".$domain", $domain) -NameServers $SiegeAdDns -Comment $AdDnsComment
+    Clear-DnsClientCache
+    Write-Log "DNS de l'AD ($SiegeAdDns) ajouté pour le domaine $domain"
+  }
+}
+
 function Invoke-DomainUnjoin([string]$User, [string]$Password) {
+  # Sinon le contrôleur de domaine resterait joignable malgré la coupure des DNS ci-dessous
+  Remove-AdDnsRule
   $adapter = Safe 'adaptateur' { (Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).InterfaceAlias }
   $dns = @()
   if ($adapter) {
@@ -2326,6 +2365,7 @@ function Invoke-InplaceJoin($State) {
   }
   Skip-UserEsp
   Clear-MigrationNotice
+  Remove-AdDnsRule
   Send-Progress 'jonction' 'ok' "Poste joint à Entra Ouihelp, nom $($State.computerName)$pendingName ; l'utilisateur se connecte avec son compte Ouihelp" @{ joined = $true }
   Remove-InplacePayload
   Restore-Sleep
@@ -2522,6 +2562,7 @@ try {
   # D'abord la bascule (réactif), puis le rapport d'inventaire (espacé par nextCheckinAt)
   Invoke-MigrationPoll
   Restore-LogonUi
+  Sync-AdDnsRule
   # Code de sortie ≠ 0 en cas d'échec : visible dans « Dernier résultat » de la tâche planifiée
   if (Invoke-Checkin) { exit 1 }
   exit 0
