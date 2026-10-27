@@ -115,6 +115,25 @@ function fmtMb(mb: number | null) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} Go` : `${mb} Mo`
 }
 
+// Antivirus tiers connus pour bloquer l'agent ou la bascule (quarantaine du script, PowerShell
+// bloqué). WebAdvisor n'est qu'une extension de navigateur : pas d'antivirus.
+const THIRD_PARTY_AV =
+  /mcafee|trellix|avast|\bavg\b|norton|kaspersky|bitdefender|\beset\b|sophos|withsecure|f-secure|panda|totalav|malwarebytes/i
+
+/**
+ * Antivirus tiers du poste : Centre de sécurité Windows (agent ≥ 1.2.18), sinon applications
+ * installées (un antivirus qui bloque l'agent l'empêche justement de se mettre à jour).
+ */
+function thirdPartyAntivirus(r: DeviceAgentReport): string[] {
+  const names = new Set<string>()
+  for (const a of r.antivirus ?? [])
+    if (!/defender/i.test(a.name)) names.add(a.enabled ? a.name : `${a.name} (inactif)`)
+  if (names.size === 0)
+    for (const a of r.apps ?? [])
+      if (THIRD_PARTY_AV.test(a.name) && !/webadvisor/i.test(a.name)) names.add(a.name)
+  return [...names]
+}
+
 /** Points d'attention avant bascule, déduits du rapport de l'agent. */
 function agentWarnings(r: DeviceAgentReport): string[] {
   const w: string[] = []
@@ -129,6 +148,8 @@ function agentWarnings(r: DeviceAgentReport): string[] {
     w.push(
       `${fmtMb(lost.mb)} de données dans des profils qui seront supprimés (${lost.accounts.join(', ')})`
     )
+  const av = thirdPartyAntivirus(r)
+  if (av.length) w.push(`Antivirus tiers : ${av.join(', ')} (peut bloquer l’agent et la bascule)`)
   if (r.sccmClient) w.push('Client SCCM présent')
   if (r.mdm.gpoAutoEnroll) w.push('Inscription Intune automatique par GPO (à neutraliser)')
   return w
@@ -708,7 +729,9 @@ export default function DeviceMigrationPage() {
   const [region, setRegion] = useState('')
   const [agency, setAgency] = useState('')
   const [intune, setIntune] = useState<'' | 'in' | 'out'>('')
-  const [agentFilter, setAgentFilter] = useState<'' | 'with' | 'without' | 'warnings'>('')
+  const [agentFilter, setAgentFilter] = useState<
+    '' | 'with' | 'without' | 'warnings' | 'antivirus'
+  >('')
   const [open, setOpen] = useState<string | null>(null)
   const [showPackage, setShowPackage] = useState(false)
   const [showApps, setShowApps] = useState(false)
@@ -771,9 +794,10 @@ export default function DeviceMigrationPage() {
           (!agentFilter ||
             (agentFilter === 'with' && !!d.agent) ||
             (agentFilter === 'without' && !d.agent) ||
-            (agentFilter === 'warnings' &&
+            (agentFilter === 'warnings' && !!d.agent && agentWarnings(d.agent.report).length > 0) ||
+            (agentFilter === 'antivirus' &&
               !!d.agent &&
-              agentWarnings(d.agent.report).length > 0)) &&
+              thirdPartyAntivirus(d.agent.report).length > 0)) &&
           (!needle ||
             [
               d.displayName,
@@ -984,6 +1008,7 @@ export default function DeviceMigrationPage() {
               <option value="with">Avec agent</option>
               <option value="without">Sans agent</option>
               <option value="warnings">Points d’attention</option>
+              <option value="antivirus">Antivirus tiers</option>
             </select>
             <Button size="sm" variant="outline" onClick={() => exportCsv(filtered)}>
               <Download className="mr-1.5 h-4 w-4" /> CSV ({filtered.length})
