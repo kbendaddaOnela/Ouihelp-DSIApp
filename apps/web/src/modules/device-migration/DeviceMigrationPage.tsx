@@ -730,7 +730,7 @@ export default function DeviceMigrationPage() {
   const [agency, setAgency] = useState('')
   const [intune, setIntune] = useState<'' | 'in' | 'out'>('')
   const [agentFilter, setAgentFilter] = useState<
-    '' | 'with' | 'without' | 'warnings' | 'antivirus'
+    '' | 'with' | 'without' | 'warnings' | 'antivirus' | 'latest' | 'outdated'
   >('')
   const [open, setOpen] = useState<string | null>(null)
   const [showPackage, setShowPackage] = useState(false)
@@ -752,6 +752,16 @@ export default function DeviceMigrationPage() {
 
   const regions = useMemo(
     () => [...new Set(devices.map((d) => d.region).filter((r): r is string => !!r))].sort(),
+    [devices]
+  )
+
+  // Version d'agent la plus récente vue sur le parc : repère les PC déjà mis à jour (ou non)
+  const latestAgent = useMemo(
+    () =>
+      devices
+        .map((d) => d.agent?.report.agentVersion)
+        .filter((v): v is string => !!v && v !== '?')
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0] ?? null,
     [devices]
   )
 
@@ -797,7 +807,11 @@ export default function DeviceMigrationPage() {
             (agentFilter === 'warnings' && !!d.agent && agentWarnings(d.agent.report).length > 0) ||
             (agentFilter === 'antivirus' &&
               !!d.agent &&
-              thirdPartyAntivirus(d.agent.report).length > 0)) &&
+              thirdPartyAntivirus(d.agent.report).length > 0) ||
+            (agentFilter === 'latest' && d.agent?.report.agentVersion === latestAgent) ||
+            (agentFilter === 'outdated' &&
+              !!d.agent &&
+              d.agent.report.agentVersion !== latestAgent)) &&
           (!needle ||
             [
               d.displayName,
@@ -814,7 +828,7 @@ export default function DeviceMigrationPage() {
             ].some((v) => v?.toLowerCase().includes(needle)))
       )
       .sort((a, b) => listRank(a) - listRank(b))
-  }, [devices, q, state, join, region, agency, agentFilter, intune])
+  }, [devices, q, state, join, region, agency, agentFilter, intune, latestAgent])
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 py-6">
@@ -1009,6 +1023,12 @@ export default function DeviceMigrationPage() {
               <option value="without">Sans agent</option>
               <option value="warnings">Points d’attention</option>
               <option value="antivirus">Antivirus tiers</option>
+              {latestAgent && (
+                <>
+                  <option value="latest">Agent à jour ({latestAgent})</option>
+                  <option value="outdated">Agent pas à jour (avant {latestAgent})</option>
+                </>
+              )}
             </select>
             <Button size="sm" variant="outline" onClick={() => exportCsv(filtered)}>
               <Download className="mr-1.5 h-4 w-4" /> CSV ({filtered.length})
