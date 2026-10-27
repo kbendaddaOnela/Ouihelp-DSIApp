@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.14'
+$AgentVersion = '1.2.15'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -374,7 +374,11 @@ function Get-Profiles($State) {
       $account = if ($upn) { $upn } else { Safe 'entraNt' { (New-Object Security.Principal.SecurityIdentifier $sid).Translate([Security.Principal.NTAccount]).Value } }
     } elseif ($sid -like 'S-1-5-21-*') {
       $kind = if ($localSid -and $sid.StartsWith("$localSid-")) { 'local' } else { 'ad' }
-      $account = Safe 'ntName' { (New-Object Security.Principal.SecurityIdentifier $sid).Translate([Security.Principal.NTAccount]).Value }
+      # Compte AD supprimé ou poste sorti du domaine (après la bascule) : SID intraduisible,
+      # cas attendu, pas journalisé (on retombe sur le nom du dossier de profil)
+      try { $account = (New-Object Security.Principal.SecurityIdentifier $sid).Translate([Security.Principal.NTAccount]).Value }
+      catch [Security.Principal.IdentityNotMappedException] { }
+      catch { Write-Log "[ntName] $($_.Exception.Message)" }
       if ($kind -eq 'ad') { $upn = Safe 'adUpn' { Get-AdUpn $sid $State } }
     }
     if (-not $account) { $account = Split-Path $p.LocalPath -Leaf }
@@ -410,18 +414,56 @@ function Get-Profiles($State) {
   return ,$result
 }
 
-# Désinstallation enregistrée pour une application : commande MSI ou QuietUninstallString.
-# Renvoie $null quand aucune désinstallation silencieuse n'est possible (installeur interactif).
+# Sépare « "C:\chemin\outil.exe" arguments » (ou sans guillemets) en fichier + arguments.
+function Split-CommandLine([string]$Line) {
+  if ($Line -match '^\s*"([^"]+)"\s*(.*)$') { return [ordered]@{ file = $Matches[1]; arguments = $Matches[2].Trim() } }
+  if ($Line -match '^\s*(.+?\.exe)\s*(.*)$') { return [ordered]@{ file = $Matches[1]; arguments = $Matches[2].Trim() } }
+  return $null
+}
+
+# Désinstallation silencieuse d'une application, dans l'ordre :
+#  1. produit MSI (clé {GUID}, ou UninstallString « MsiExec /I|/X {GUID} ») : msiexec /x /qn ;
+#  2. QuietUninstallString fournie par l'éditeur ;
+#  3. UninstallString d'un installeur connu, complétée de ses options silencieuses :
+#     Microsoft 365 / OneNote Click-to-Run (DisplayLevel=False), Inno Setup (unins000.exe),
+#     Citrix Workspace (TrolleyExpress /silent), McAfee WebAdvisor (/s).
+# Renvoie $null sinon (installeur interactif : à désinstaller à la main).
 function Get-AppUninstall($Key) {
   $id = Split-Path $Key.PSPath -Leaf
+  $uninstall = [string]$Key.UninstallString
   if ($Key.WindowsInstaller -eq 1 -and $id -match '^\{[0-9A-Fa-f-]{36}\}$') {
     return [ordered]@{ file = 'msiexec.exe'; arguments = "/x $id /qn /norestart" }
   }
+  if ($uninstall -match 'msiexec(\.exe)?"?\s+/[IX]\s*(\{[0-9A-Fa-f-]{36}\})') {
+    return [ordered]@{ file = 'msiexec.exe'; arguments = "/x $($Matches[2]) /qn /norestart" }
+  }
   $quiet = [string]$Key.QuietUninstallString
-  if (-not $quiet) { return $null }
-  if ($quiet -match '^\s*"([^"]+)"\s*(.*)$') { return [ordered]@{ file = $Matches[1]; arguments = $Matches[2].Trim() } }
-  if ($quiet -match '^\s*(\S+\.exe)\s*(.*)$') { return [ordered]@{ file = $Matches[1]; arguments = $Matches[2].Trim() } }
-  return [ordered]@{ file = 'cmd.exe'; arguments = "/c $quiet" }
+  if ($quiet) {
+    $cmd = Split-CommandLine $quiet
+    if ($cmd) { return $cmd }
+    return [ordered]@{ file = 'cmd.exe'; arguments = "/c $quiet" }
+  }
+  $cmd = if ($uninstall) { Split-CommandLine $uninstall } else { $null }
+  if (-not $cmd) { return $null }
+  $exe = Split-Path $cmd.file -Leaf
+  if ($exe -eq 'OfficeClickToRun.exe') {
+    if ($cmd.arguments -notmatch 'DisplayLevel=') { $cmd.arguments += ' DisplayLevel=False' }
+    if ($cmd.arguments -notmatch 'forceappshutdown=') { $cmd.arguments += ' forceappshutdown=True' }
+    return $cmd
+  }
+  if ($exe -match '^unins\d{3}\.exe$') {
+    $cmd.arguments = ($cmd.arguments + ' /VERYSILENT /SUPPRESSMSGBOXES /NORESTART').Trim()
+    return $cmd
+  }
+  if ($exe -eq 'TrolleyExpress.exe') {
+    if ($cmd.arguments -notmatch '/silent') { $cmd.arguments += ' /silent' }
+    return $cmd
+  }
+  if ($exe -eq 'Uninstaller.exe' -and $cmd.file -match '\\McAfee\\WebAdvisor\\') {
+    $cmd.arguments = ($cmd.arguments + ' /s').Trim()
+    return $cmd
+  }
+  return $null
 }
 
 # Applications installées : clés Uninstall HKLM 32 et 64 bits, hors composants système,
@@ -462,7 +504,16 @@ function Uninstall-AppByName([string]$Name) {
   $cmd = Get-AppUninstall $key
   if (-not $cmd) { return @{ ok = $false; message = 'pas de désinstallation silencieuse' } }
   try {
-    $p = Start-Process -FilePath $cmd.file -ArgumentList $cmd.arguments -Wait -PassThru -WindowStyle Hidden
+    $startArgs = @{ FilePath = $cmd.file; PassThru = $true; WindowStyle = 'Hidden' }
+    if ($cmd.arguments) { $startArgs.ArgumentList = $cmd.arguments }
+    $p = Start-Process @startArgs
+    $null = $p.Handle   # sans lui, ExitCode reste vide après WaitForExit(délai)
+    # Un désinstalleur qui attend un clic (fenêtre invisible en SYSTEM) bloquerait la bascule :
+    # 10 min au plus, puis abandon de cette application
+    if (-not $p.WaitForExit(600000)) {
+      try { $p.Kill() } catch { }
+      return @{ ok = $false; message = 'sans réponse après 10 min (désinstalleur interactif ?)' }
+    }
     # 1605 = déjà désinstallée, 1614 = produit inconnu, 1641 / 3010 = redémarrage demandé
     if ($p.ExitCode -in 0, 1605, 1614, 1641, 3010) { return @{ ok = $true; message = "code $($p.ExitCode)" } }
     return @{ ok = $false; message = "code $($p.ExitCode)" }
