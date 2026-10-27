@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.16'
+$AgentVersion = '1.2.17'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1800,6 +1800,18 @@ function Restore-LogonUi {
   $u = Get-InteractiveUser
   if (-not $u -or $u -match 'dsi-secours') { return }
   Safe 'logonuiRestore' {
+    # Pendant cette 1re connexion, Windows n'a pas mémorisé le compte (dernier utilisateur
+    # masqué) : sans ça, le redémarrage suivant proposait encore « Autre utilisateur »
+    $sid = Safe 'logonuiSid' { (New-Object Security.Principal.NTAccount $u).Translate([Security.Principal.SecurityIdentifier]).Value }
+    if ($sid) {
+      Set-RegValue $LogonUiKey 'LastLoggedOnUser' $u 'String'
+      Set-RegValue $LogonUiKey 'LastLoggedOnSAMUser' $u 'String'
+      Set-RegValue $LogonUiKey 'LastLoggedOnUserSID' $sid 'String'
+      Set-RegValue $LogonUiKey 'SelectedUserSID' $sid 'String'
+      $cache = "HKLM:\SOFTWARE\Microsoft\IdentityStore\Cache\$sid\IdentityCache\$sid"
+      $display = (Get-ItemProperty $cache -Name 'DisplayName' -ErrorAction SilentlyContinue).DisplayName
+      if ($display) { Set-RegValue $LogonUiKey 'LastLoggedOnDisplayName' $display 'String' }
+    }
     Remove-ItemProperty -Path $PoliciesKey -Name 'DontDisplayLastUserName' -ErrorAction SilentlyContinue
     Remove-Item $LogonUiMarker -Force -ErrorAction SilentlyContinue
     Write-Log "Écran de connexion rétabli après la 1re connexion de $u"
@@ -1842,6 +1854,20 @@ function New-BreakglassAccount([string]$User, [string]$Password) {
   }
   $group = (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544').Translate([Security.Principal.NTAccount]).Value.Split('\')[-1]
   Add-LocalGroupMember -Group $group -Member $User -ErrorAction SilentlyContinue
+  Hide-BreakglassAccount $User
+}
+
+# Compte de secours masqué sur l'écran de connexion (sa tuile poussait l'utilisateur vers
+# « Autre utilisateur ») ; il reste utilisable en tapant .\dsi-secours. Appelé aussi à chaque
+# passage pour les postes basculés avant l'agent 1.2.17.
+$SpecialUsersKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
+function Hide-BreakglassAccount([string]$User = 'dsi-secours') {
+  Safe 'masqueSecours' {
+    if (-not (Get-LocalUser -Name $User -ErrorAction SilentlyContinue)) { return }
+    if ((Get-ItemProperty $SpecialUsersKey -Name $User -ErrorAction SilentlyContinue).$User -eq 0) { return }
+    Set-RegValue $SpecialUsersKey $User 0
+    Write-Log "Compte $User masqué sur l'écran de connexion"
+  }
 }
 
 # Sortie de l'inscription MDM (Intune ONELA) : certificat d'appareil, clés d'inscription et
@@ -2562,6 +2588,7 @@ try {
   # D'abord la bascule (réactif), puis le rapport d'inventaire (espacé par nextCheckinAt)
   Invoke-MigrationPoll
   Restore-LogonUi
+  Hide-BreakglassAccount
   Sync-AdDnsRule
   # Code de sortie ≠ 0 en cas d'échec : visible dans « Dernier résultat » de la tâche planifiée
   if (Invoke-Checkin) { exit 1 }
