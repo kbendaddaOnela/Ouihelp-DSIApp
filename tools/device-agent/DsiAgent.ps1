@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.18'
+$AgentVersion = '1.2.19'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1696,6 +1696,7 @@ $PoliciesKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
 $SwitchAttempts   = 3
 $ProfileAttempts  = 5
 $JoinAttempts     = 20
+$JoinRepairAfter  = 3      # passages sans jonction avant de réinstaller le PPKG (~20 min)
 # Espace libre exigé : désinstallations, nouveau profil, PPKG (rien n'est recopié en place).
 # Marge demandée avant la bascule. Le transfert de profil ne copie rien (changement de
 # propriétaire) : c'est la place dont Windows aura besoin ensuite (stratégies et applications
@@ -1962,11 +1963,43 @@ function Get-DsregPath {
   return "$env:WINDIR\System32\dsregcmd.exe"
 }
 
+# La sortie d'Entra termine son nettoyage en arrière-plan (clés de l'appareil, TPM, jetons).
+# Un PPKG installé dans la foulée a laissé une jonction Ouihelp bloquée sans erreur (PC joint
+# seulement à Entra, sans domaine) : on attend que le registre de jonction soit vide, plus une
+# marge, avant de rendre la main.
 function Invoke-EntraLeave {
   $null = Start-Process -FilePath (Get-DsregPath) -ArgumentList '/leave' -Wait -NoNewWindow -PassThru
-  Start-Sleep -Seconds 5
-  $s = Safe 'dsregApresLeave' { Get-DsregStatus }
-  return -not ($s -and $s.azureAdJoined)
+  $deadline = (Get-Date).AddSeconds(120)
+  while ($true) {
+    Start-Sleep -Seconds 5
+    $s = Safe 'dsregApresLeave' { Get-DsregStatus }
+    $left = -not ($s -and $s.azureAdJoined)
+    $joinInfo = @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo' -ErrorAction SilentlyContinue)
+    if ($left -and $joinInfo.Count -eq 0) { break }
+    if ((Get-Date) -ge $deadline) { break }
+  }
+  if (-not $left) { return $false }
+  Start-Sleep -Seconds 30
+  return $true
+}
+
+# Erreurs récentes de jonction (journaux Provisioning et AAD), en une ligne par événement pour
+# le journal de la DSI App. Première ligne du message seulement : le détail ProvXML peut citer
+# des paramètres du PPKG.
+function Get-JoinDiagnostic([datetime]$Since) {
+  $lines = @()
+  foreach ($log in @('Microsoft-Windows-Provisioning-Diagnostics-Provider/Admin', 'Microsoft-Windows-AAD/Operational', 'Microsoft-Windows-User Device Registration/Admin')) {
+    $events = @(Safe "journal $log" {
+        Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $Since; Level = 1, 2, 3 } -MaxEvents 10 -ErrorAction Stop
+      } @())
+    foreach ($e in $events) {
+      $first = ([string]$e.Message -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+      $lines += "$($e.TimeCreated.ToString('HH:mm')) $($e.Id) $first"
+    }
+  }
+  $uniq = @($lines | Select-Object -Unique | Select-Object -First 6)
+  if ($uniq.Count -eq 0) { return 'aucune erreur dans les journaux Provisioning et AAD' }
+  return ($uniq -join ' | ')
 }
 
 # Sortie du domaine ONELA avec le compte local de secours. La vue sur un contrôleur de domaine
@@ -2370,9 +2403,29 @@ function Invoke-InplaceJoin($State) {
   }
   if (-not $joined) {
     if (-not (Test-PhaseAttempt $State $JoinAttempts)) {
+      $diag = Get-JoinDiagnostic (Get-Date).AddHours(-3)
       Clear-MigrationNotice
-      Send-Progress 'jonction' 'error' 'Poste sorti d''ONELA mais toujours pas joint à Ouihelp : PPKG à reprendre à la main (jeton en bloc expiré ?)' @{ fatal = $true }
+      Send-Progress 'jonction' 'error' "Poste sorti d'ONELA mais toujours pas joint à Ouihelp : PPKG à reprendre à la main (jeton en bloc expiré ?). Journaux : $diag" @{ fatal = $true }
       Remove-InplacePayload
+      return
+    }
+    # Jonction restée bloquée sans erreur après le redémarrage : la réinstallation du même PPKG
+    # la débloque (constaté le 28/10/2026). Une seule fois par bascule, sans redémarrage :
+    # installé poste ouvert, le PPKG joint le poste aussitôt.
+    if ([int]$State.attempts -ge $JoinRepairAfter -and -not $State.ppkgReinstalled -and (Test-Path $InplacePpkg)) {
+      $diag = Get-JoinDiagnostic (Get-Date).AddHours(-2)
+      $State | Add-Member -NotePropertyName ppkgReinstalled -NotePropertyValue $true -Force
+      Save-Inplace $State
+      try {
+        $ids = @(Safe 'ppkgId' { Get-ProvisioningPackage -PackagePath $InplacePpkg | ForEach-Object { $_.PackageId } } @())
+        foreach ($id in $ids) {
+          Safe 'ppkgRetrait' { Uninstall-ProvisioningPackage -PackageId $id } | Out-Null
+        }
+        $info = Install-OuihelpPackage $InplacePpkg
+        Send-Progress 'jonction' 'info' "Jonction Ouihelp bloquée : PPKG réinstallé ($info). Journaux : $diag"
+      } catch {
+        Send-Progress 'jonction' 'error' "Réinstallation du PPKG en échec : $($_.Exception.Message). Journaux : $diag"
+      }
       return
     }
     Send-Progress 'jonction' 'info' 'Jonction Ouihelp pas encore constatée : nouvelle tentative au prochain passage'
