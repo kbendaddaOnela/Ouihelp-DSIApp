@@ -1,6 +1,10 @@
-import { useState } from 'react'
-import { ChevronDown, ChevronRight, Trash2, RefreshCw, Cloud, Copy, Check, KeyRound } from 'lucide-react'
-import type { AccountCreationRecord, AccountStepStatus } from '@dsi-app/shared'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight, Trash2, RefreshCw, Cloud, Copy, Check, KeyRound, Mail } from 'lucide-react'
+import {
+  mailboxesForService,
+  type AccountCreationRecord,
+  type AccountStepStatus,
+} from '@dsi-app/shared'
 import { StepBadge } from '@/modules/migration/components/StepBadge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -10,7 +14,8 @@ import {
   useRetryAccount,
   useDeleteAccount,
   useLicenseSkus,
-  useAssignAccountLicense,
+  useAgencies,
+  useMigratedSharedMailboxes,
 } from '../hooks/useAccounts'
 
 const STEPS: Array<{ key: keyof AccountCreationRecord; label: string }> = [
@@ -59,11 +64,6 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
   const finalize = useFinalizeGoogle()
   const retry = useRetryAccount()
   const del = useDeleteAccount()
-  const assignLicense = useAssignAccountLicense()
-  const licenseNeeded = account.stepLicense !== 'success' && account.stepLicense !== 'skipped'
-  const { data: licenseData } = useLicenseSkus(licenseNeeded)
-  const licenseSkus = licenseData ?? []
-  const [skuChoice, setSkuChoice] = useState('')
 
   const status = overallStatus(account)
   const provisionSteps: AccountStepStatus[] = [
@@ -86,6 +86,71 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
       !done(account.stepSendAs) ||
       !done(account.stepContactsOnela) ||
       !done(account.stepDelegations))
+
+  // ── Panneau « Terminer la création » (licence + délégations) ────────────────
+  // Boîtes partagées du service/agence du compte, rapprochées des boîtes migrées.
+  const licenseNeeded = account.stepLicense !== 'success' && account.stepLicense !== 'skipped'
+  const { data: agenciesData } = useAgencies()
+  const { data: mailboxesData } = useMigratedSharedMailboxes()
+  const { data: licenseData } = useLicenseSkus(open)
+  const licenseSkus = licenseData ?? []
+  const [skuChoice, setSkuChoice] = useState('')
+
+  const relevantMailboxes = useMemo(() => {
+    const migrated = mailboxesData?.mailboxes ?? []
+    // Adresses attendues selon l'affectation
+    let addrs: string[] = []
+    if (account.assignmentType === 'Agence') {
+      const ag = (agenciesData?.agencies ?? []).find((a) => a.name === account.officeLocation)
+      if (ag?.mailbox) addrs = [ag.mailbox]
+    } else if (account.assignmentType === 'Siège') {
+      addrs = mailboxesForService(account.department ?? '')
+    }
+    const wanted = addrs.map((a) => a.toLowerCase())
+    const byEmail = new Map<string, { id: string; onelaEmail: string; delegateEmail: string }>()
+    // Boîtes du service/agence effectivement migrées
+    for (const m of migrated) {
+      if (wanted.includes(m.onelaEmail.toLowerCase()) || (m.alias && wanted.includes(m.alias.toLowerCase()))) {
+        byEmail.set(m.delegateEmail, { id: m.id, onelaEmail: m.onelaEmail, delegateEmail: m.delegateEmail })
+      }
+    }
+    // + boîtes déjà déléguées à ce compte (pour pouvoir les voir/décocher)
+    for (const m of migrated) {
+      if ((account.delegateMailboxes ?? []).includes(m.delegateEmail)) {
+        byEmail.set(m.delegateEmail, { id: m.id, onelaEmail: m.onelaEmail, delegateEmail: m.delegateEmail })
+      }
+    }
+    return [...byEmail.values()]
+  }, [mailboxesData, agenciesData, account.assignmentType, account.officeLocation, account.department, account.delegateMailboxes])
+
+  const defaultSelected = useMemo(
+    () => Array.from(new Set([...(account.delegateMailboxes ?? []), ...relevantMailboxes.map((m) => m.delegateEmail)])),
+    [account.delegateMailboxes, relevantMailboxes],
+  )
+  // Sélection initialisée une seule fois (ne pas écraser les cases à chaque refetch 5s)
+  const [selected, setSelected] = useState<string[] | null>(null)
+  useEffect(() => {
+    if (selected === null && defaultSelected.length > 0) setSelected(defaultSelected)
+  }, [selected, defaultSelected])
+  const effectiveSelected = selected ?? defaultSelected
+  const toggleDelegate = (email: string) =>
+    setSelected((prev) => {
+      const base = prev ?? defaultSelected
+      return base.includes(email) ? base.filter((e) => e !== email) : [...base, email]
+    })
+
+  // Le panneau sert à compléter : utile tant que tout n'est pas terminé, ou pour
+  // (ré)attribuer une licence / des délégations à un compte déjà « Terminé ».
+  const showCompletePanel =
+    account.stepCreateGoh === 'success' &&
+    (canFinalize || licenseNeeded || relevantMailboxes.length > 0)
+
+  const onComplete = () => {
+    const payload: { licenseSkuId?: string; delegateMailboxes?: string[] } = {}
+    if (skuChoice) payload.licenseSkuId = skuChoice
+    payload.delegateMailboxes = effectiveSelected
+    finalize.mutate({ id: account.id, payload })
+  }
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
@@ -142,39 +207,59 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
             <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">Licence : {account.licenseError}</p>
           )}
 
-          {/* Attribution manuelle de licence (si pas encore attribuée) */}
-          {licenseNeeded && (
-            <div className="flex flex-wrap items-center gap-2 rounded-md bg-gray-50 px-3 py-2">
-              <KeyRound className="h-4 w-4 text-gray-400" />
-              <span className="text-xs text-gray-600">Attribuer une licence :</span>
-              <select
-                className="rounded-md border border-gray-300 px-2 py-1 text-xs focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-                value={skuChoice}
-                onChange={(e) => setSkuChoice(e.target.value)}
-              >
-                <option value="">— Choisir —</option>
-                {licenseSkus.map((s) => (
-                  <option key={s.skuId} value={s.skuId}>
-                    {s.name}
-                    {s.remaining != null ? ` — ${s.remaining} dispo` : s.total != null ? ` — ${s.total - s.used} dispo` : ''}
-                  </option>
-                ))}
-              </select>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!skuChoice || assignLicense.isPending}
-                onClick={() => assignLicense.mutate({ id: account.id, productId: 'Google-Apps', skuId: skuChoice })}
-              >
-                {assignLicense.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
-                Attribuer
-              </Button>
-            </div>
-          )}
           {provisionRunning && !account.errorDetails && (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
               Si cette étape reste « en cours » plusieurs minutes, la tâche a été interrompue par un redémarrage du conteneur. Clique « Relancer le provisioning » pour reprendre — sans risque, l'opération est idempotente.
             </p>
+          )}
+
+          {/* Panneau « Terminer la création » : licence + délégations puis finalisation */}
+          {showCompletePanel && (
+            <div className="space-y-3 rounded-md border border-gray-200 bg-gray-50/60 p-3">
+              <p className="text-xs font-medium text-gray-700">Terminer la création</p>
+
+              {licenseNeeded && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <KeyRound className="h-4 w-4 text-gray-400" />
+                  <span className="text-xs text-gray-600">Licence Google :</span>
+                  <select
+                    className="rounded-md border border-gray-300 px-2 py-1 text-xs focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    value={skuChoice}
+                    onChange={(e) => setSkuChoice(e.target.value)}
+                  >
+                    <option value="">— Aucune (ne pas attribuer) —</option>
+                    {licenseSkus.map((s) => (
+                      <option key={s.skuId} value={s.skuId}>
+                        {s.name}
+                        {s.remaining != null ? ` — ${s.remaining} dispo` : s.total != null ? ` — ${s.total - s.used} dispo` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {relevantMailboxes.length > 0 ? (
+                <div>
+                  <p className="mb-1 text-xs text-gray-600">Boîtes partagées à déléguer :</p>
+                  <div className="overflow-hidden rounded-md border border-gray-200 bg-white">
+                    {relevantMailboxes.map((m) => (
+                      <label key={m.id} className="flex cursor-pointer items-center gap-2 border-b border-gray-100 px-3 py-1.5 text-xs last:border-b-0 hover:bg-gray-50">
+                        <input type="checkbox" checked={effectiveSelected.includes(m.delegateEmail)} onChange={() => toggleDelegate(m.delegateEmail)} />
+                        <Mail className="h-3.5 w-3.5 text-gray-400" />
+                        <span className="font-medium text-gray-800">{m.onelaEmail}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400">Aucune boîte partagée migrée pour ce service/agence.</p>
+              )}
+
+              <Button size="sm" onClick={onComplete} disabled={finalize.isPending}>
+                <Cloud className={cn('h-4 w-4', finalize.isPending && 'animate-pulse')} />
+                {finalize.isPending ? 'Finalisation…' : 'Terminer la création'}
+              </Button>
+            </div>
           )}
 
           {/* Actions */}
@@ -183,12 +268,6 @@ export function AccountCard({ account }: { account: AccountCreationRecord }) {
               <Button size="sm" variant="outline" onClick={() => retry.mutate(account.id)} disabled={retry.isPending}>
                 <RefreshCw className={cn('h-4 w-4', retry.isPending && 'animate-spin')} />
                 Relancer le provisioning
-              </Button>
-            )}
-            {canFinalize && (
-              <Button size="sm" variant="outline" onClick={() => finalize.mutate(account.id)} disabled={finalize.isPending}>
-                <Cloud className={cn('h-4 w-4', finalize.isPending && 'animate-pulse')} />
-                Finaliser sur Google
               </Button>
             )}
             <Button

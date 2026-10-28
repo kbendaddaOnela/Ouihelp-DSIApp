@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { UserPlus, Plus, Info, Building2 } from 'lucide-react'
+import { UserPlus, Plus, Info, Building2, ChevronDown, ChevronRight } from 'lucide-react'
 import { usePermission } from '@/hooks/usePermission'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
@@ -12,7 +12,12 @@ export default function AccountsPage() {
   const canWrite = usePermission('accounts:write')
   const [showForm, setShowForm] = useState(false)
   const [showAgencies, setShowAgencies] = useState(false)
+  const [showOld, setShowOld] = useState(false)
   const { data, isLoading } = useAccountsHistory()
+
+  const accounts = data?.accounts ?? []
+  const recent = accounts.slice(0, 5)
+  const older = accounts.slice(5)
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 py-6">
@@ -60,12 +65,33 @@ export default function AccountsPage() {
         <h2 className="text-sm font-semibold text-gray-700">Comptes récents</h2>
         {isLoading ? (
           <div className="flex justify-center py-10"><Spinner /></div>
-        ) : !data || data.accounts.length === 0 ? (
+        ) : accounts.length === 0 ? (
           <p className="rounded-lg border border-dashed border-gray-200 py-10 text-center text-sm text-gray-400">
             Aucun compte créé pour l'instant.
           </p>
         ) : (
-          data.accounts.map((a) => <AccountCard key={a.id} account={a} />)
+          <>
+            {recent.map((a) => <AccountCard key={a.id} account={a} />)}
+
+            {older.length > 0 && (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowOld((s) => !s)}
+                  className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700"
+                  aria-expanded={showOld}
+                >
+                  {showOld ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                  Anciens comptes ({older.length})
+                </button>
+                {showOld && (
+                  <div className="mt-2 space-y-2">
+                    {older.map((a) => <AccountCard key={a.id} account={a} />)}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

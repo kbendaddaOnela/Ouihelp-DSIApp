@@ -115,8 +115,17 @@ export function useCreateAccount() {
 export function useFinalizeGoogle() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => accountsApi.finalizeGoogle(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: HISTORY_KEY }),
+    mutationFn: ({
+      id,
+      payload,
+    }: {
+      id: string
+      payload?: { licenseProductId?: string; licenseSkuId?: string; delegateMailboxes?: string[] }
+    }) => accountsApi.finalizeGoogle(id, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: HISTORY_KEY })
+      qc.invalidateQueries({ queryKey: ['license-skus'] })
+    },
   })
 }
 

@@ -31,8 +31,13 @@ export const accountsApi = {
   create: (req: CreateAccountRequest) =>
     apiClient.post<CreateAccountResponse>('/accounts', req).then((r) => r.data),
 
-  finalizeGoogle: (id: string) =>
-    apiClient.post<{ message: string }>(`/accounts/${id}/finalize-google`).then((r) => r.data),
+  finalizeGoogle: (
+    id: string,
+    payload?: { licenseProductId?: string; licenseSkuId?: string; delegateMailboxes?: string[] },
+  ) =>
+    apiClient
+      .post<{ message: string }>(`/accounts/${id}/finalize-google`, payload ?? {})
+      .then((r) => r.data),
 
   retry: (id: string) =>
     apiClient.post<{ message: string }>(`/accounts/${id}/retry`).then((r) => r.data),
