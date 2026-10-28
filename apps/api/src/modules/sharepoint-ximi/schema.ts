@@ -50,8 +50,19 @@ export const ximiMigrations = mysqlTable('ximi_migrations', {
   siteError: text('site_error'),
 
   // ── Droits : groupe dynamique d'agence (tenant Ouihelp) ────────────────────
+  // Legacy mono-groupe — conservées pour les migrations créées avant le passage
+  // au multi-agences. Les nouvelles lignes n'écrivent que `dynamicGroups`.
   dynamicGroupName: varchar('dynamic_group_name', { length: 300 }),
   dynamicGroupId: varchar('dynamic_group_id', { length: 100 }),
+  /**
+   * Groupes dynamiques à autoriser sur le site, en JSON : [{name, id}].
+   *
+   * Un TABLEAU parce que quatre sites Ximi sont mutualisés entre plusieurs
+   * agences (Loire, Paris, Seine-et-Marne, PACA) : ils doivent recevoir le
+   * groupe de CHACUNE, sinon la moitié de leurs utilisateurs n'a pas accès au
+   * site. `id` est null tant que le groupe n'a pas été résolu sur le tenant.
+   */
+  dynamicGroups: text('dynamic_groups'),
   permissionStatus: mysqlEnum('permission_status', stepStatus).default('pending').notNull(),
   permissionError: text('permission_error'),
 

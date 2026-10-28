@@ -309,7 +309,6 @@ async function ensureTargetSite(job: XimiMigration): Promise<TargetContext> {
  * l'attribution est rejouable seule.
  */
 async function ensurePermissions(job: XimiMigration): Promise<void> {
-  if (!job.dynamicGroupName) return
   const [fresh] = await db
     .select()
     .from(ximiMigrations)
@@ -318,36 +317,77 @@ async function ensurePermissions(job: XimiMigration): Promise<void> {
   if (!fresh?.targetSiteUrl) return
   if (fresh.permissionStatus === 'success') return
 
+  const groups = parseDynamicGroups(fresh)
+  if (groups.length === 0) return
+
   await db
     .update(ximiMigrations)
     .set({ permissionStatus: 'running', permissionError: null })
     .where(eq(ximiMigrations.id, job.id))
-  try {
-    let groupId = fresh.dynamicGroupId
-    if (!groupId) {
-      const group = await findGroupByExactName(fresh.dynamicGroupName!)
-      if (!group) {
-        throw new Error(
-          `Groupe « ${fresh.dynamicGroupName} » introuvable sur le tenant Ouihelp — ` +
-            `vérifie son nom exact, puis relance l'attribution.`,
-        )
+
+  // Chaque groupe est traité indépendamment : sur un site mutualisé entre trois
+  // agences, l'échec d'un groupe ne doit pas priver d'accès les deux autres.
+  // Les ids résolus sont mémorisés pour qu'une reprise ne recherche que ce qui
+  // reste.
+  const resolved: Array<{ name: string; id: string | null }> = []
+  const failures: string[] = []
+  for (const g of groups) {
+    try {
+      let id = g.id
+      if (!id) {
+        const found = await findGroupByExactName(g.name)
+        if (!found) {
+          throw new Error('introuvable sur le tenant Ouihelp (vérifie le nom exact)')
+        }
+        id = found.id
       }
-      groupId = group.id
+      await grantGroupAccess({ siteUrl: fresh.targetSiteUrl, groupObjectId: id })
+      resolved.push({ name: g.name, id })
+      console.log(`[ximi] ${job.id}: accès accordé à « ${g.name} »`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      resolved.push({ name: g.name, id: g.id })
+      failures.push(`${g.name} : ${msg}`)
+      console.warn(`[ximi] ${job.id}: attribution « ${g.name} » échouée (non bloquant):`, msg)
     }
-    await grantGroupAccess({ siteUrl: fresh.targetSiteUrl, groupObjectId: groupId })
-    await db
-      .update(ximiMigrations)
-      .set({ dynamicGroupId: groupId, permissionStatus: 'success', permissionError: null })
-      .where(eq(ximiMigrations.id, job.id))
-    console.log(`[ximi] ${job.id}: accès accordé à « ${fresh.dynamicGroupName} »`)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    await db
-      .update(ximiMigrations)
-      .set({ permissionStatus: 'error', permissionError: msg.slice(0, 2000) })
-      .where(eq(ximiMigrations.id, job.id))
-    console.warn(`[ximi] ${job.id}: attribution des droits échouée (non bloquant):`, msg)
   }
+
+  await db
+    .update(ximiMigrations)
+    .set({
+      dynamicGroups: JSON.stringify(resolved),
+      permissionStatus: failures.length === 0 ? 'success' : 'error',
+      permissionError:
+        failures.length === 0
+          ? null
+          : `${failures.length}/${groups.length} groupe(s) en échec — ${failures.join(' | ')}`.slice(0, 2000),
+    })
+    .where(eq(ximiMigrations.id, job.id))
+}
+
+/**
+ * Groupes à autoriser sur le site.
+ *
+ * Lit la colonne JSON, et retombe sur les colonnes mono-groupe pour les
+ * migrations créées avant le passage au multi-agences — sans ce repli, leur
+ * attribution serait silencieusement sautée.
+ */
+function parseDynamicGroups(job: XimiMigration): Array<{ name: string; id: string | null }> {
+  if (job.dynamicGroups) {
+    try {
+      const arr = JSON.parse(job.dynamicGroups)
+      if (Array.isArray(arr)) {
+        return arr
+          .filter((g) => g && typeof g.name === 'string' && g.name.trim())
+          .map((g) => ({ name: g.name.trim(), id: typeof g.id === 'string' ? g.id : null }))
+      }
+    } catch {
+      console.warn(`[ximi] ${job.id}: dynamic_groups illisible, repli sur la colonne mono-groupe`)
+    }
+  }
+  return job.dynamicGroupName
+    ? [{ name: job.dynamicGroupName, id: job.dynamicGroupId }]
+    : []
 }
 
 /**

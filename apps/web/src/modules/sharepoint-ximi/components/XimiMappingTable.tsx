@@ -39,7 +39,7 @@ export function XimiMappingTable({ expanded }: { expanded: boolean }) {
       'Site Ouihelp (nom)',
       'Site Ouihelp (URL)',
       'Site Ouihelp (ID)',
-      'Groupe dynamique',
+      'Groupes dynamiques',
       'Droits',
       'Statut migration',
       'Fichiers migrés',
@@ -56,7 +56,7 @@ export function XimiMappingTable({ expanded }: { expanded: boolean }) {
           esc(r.targetSiteName),
           esc(r.targetSiteUrl),
           esc(r.targetSiteId),
-          esc(r.dynamicGroupName),
+          esc(r.dynamicGroups),
           esc(PERMISSION_LABELS[r.permissionStatus]),
           esc(STATUS_LABELS[r.status]),
           esc(r.filesMigrated),
@@ -117,7 +117,7 @@ export function XimiMappingTable({ expanded }: { expanded: boolean }) {
                 <th className="px-3 py-2 text-left font-medium">Agence</th>
                 <th className="px-3 py-2 text-left font-medium">Site ONELA</th>
                 <th className="px-3 py-2 text-left font-medium">Site Ouihelp</th>
-                <th className="px-3 py-2 text-left font-medium">Groupe dynamique</th>
+                <th className="px-3 py-2 text-left font-medium">Groupes dynamiques</th>
                 <th className="px-3 py-2 text-right font-medium">Fichiers</th>
                 <th className="px-3 py-2 text-left font-medium">Statut</th>
               </tr>
@@ -155,7 +155,9 @@ export function XimiMappingTable({ expanded }: { expanded: boolean }) {
                     )}
                   </td>
                   <td className="max-w-[14rem] px-3 py-2">
-                    <div className="truncate text-gray-700">{r.dynamicGroupName ?? '—'}</div>
+                    <div className="truncate text-gray-700" title={r.dynamicGroups}>
+                      {r.dynamicGroups || '—'}
+                    </div>
                     <div
                       className={
                         r.permissionStatus === 'success'

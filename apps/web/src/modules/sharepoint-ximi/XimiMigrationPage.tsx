@@ -11,6 +11,7 @@ import {
   Square,
   BarChart3,
   Info,
+  Download,
 } from 'lucide-react'
 import type { CreateXimiMigrationRequest, XimiSourceSite } from '@dsi-app/shared'
 import {
@@ -49,7 +50,8 @@ export default function XimiMigrationPage() {
       (s) =>
         (s.displayName ?? s.name).toLowerCase().includes(q) ||
         (s.webUrl ?? '').toLowerCase().includes(q) ||
-        (s.agencyTrigramme ?? '').toLowerCase().includes(q),
+        (s.agencyTrigrammes.join(' ')).toLowerCase().includes(q) ||
+        (s.ximiCode ?? '').toLowerCase().includes(q),
     )
   }, [sites, search])
 
@@ -101,7 +103,45 @@ export default function XimiMigrationPage() {
     })
   }
 
-  const withoutAgency = filtered.filter((s) => !s.agencyTrigramme && !s.alreadyMigrated).length
+  const withoutAgency = filtered.filter(
+    (s) => s.agencyTrigrammes.length === 0 && !s.nonAgency && !s.alreadyMigrated,
+  ).length
+
+  /**
+   * Export de la liste des sites avec leur code Ximi et l'agence déjà connue.
+   * C'est le document de travail qui sert à compléter la table de
+   * correspondance : relire 97 lignes dans Excel est faisable, les retrouver
+   * une par une dans l'interface ne l'est pas.
+   */
+  const exportSites = () => {
+    const esc = (v: string | null) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const lines = [
+      ['Code Ximi', 'Site', 'URL', 'Trigramme(s)', 'Agence(s)', 'Statut'].join(';'),
+      ...sites.map((s) =>
+        [
+          esc(s.ximiCode),
+          esc(s.displayName ?? s.name),
+          esc(s.webUrl),
+          esc(s.agencyTrigrammes.join(' + ')),
+          esc(s.agencyNames.join(' + ')),
+          esc(
+            s.agencyTrigrammes.length > 0
+              ? s.agencyTrigrammes.length > 1
+                ? 'OK (site mutualisé)'
+                : 'OK'
+              : (s.unmatchedReason ?? 'A COMPLETER dans ximiSiteMapping.ts'),
+          ),
+        ].join(';'),
+      ),
+    ]
+    const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sites-ximi-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <div className="space-y-6">
@@ -168,6 +208,15 @@ export default function XimiMigrationPage() {
                 )}
                 Rafraîchir
               </button>
+              <button
+                onClick={exportSites}
+                disabled={sites.length === 0}
+                className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                title="Exporter la liste avec le code Ximi — sert à compléter la table de correspondance"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Exporter la liste
+              </button>
             </div>
 
             {fetchingSites && sites.length === 0 ? (
@@ -190,6 +239,7 @@ export default function XimiMigrationPage() {
                             )}
                           </button>
                         </th>
+                        <th className="px-3 py-2 text-left font-medium">Code</th>
                         <th className="px-3 py-2 text-left font-medium">Site</th>
                         <th className="px-3 py-2 text-left font-medium">URL</th>
                         <th className="px-3 py-2 text-left font-medium">Agence</th>
@@ -213,8 +263,9 @@ export default function XimiMigrationPage() {
                     sans objet » après coup. */}
                 {withoutAgency > 0 && (
                   <p className="mt-2 text-xs text-amber-700">
-                    {withoutAgency} site(s) sans agence reconnue — aucun groupe dynamique ne sera
-                    proposé automatiquement, il faudra l'appliquer depuis la carte.
+                    {withoutAgency} site(s) sans agence reconnue — leur code n'est pas encore dans
+                    la table de correspondance (<code>ximiSiteMapping.ts</code>). Aucun groupe
+                    dynamique ne leur sera appliqué. Exporte la liste pour compléter la table.
                   </p>
                 )}
 
@@ -343,6 +394,7 @@ function SiteRow({
           className="rounded border-gray-300 disabled:opacity-40"
         />
       </td>
+      <td className="px-3 py-2 font-mono text-gray-500">{site.ximiCode ?? '—'}</td>
       <td className="px-3 py-2">
         <span className={site.alreadyMigrated ? '' : 'text-gray-800'}>
           {site.displayName ?? site.name}
@@ -355,12 +407,26 @@ function SiteRow({
       </td>
       <td className="max-w-sm truncate px-3 py-2 text-gray-400">{site.webUrl}</td>
       <td className="px-3 py-2">
-        {site.agencyTrigramme ? (
-          <span className="rounded bg-blue-50 px-1.5 py-0.5 font-medium text-blue-700">
-            {site.agencyTrigramme}
+        {site.agencyTrigrammes.length > 0 ? (
+          <span className="flex flex-wrap gap-1">
+            {site.agencyTrigrammes.map((t, i) => (
+              <span
+                key={t}
+                className="rounded bg-blue-50 px-1.5 py-0.5 font-medium text-blue-700"
+                title={site.agencyNames[i]}
+              >
+                {t}
+              </span>
+            ))}
+          </span>
+        ) : site.nonAgency ? (
+          /* Distinguer « documenté comme sans agence » de « code absent de la
+             table » évite de faire chercher une agence qui n'existe pas. */
+          <span className="text-gray-400" title={site.unmatchedReason ?? undefined}>
+            {site.unmatchedReason ?? 'hors agence'}
           </span>
         ) : (
-          <span className="text-gray-300">—</span>
+          <span className="text-amber-600">à compléter</span>
         )}
       </td>
     </tr>

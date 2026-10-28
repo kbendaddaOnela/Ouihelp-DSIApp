@@ -26,8 +26,19 @@ export interface XimiSourceSite {
   webUrl: string | null
   /** Alias d'URL (dernier segment de /sites/<alias>) — sert de base au site cible */
   alias: string | null
-  /** Trigramme d'agence déduit de l'alias/nom (ex. « ARG »), null si indéterminé */
-  agencyTrigramme: string | null
+  /** Trigrammes des agences desservies — plusieurs pour un site mutualisé */
+  agencyTrigrammes: string[]
+  /** Noms des agences desservies (pour relire l'export sans décoder un trigramme) */
+  agencyNames: string[]
+  /**
+   * Raison documentée de l'absence d'agence (« Siège », « Antibes — hors
+   * référentiel »…), ou null si le code est simplement inconnu de la table.
+   */
+  unmatchedReason: string | null
+  /** Code Ximi extrait du nom du site (« Ximi-dijo » → « dijo »), null hors convention */
+  ximiCode: string | null
+  /** true = code documenté comme ne devant recevoir aucun groupe */
+  nonAgency: boolean
   /** true si une migration existe déjà pour ce site (évite les doublons) */
   alreadyMigrated: boolean
 }
@@ -67,12 +78,11 @@ export interface CreateXimiMigrationRequest {
    */
   targetSiteAlias?: string
   /**
-   * Groupe dynamique d'agence du tenant Ouihelp à qui donner accès au site
-   * (ex. « ONELA - SG-DYN-AG-ARG »). Vide = aucune attribution automatique.
+   * Groupes dynamiques du tenant Ouihelp à qui donner accès au site (ex.
+   * « ONELA - SG-DYN-AG-ARG »). Plusieurs pour un site mutualisé entre agences.
+   * Vide = déduction depuis la table de correspondance.
    */
-  dynamicGroupName?: string
-  /** Id objet du groupe si déjà résolu côté UI (évite une recherche par nom) */
-  dynamicGroupId?: string
+  dynamicGroupNames?: string[]
   /**
    * Site cible DÉJÀ existant : on ne crée rien, on résout cette URL.
    * Sert aux agences dont le site a été créé à la main.
@@ -103,8 +113,8 @@ export interface XimiMigrationRecord {
   siteStatus: XimiStepStatus
   siteError: string | null
   // ── Droits ────────────────────────────────────────────────────────────────
-  dynamicGroupName: string | null
-  dynamicGroupId: string | null
+  /** Groupes dynamiques à autoriser — plusieurs pour un site mutualisé */
+  dynamicGroups: Array<{ name: string; id: string | null }>
   permissionStatus: XimiStepStatus
   permissionError: string | null
   // ── Transfert ─────────────────────────────────────────────────────────────
@@ -149,7 +159,8 @@ export interface XimiMappingRow {
   targetSiteName: string | null
   targetSiteId: string | null
   targetSiteUrl: string | null
-  dynamicGroupName: string | null
+  /** Groupes dynamiques autorisés, joints par « + » pour l'export */
+  dynamicGroups: string
   permissionStatus: XimiStepStatus
   status: XimiMigrationStatus
   filesMigrated: number

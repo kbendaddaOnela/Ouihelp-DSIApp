@@ -10,6 +10,7 @@
 // (égalité sur une forme normalisée), jamais approximative.
 
 import { ONELA_AGENCIES } from '@dsi-app/shared'
+import { nonAgencyReason, trigrammesForXimiCode, ximiCodeOf } from './ximiSiteMapping'
 
 export interface AgencyMatch {
   name: string
@@ -45,12 +46,37 @@ for (const [name, info] of Object.entries(ONELA_AGENCIES)) {
  * correspondance partielle ferait matcher « Paris 15 » sur « Paris », donc un
  * groupe dynamique erroné.
  */
-export function agencyOf(siteTitle: string | null, alias: string | null): AgencyMatch | null {
+/**
+ * Agences desservies par un site, d'après la table explicite.
+ *
+ * Renvoie un TABLEAU : quatre sites sont mutualisés entre plusieurs agences
+ * (Loire, Paris, Seine-et-Marne, PACA) et doivent recevoir autant de groupes
+ * dynamiques. Tableau vide = aucune agence connue, donc aucun droit accordé.
+ */
+export function agenciesOf(siteTitle: string | null, alias: string | null): AgencyMatch[] {
+  const code = ximiCodeOf(siteTitle, alias)
+  const out: AgencyMatch[] = []
+  for (const tri of trigrammesForXimiCode(code)) {
+    const hit = BY_TRIGRAMME.get(normalize(tri))
+    if (hit) {
+      out.push(hit)
+      continue
+    }
+    // La table et ONELA_AGENCIES ont divergé : le signaler plutôt que de
+    // laisser un site perdre silencieusement un de ses groupes.
+    console.warn(
+      `[ximi] code « ${code} » → trigramme « ${tri} » introuvable dans ONELA_AGENCIES`,
+    )
+  }
+  if (out.length > 0) return out
+
+  // Repli pour les sites hors convention Ximi : nom d'agence exact, ou alias
+  // court égal au trigramme. Volontairement strict — aucune correspondance
+  // partielle, qui ferait matcher « Paris 15 » sur « Paris ».
   const candidates: string[] = []
   for (const raw of [siteTitle, alias]) {
     if (!raw) continue
     candidates.push(raw)
-    // « ONELA - Argenteuil », « AG-ARG », « Agence Argenteuil »…
     const stripped = raw.replace(/^\s*(onela|agence|ag)\s*[-_ ]+/i, '')
     if (stripped !== raw) candidates.push(stripped)
   }
@@ -58,21 +84,25 @@ export function agencyOf(siteTitle: string | null, alias: string | null): Agency
     const norm = normalize(cand)
     if (!norm) continue
     const byName = BY_NORMALIZED_NAME.get(norm)
-    if (byName) return byName
-    // Un alias court est très probablement le trigramme (ex. /sites/ARG).
+    if (byName) return [byName]
     if (norm.length <= 4) {
       const byTri = BY_TRIGRAMME.get(norm)
-      if (byTri) return byTri
+      if (byTri) return [byTri]
     }
   }
-  return null
+  return []
 }
 
-/**
- * Nom du groupe dynamique d'une agence sur le tenant Ouihelp.
- * Format imposé côté annuaire : « ONELA - SG-DYN-AG-<TRIGRAMME> ».
- * Surchargeable par env si la convention de nommage évolue.
- */
+/** Première agence desservie, ou null. Pratique pour un libellé d'affichage. */
+export function agencyOf(siteTitle: string | null, alias: string | null): AgencyMatch | null {
+  return agenciesOf(siteTitle, alias)[0] ?? null
+}
+
+/** Raison documentée de l'absence d'agence (siège, hors référentiel…), ou null. */
+export function unmatchedReason(siteTitle: string | null, alias: string | null): string | null {
+  return nonAgencyReason(ximiCodeOf(siteTitle, alias))
+}
+
 export function dynamicGroupNameFor(trigramme: string): string {
   const pattern = process.env['XIMI_DYNAMIC_GROUP_PATTERN'] ?? 'ONELA - SG-DYN-AG-{TRI}'
   return pattern.replace('{TRI}', trigramme.toUpperCase())

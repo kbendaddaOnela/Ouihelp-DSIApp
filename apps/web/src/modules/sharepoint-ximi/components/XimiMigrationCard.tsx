@@ -196,14 +196,22 @@ export function XimiMigrationCard({ migration: m }: { migration: XimiMigrationRe
         </span>
         <span
           className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium ${STEP_STYLES[m.permissionStatus]}`}
-          title={m.dynamicGroupName ?? 'Aucun groupe dynamique associé'}
+          title={
+            m.dynamicGroups.length > 0
+              ? m.dynamicGroups.map((g) => g.name).join('\n')
+              : 'Aucun groupe dynamique associé'
+          }
         >
           <Users className="h-3 w-3" />
           Droits : {STEP_LABELS[m.permissionStatus]}
         </span>
-        {m.dynamicGroupName && (
-          <span className="truncate text-gray-500">{m.dynamicGroupName}</span>
-        )}
+        {/* Un site mutualisé porte plusieurs groupes : les afficher tous, sinon
+            on croit à tort que l'accès n'a été donné qu'à une agence. */}
+        {m.dynamicGroups.map((g) => (
+          <span key={g.name} className="truncate text-gray-500">
+            {g.name}
+          </span>
+        ))}
         {m.hasDeltaToken && (
           <span
             className="rounded bg-indigo-50 px-2 py-0.5 font-medium text-indigo-700"

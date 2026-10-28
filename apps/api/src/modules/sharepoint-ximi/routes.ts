@@ -9,7 +9,8 @@ import { ximiMigrations, ximiMigratedItems } from './schema'
 import { SOURCE, listAllSites, searchTargetGroups } from './graphService'
 import { normalizeAlias } from './sharepointAdminService'
 import { signalStopXimi } from './worker'
-import { agencyOf, dynamicGroupNameFor } from './agencyMatch'
+import { agenciesOf, dynamicGroupNameFor, unmatchedReason } from './agencyMatch'
+import { ximiCodeOf } from './ximiSiteMapping'
 import type {
   XimiSourceSitesResponse,
   XimiTargetGroupsResponse,
@@ -25,6 +26,28 @@ import type {
 
 export const ximiMigrationRouter = new Hono<{ Variables: RbacVariables }>()
 ximiMigrationRouter.use('*', authMiddleware, loadUserRole)
+
+/**
+ * Groupes dynamiques d'une migration. Repli sur les colonnes mono-groupe pour
+ * les lignes créées avant le passage au multi-agences.
+ */
+function parseGroups(
+  m: typeof ximiMigrations.$inferSelect,
+): Array<{ name: string; id: string | null }> {
+  if (m.dynamicGroups) {
+    try {
+      const arr = JSON.parse(m.dynamicGroups)
+      if (Array.isArray(arr)) {
+        return arr
+          .filter((g) => g && typeof g.name === 'string' && g.name.trim())
+          .map((g) => ({ name: g.name.trim(), id: typeof g.id === 'string' ? g.id : null }))
+      }
+    } catch {
+      /* ligne illisible : on retombe sur le mono-groupe ci-dessous */
+    }
+  }
+  return m.dynamicGroupName ? [{ name: m.dynamicGroupName, id: m.dynamicGroupId }] : []
+}
 
 function toRecord(m: typeof ximiMigrations.$inferSelect): XimiMigrationRecord {
   return {
@@ -42,8 +65,7 @@ function toRecord(m: typeof ximiMigrations.$inferSelect): XimiMigrationRecord {
     targetDriveId: m.targetDriveId,
     siteStatus: m.siteStatus,
     siteError: m.siteError,
-    dynamicGroupName: m.dynamicGroupName,
-    dynamicGroupId: m.dynamicGroupId,
+    dynamicGroups: parseGroups(m),
     permissionStatus: m.permissionStatus,
     permissionError: m.permissionError,
     status: m.status,
@@ -97,13 +119,21 @@ ximiMigrationRouter.get('/source-sites', requirePermission('migration:read'), as
       sites: filtered.map((s) => {
         const label = s.displayName ?? s.name
         const alias = s.webUrl ? (s.webUrl.split('/sites/')[1]?.split('/')[0] ?? null) : null
+        const agencies = agenciesOf(label, alias)
+        const reason = unmatchedReason(label, alias)
         return {
           id: s.id,
           name: s.name,
           displayName: s.displayName,
           webUrl: s.webUrl,
           alias,
-          agencyTrigramme: agencyOf(label, alias)?.trigramme ?? null,
+          agencyTrigrammes: agencies.map((a) => a.trigramme),
+          agencyNames: agencies.map((a) => a.name),
+          unmatchedReason: agencies.length === 0 ? reason : null,
+          ximiCode: ximiCodeOf(label, alias),
+          // Un code documenté (siège, agence hors référentiel, doublon à
+          // confirmer) n'est pas « à compléter » : rien ne doit lui être appliqué.
+          nonAgency: agencies.length === 0 && !!reason,
           alreadyMigrated: migratedIds.has(s.id),
         }
       }),
@@ -149,12 +179,12 @@ async function insertMigration(
   const id = randomUUID()
   const sourceLabel = body.sourceSiteName
   const sourceAlias = body.sourceSiteUrl.split('/sites/')[1]?.split('/')[0] ?? null
-  const agency = agencyOf(sourceLabel, sourceAlias)
-  // Le groupe dynamique est déduit de l'agence quand l'opérateur n'en impose pas :
-  // c'est la règle métier (un site d'agence = le groupe dynamique de l'agence),
-  // et la saisir 40 fois à la main serait une source d'erreurs.
-  const groupName =
-    body.dynamicGroupName?.trim() || (agency ? dynamicGroupNameFor(agency.trigramme) : null)
+  // Les groupes viennent de la table de correspondance, sauf si l'opérateur les
+  // impose. Un site mutualisé en reçoit plusieurs (Loire, Paris, Seine-et-Marne,
+  // PACA) : les saisir à la main sur 70 sites serait une source d'erreurs.
+  const groupNames =
+    body.dynamicGroupNames?.map((n) => n.trim()).filter(Boolean) ??
+    agenciesOf(sourceLabel, sourceAlias).map((a) => dynamicGroupNameFor(a.trigramme))
   const preexisting = !!body.existingTargetSiteUrl?.trim()
 
   await db.insert(ximiMigrations).values({
@@ -167,10 +197,11 @@ async function insertMigration(
     targetSiteAlias: normalizeAlias(body.targetSiteAlias?.trim() || sourceAlias || sourceLabel),
     targetSiteUrl: preexisting ? body.existingTargetSiteUrl!.trim() : null,
     targetPreexisting: preexisting,
-    dynamicGroupName: groupName,
-    dynamicGroupId: body.dynamicGroupId?.trim() || null,
+    dynamicGroups: groupNames.length > 0
+      ? JSON.stringify(groupNames.map((name) => ({ name, id: null })))
+      : null,
     // Sans groupe à appliquer, l'étape est « sans objet », pas « en attente ».
-    permissionStatus: groupName ? 'pending' : 'skipped',
+    permissionStatus: groupNames.length > 0 ? 'pending' : 'skipped',
     analyzeOnly: body.analyzeOnly === true,
     initiatedBy,
   })
@@ -272,8 +303,8 @@ ximiMigrationRouter.post('/:id/unstick', requirePermission('migration:write'), a
 // reprendre seule, sans relancer une passe sur des dizaines de Go.
 ximiMigrationRouter.post('/:id/retry-permissions', requirePermission('migration:write'), async (c) => {
   const id = c.req.param('id')
-  const body: { dynamicGroupName?: string; dynamicGroupId?: string } = await c.req
-    .json<{ dynamicGroupName?: string; dynamicGroupId?: string }>()
+  const body: { dynamicGroupNames?: string[] } = await c.req
+    .json<{ dynamicGroupNames?: string[] }>()
     .catch(() => ({}))
   const [row] = await db.select().from(ximiMigrations).where(eq(ximiMigrations.id, id))
   if (!row) return c.json({ error: 'Migration introuvable' }, 404)
@@ -285,10 +316,14 @@ ximiMigrationRouter.post('/:id/retry-permissions', requirePermission('migration:
     .set({
       permissionStatus: 'pending',
       permissionError: null,
-      ...(body.dynamicGroupName ? { dynamicGroupName: body.dynamicGroupName.trim() } : {}),
-      // Un changement de nom de groupe doit invalider l'id résolu précédemment.
-      ...(body.dynamicGroupName || body.dynamicGroupId
-        ? { dynamicGroupId: body.dynamicGroupId?.trim() || null }
+      // Une liste fournie remplace l'ancienne, ids compris : un changement de
+      // nom doit invalider l'id résolu précédemment.
+      ...(body.dynamicGroupNames?.length
+        ? {
+            dynamicGroups: JSON.stringify(
+              body.dynamicGroupNames.map((n) => ({ name: n.trim(), id: null })),
+            ),
+          }
         : {}),
       status: 'pending',
     })
@@ -436,17 +471,17 @@ ximiMigrationRouter.get('/:id/changes', requirePermission('migration:read'), asy
 function buildMappingRows(rows: Array<typeof ximiMigrations.$inferSelect>): XimiMappingRow[] {
   return rows.map((m) => {
     const alias = m.sourceSiteUrl.split('/sites/')[1]?.split('/')[0] ?? null
-    const agency = agencyOf(m.sourceSiteName, alias)
+    const agencies = agenciesOf(m.sourceSiteName, alias)
     return {
       migrationId: m.id,
-      agency: agency?.name ?? m.label ?? m.sourceSiteName,
+      agency: agencies.length > 0 ? agencies.map((a) => a.name).join(' + ') : (m.label ?? m.sourceSiteName),
       sourceSiteName: m.sourceSiteName,
       sourceSiteId: m.sourceSiteId,
       sourceSiteUrl: m.sourceSiteUrl,
       targetSiteName: m.targetSiteName,
       targetSiteId: m.targetSiteId,
       targetSiteUrl: m.targetSiteUrl,
-      dynamicGroupName: m.dynamicGroupName,
+      dynamicGroups: parseGroups(m).map((g) => g.name).join(' + '),
       permissionStatus: m.permissionStatus,
       status: m.status,
       filesMigrated: m.migratedItems,
@@ -490,7 +525,7 @@ ximiMigrationRouter.get('/mapping/download', requirePermission('migration:read')
     'Site Ouihelp (nom)',
     'Site Ouihelp (URL)',
     'Site Ouihelp (ID)',
-    'Groupe dynamique',
+    'Groupes dynamiques',
     'Droits',
     'Statut migration',
     'Fichiers migrés',
@@ -507,7 +542,7 @@ ximiMigrationRouter.get('/mapping/download', requirePermission('migration:read')
         csvCell(r.targetSiteName),
         csvCell(r.targetSiteUrl),
         csvCell(r.targetSiteId),
-        csvCell(r.dynamicGroupName),
+        csvCell(r.dynamicGroups),
         csvCell(r.permissionStatus),
         csvCell(r.status),
         csvCell(r.filesMigrated),
