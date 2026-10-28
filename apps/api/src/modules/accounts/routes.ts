@@ -35,13 +35,19 @@ export const accountsRouter = new Hono<{ Variables: RbacVariables }>()
 
 accountsRouter.use('*', authMiddleware, loadUserRole)
 
-// ── Normalisation prenom/nom → partie locale (a-z, sans accents) ─────────────
+// ── Normalisation prenom/nom → partie locale (a-z + tiret, sans accents) ──────
+// Le tiret des prénoms/noms composés est CONSERVÉ pour que l'adresse GOH
+// (prenom.nom@mig.onela.com) et l'alias @onela.com soient identiques
+// (« Jean-Pierre » → « jean-pierre », pas « jeanpierre »).
 function normalizeNamePart(s: string): string {
   return s
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z]/g, '')
+    .replace(/[̀-ͯ]/g, '') // diacritiques
+    .replace(/[\s_]+/g, '-') // espaces → tiret (composés)
+    .replace(/[^a-z-]/g, '') // ne garde que lettres et tiret
+    .replace(/-+/g, '-') // tirets multiples → un seul
+    .replace(/^-|-$/g, '') // pas de tiret en début/fin
 }
 
 /** Parse la colonne JSON `delegate_mailboxes` (tableau d'adresses) de façon tolérante. */
@@ -666,7 +672,11 @@ async function finalizeGoogleBackground(id: string) {
   console.log(`[accounts] ${id} finalisation Google terminée (${gohUpn})`)
 }
 
-// ── Relancer la finalisation Google manuellement (si le SCIM a traîné) ────────
+// ── Terminer / relancer la finalisation Google ───────────────────────────────
+// Reprend la finalisation (SCIM → OU → licence → alias → send-as → contacts →
+// délégations). Peut recevoir une licence et/ou des boîtes à déléguer à appliquer
+// MAINTENANT — utile pour terminer les comptes créés AVANT l'ajout de la licence
+// et des délégations (ces 2 étapes sont alors forcées à `pending` pour re-tourner).
 accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'), async (c) => {
   const db = getDb()
   const id = c.req.param('id')
@@ -675,6 +685,41 @@ accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'),
   if (row.stepCreateGoh !== 'success') {
     return c.json({ error: 'Le compte GOH n\'est pas encore créé' }, 400)
   }
+
+  const body = await c.req
+    .json<{ licenseProductId?: string; licenseSkuId?: string; delegateMailboxes?: string[] }>()
+    .catch(() => ({}) as { licenseProductId?: string; licenseSkuId?: string; delegateMailboxes?: string[] })
+
+  // Licence passée explicitement → on l'enregistre et on force l'étape à re-tourner
+  const newSkuId = body.licenseSkuId?.trim()
+  const licenseUpdate = newSkuId
+    ? {
+        licenseProductId: body.licenseProductId?.trim() || 'Google-Apps',
+        licenseSkuId: newSkuId,
+        licenseSkuName: skuDisplayName(newSkuId),
+        stepLicense: 'pending' as const,
+      }
+    : {}
+
+  // Boîtes à déléguer passées explicitement → on remplace la liste et on force l'étape
+  const hasDelegates = Array.isArray(body.delegateMailboxes)
+  const normalizedDelegates = hasDelegates
+    ? Array.from(
+        new Set(
+          body.delegateMailboxes!
+            .filter((m): m is string => typeof m === 'string')
+            .map((m) => m.trim().toLowerCase())
+            .filter((m) => m !== ''),
+        ),
+      )
+    : []
+  const delegatesUpdate = hasDelegates
+    ? {
+        delegateMailboxes: normalizedDelegates.length > 0 ? JSON.stringify(normalizedDelegates) : null,
+        stepDelegations: 'pending' as const,
+      }
+    : {}
+
   // Reset des étapes en error OU figées en running (tâche tuée par un recyclage) → pending
   const unstick = (s: string) => s === 'running' || s === 'error'
   await db.update(accountCreations).set({
@@ -685,6 +730,8 @@ accountsRouter.post('/:id/finalize-google', requirePermission('accounts:write'),
     ...(unstick(row.stepSendAs) ? { stepSendAs: 'pending' as const } : {}),
     ...(unstick(row.stepContactsOnela) ? { stepContactsOnela: 'pending' as const } : {}),
     ...(unstick(row.stepDelegations) ? { stepDelegations: 'pending' as const } : {}),
+    ...licenseUpdate,
+    ...delegatesUpdate,
     errorDetails: null,
     delegationsError: null,
     licenseError: null,
