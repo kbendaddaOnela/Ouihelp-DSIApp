@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.19'
+$AgentVersion = '1.2.20'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -125,8 +125,10 @@ function Install-Agent {
   # seul le sondage de bascule (Invoke-MigrationPoll) agit à chaque réveil → bascule réactive.
   $every30 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2)
   $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
+  # 60 min : à 15, Windows tuait l'agent au milieu de la bascule (désinstallations longues),
+  # et le passage suivant la recommençait sur un poste déjà sorti d'ONELA.
   $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 60)
   Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Action $action -Trigger @($atStartup, $every30) `
     -Principal $principal -Settings $settings -Description 'Agent DSI ONELA - inventaire avant migration Ouihelp (lecture seule)' -Force | Out-Null
 
@@ -2221,8 +2223,8 @@ function Start-InplaceSwitch($Order) {
     Send-Progress 'bascule' 'error' 'Préparation absente du poste : bascule à reprogrammer' @{ fatal = $true }
     return
   }
-  # Client SCCM ONELA : dans un passage à part (jusqu'à 10 min, la tâche est limitée à 15),
-  # une seule fois, sans compter parmi les tentatives de bascule. Non bloquant mais signalé.
+  # Client SCCM ONELA : dans un passage à part (jusqu'à 10 min), une seule fois, sans compter
+  # parmi les tentatives de bascule. Non bloquant mais signalé.
   Show-ProgressWindow
   if (-not $state.sccmDone -and (Get-Service -Name 'CcmExec' -ErrorAction SilentlyContinue)) {
     Write-UiProgress 'onela' $Order
@@ -2234,25 +2236,16 @@ function Start-InplaceSwitch($Order) {
     Save-Inplace $state
     return
   }
-  if (-not (Test-PhaseAttempt $state $SwitchAttempts)) {
-    Clear-MigrationNotice
-    $dsreg = Safe 'dsreg' { Get-DsregStatus }
-    $ou = if ($dsreg -and $dsreg.azureAdJoined) { 'poste encore dans ONELA' } else { 'poste sorti d''ONELA et pas encore joint à Ouihelp' }
-    Send-Progress 'bascule' 'error' "Bascule abandonnée après $SwitchAttempts tentatives ($ou) : $($state.lastError) - à reprendre sur place (compte de secours)" @{ fatal = $true }
-    Remove-InplacePayload
-    return
-  }
-  Send-Progress 'bascule' 'info' 'Bascule en place lancée : sortie d''ONELA puis PPKG Ouihelp' @{ resetTriggered = $true }
-  Set-MigrationNotice 'Bascule vers Ouihelp en cours' `
-    "Ce poste rejoint le tenant Ouihelp. Il redémarre deux fois tout seul : merci de ne pas l'éteindre. Ensuite, connectez-vous avec votre adresse et votre mot de passe Ouihelp."
-  $uiStep = 'prep'
-  try {
-    New-BreakglassAccount $Order.breakglassUser $Order.breakglassPassword
-    Write-Log "Compte local de secours $($Order.breakglassUser) prêt"
-
-    $remove = @($Order.removeApps)
-    if ($remove.Count -gt 0) {
-      $uiStep = 'apps'; Write-UiProgress $uiStep $Order
+  # Applications : passage à part elles aussi (jusqu'à 10 min par application), hors tentatives.
+  # Un passage interrompu (agent arrêté par Windows) n'est pas rejoué : on continue sans elles.
+  $remove = @($Order.removeApps)
+  if ($remove.Count -gt 0 -and -not $state.appsDone) {
+    if ($state.appsStarted) {
+      Send-Progress 'applications' 'error' 'Désinstallation des applications interrompue : suite de la bascule sans elles'
+    } else {
+      $state | Add-Member -NotePropertyName appsStarted -NotePropertyValue $true -Force
+      Save-Inplace $state
+      Write-UiProgress 'apps' $Order
       $done = 0
       $failed = @()
       foreach ($name in $remove) {
@@ -2262,6 +2255,39 @@ function Start-InplaceSwitch($Order) {
       if ($failed.Count -eq 0) { Send-Progress 'applications' 'ok' "$done application(s) désinstallée(s)" }
       else { Send-Progress 'applications' 'error' "$done désinstallée(s) ; échec sur : $($failed -join ' ; ')" }
     }
+    $state | Add-Member -NotePropertyName appsDone -NotePropertyValue $true -Force
+    Save-Inplace $state
+    return
+  }
+  # Passage précédent interrompu après le PPKG : le poste peut déjà être joint à Ouihelp
+  # (le PPKG joint parfois aussitôt). On ne recommence rien : transfert des profils.
+  $dsreg = Safe 'dsreg' { Get-DsregStatus }
+  $inOuihelp = $dsreg -and $dsreg.azureAdJoined -and $state.ouihelpTenantId -and $dsreg.tenantId -eq $state.ouihelpTenantId
+  if ($inOuihelp -or $state.ppkgInstalled) {
+    if ($inOuihelp) { Send-Progress 'ppkg' 'ok' 'Poste déjà joint à Ouihelp : passage au transfert des profils' }
+    Complete-InplaceSwitch $state $Order
+    return
+  }
+  if (-not (Test-PhaseAttempt $state $SwitchAttempts)) {
+    Clear-MigrationNotice
+    $inOnela = $dsreg -and $dsreg.azureAdJoined
+    $inDomain = [bool](Get-CimInstance Win32_ComputerSystem).PartOfDomain
+    if ($inOnela -or $inDomain) {
+      Send-Progress 'bascule' 'error' "Bascule abandonnée après $SwitchAttempts tentatives (poste encore dans ONELA) : $($state.lastError) - à reprendre sur place (compte de secours)" @{ fatal = $true }
+      Remove-InplacePayload
+    } else {
+      # Sorti d'ONELA sans jonction Ouihelp : le PPKG reste sur le poste pour la reprise.
+      Send-Progress 'bascule' 'error' "Bascule abandonnée après $SwitchAttempts tentatives (poste sorti d'ONELA, pas encore joint à Ouihelp) : $($state.lastError) - PPKG laissé dans $MigDir, à installer sur place (compte de secours)" @{ fatal = $true }
+    }
+    return
+  }
+  Send-Progress 'bascule' 'info' 'Bascule en place lancée : sortie d''ONELA puis PPKG Ouihelp' @{ resetTriggered = $true }
+  Set-MigrationNotice 'Bascule vers Ouihelp en cours' `
+    "Ce poste rejoint le tenant Ouihelp. Il redémarre deux fois tout seul : merci de ne pas l'éteindre. Ensuite, connectez-vous avec votre adresse et votre mot de passe Ouihelp."
+  $uiStep = 'prep'
+  try {
+    New-BreakglassAccount $Order.breakglassUser $Order.breakglassPassword
+    Write-Log "Compte local de secours $($Order.breakglassUser) prêt"
 
     $uiStep = 'onela'; Write-UiProgress $uiStep $Order
     Remove-MdmEnrollment
@@ -2279,6 +2305,8 @@ function Start-InplaceSwitch($Order) {
 
     $uiStep = 'ouihelp'; Write-UiProgress $uiStep $Order
     $ppkgInfo = Install-OuihelpPackage $InplacePpkg
+    $state | Add-Member -NotePropertyName ppkgInstalled -NotePropertyValue $true -Force
+    Save-Inplace $state
     Send-Progress 'ppkg' 'ok' "PPKG Ouihelp installé ($ppkgInfo) : jonction au prochain démarrage"
   } catch {
     Write-Log "Bascule en place : $($_.Exception.Message)"
@@ -2288,9 +2316,13 @@ function Start-InplaceSwitch($Order) {
     Write-UiProgress $uiStep $Order 'Une étape doit être relancée : la mise à jour reprend dans quelques minutes.'
     return
   }
-  $state.phase = 'profiles'
-  $state.attempts = 0
-  Save-Inplace $state
+  Complete-InplaceSwitch $state $Order
+}
+
+function Complete-InplaceSwitch($State, $Order) {
+  $State.phase = 'profiles'
+  $State.attempts = 0
+  Save-Inplace $State
   Send-Progress 'redemarrage' 'info' 'Redémarrage pour le transfert des profils'
   Write-UiProgress 'reboot' $Order '' (Get-Date).AddSeconds(30)
   Restart-AfterDelay 30
@@ -2475,6 +2507,20 @@ function Restore-InplaceFromOrder($Order) {
     return $null
   }
   $phase = if ($joinedOuihelp) { 'join' } else { 'profiles' }
+  if ($joinedOuihelp) {
+    # Jonction faite mais profils pas transférés (bascule interrompue avant) : transfert possible
+    # seulement si l'utilisateur n'a pas encore ouvert de session Ouihelp. Sinon son nouveau
+    # profil serait écrasé : on le signale, les données sont à recopier à la main.
+    $sids = @(Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | ForEach-Object { $_.SID })
+    $pending = @(@($Order.profileMap) | Where-Object {
+        $_.oldSid -and $_.newSid -and $_.oldSid -ne $_.newSid -and $sids -contains $_.oldSid
+      })
+    $opened = @($pending | Where-Object { $sids -contains $_.newSid })
+    if ($pending.Count -gt 0 -and $opened.Count -eq 0) { $phase = 'profiles' }
+    elseif ($opened.Count -gt 0) {
+      Send-Progress 'reprise' 'error' "Profil ONELA non transféré ($(($opened | ForEach-Object { $_.oldUpn }) -join ', ')) : l'utilisateur a déjà ouvert une session Ouihelp, données à recopier à la main"
+    }
+  }
   $state = [ordered]@{
     phase           = $phase
     attempts        = 0
