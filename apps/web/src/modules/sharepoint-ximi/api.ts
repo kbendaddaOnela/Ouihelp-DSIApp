@@ -48,12 +48,19 @@ export const ximiApi = {
   unstick: (id: string) =>
     apiClient.post<{ ok: boolean }>(`/sharepoint-ximi/${id}/unstick`).then((r) => r.data),
 
-  retryPermissions: (id: string, dynamicGroupName?: string) =>
+  // Le nom du champ est au PLURIEL : l'API attend une liste, un site mutualisé
+  // portant plusieurs groupes. Au singulier, la liste fournie était ignorée.
+  retryPermissions: (id: string, dynamicGroupNames?: string[]) =>
     apiClient
       .post<XimiMigrationRecord>(
         `/sharepoint-ximi/${id}/retry-permissions`,
-        dynamicGroupName ? { dynamicGroupName } : {},
+        dynamicGroupNames?.length ? { dynamicGroupNames } : {},
       )
+      .then((r) => r.data),
+
+  retryFolderPermissions: (id: string) =>
+    apiClient
+      .post<XimiMigrationRecord>(`/sharepoint-ximi/${id}/retry-folder-permissions`)
       .then((r) => r.data),
 
   rename: (id: string, label: string) =>

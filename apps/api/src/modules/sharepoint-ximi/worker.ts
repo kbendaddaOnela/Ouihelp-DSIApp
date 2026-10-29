@@ -51,6 +51,8 @@ import {
   targetSiteUrlFor,
 } from './sharepointAdminService'
 import { findGroupByExactName } from './graphService'
+import { applyFolderPlan } from './folderPermissions'
+import { ximiCodeOf } from './ximiSiteMapping'
 import { withMem, MEM_BUDGET_BYTES } from '../../lib/memoryBudget'
 import { startPollingLoop, startHeartbeat as startJobHeartbeat, isOrphaned } from '../../lib/workerRuntime'
 
@@ -166,6 +168,7 @@ async function processMigration(job: XimiMigration) {
     // 2) Site cible + 3) droits
     const target = await ensureTargetSite(job)
     await ensurePermissions(job)
+    await ensureFolderPermissions(job, sourceDriveId, target)
 
     // 4) Passe de transfert
     const stopped = await runTransferPass(job, sourceDriveId, target)
@@ -363,6 +366,70 @@ async function ensurePermissions(job: XimiMigration): Promise<void> {
           : `${failures.length}/${groups.length} groupe(s) en échec — ${failures.join(' | ')}`.slice(0, 2000),
     })
     .where(eq(ximiMigrations.id, job.id))
+}
+
+/**
+ * Pose le plan de droits sur les dossiers « Clients » et « Intervenants ».
+ *
+ * Appelée AVANT la passe de transfert : les deux dossiers n'ont pas les mêmes
+ * destinataires, et poser les droits après aurait laissé une fenêtre pendant
+ * laquelle des documents nominatifs sont déposés dans un dossier encore visible
+ * par tous les membres du site.
+ *
+ * Non bloquante, comme l'attribution au niveau du site. Un échec ici ne laisse
+ * rien d'exposé : il PRIVE d'accès les groupes transverses (RH, marketing,
+ * finance, direction régionale) pendant que l'agence, membre du site, garde le
+ * sien. C'est un manque de droits, pas une fuite — donc pas de quoi arrêter un
+ * transfert de plusieurs dizaines de Go. Le statut reste visible sur la carte et
+ * l'opération est rejouable seule.
+ */
+async function ensureFolderPermissions(
+  job: XimiMigration,
+  sourceDriveId: string,
+  target: TargetContext,
+): Promise<void> {
+  const [fresh] = await db
+    .select()
+    .from(ximiMigrations)
+    .where(eq(ximiMigrations.id, job.id))
+    .limit(1)
+  if (!fresh?.targetSiteUrl) return
+  if (fresh.folderPermissionStatus === 'success') return
+
+  await db
+    .update(ximiMigrations)
+    .set({ folderPermissionStatus: 'running', folderPermissionError: null })
+    .where(eq(ximiMigrations.id, job.id))
+
+  try {
+    const alias = fresh.sourceSiteUrl.split('/sites/')[1]?.split('/')[0] ?? null
+    const outcome = await applyFolderPlan({
+      code: ximiCodeOf(fresh.sourceSiteName, alias),
+      sourceDriveId,
+      targetDriveId: target.driveId,
+      targetRootItemId: target.rootItemId,
+      targetSiteUrl: fresh.targetSiteUrl,
+    })
+    await db
+      .update(ximiMigrations)
+      .set({
+        folderPermissions: JSON.stringify(outcome.reports),
+        folderPermissionStatus: outcome.status,
+        folderPermissionError: outcome.error,
+      })
+      .where(eq(ximiMigrations.id, job.id))
+    const done = outcome.reports.filter((r) => r.status === 'success').length
+    console.log(
+      `[ximi] ${job.id}: droits dossiers → ${outcome.status} (${done}/${outcome.reports.length})`,
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    await db
+      .update(ximiMigrations)
+      .set({ folderPermissionStatus: 'error', folderPermissionError: msg.slice(0, 2000) })
+      .where(eq(ximiMigrations.id, job.id))
+    console.warn(`[ximi] ${job.id}: droits dossiers échoués (non bloquant):`, msg)
+  }
 }
 
 /**

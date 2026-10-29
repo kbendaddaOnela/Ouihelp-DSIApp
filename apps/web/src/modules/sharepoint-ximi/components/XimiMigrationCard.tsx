@@ -20,6 +20,7 @@ import {
   X,
   Trash,
   MoveRight,
+  FolderLock,
 } from 'lucide-react'
 import type { XimiMigrationRecord, XimiStepStatus } from '@dsi-app/shared'
 import {
@@ -27,6 +28,7 @@ import {
   usePauseXimiMigration,
   useUnstickXimiMigration,
   useRetryXimiPermissions,
+  useRetryXimiFolderPermissions,
   useRenameXimiMigration,
   useArchiveXimiMigration,
   useUnarchiveXimiMigration,
@@ -75,6 +77,7 @@ export function XimiMigrationCard({ migration: m }: { migration: XimiMigrationRe
   const pause = usePauseXimiMigration()
   const unstick = useUnstickXimiMigration()
   const retryPerms = useRetryXimiPermissions()
+  const retryFolderPerms = useRetryXimiFolderPermissions()
   const rename = useRenameXimiMigration()
   const archive = useArchiveXimiMigration()
   const unarchive = useUnarchiveXimiMigration()
@@ -212,6 +215,27 @@ export function XimiMigrationCard({ migration: m }: { migration: XimiMigrationRe
             {g.name}
           </span>
         ))}
+        {/* Les deux dossiers régis par le plan n'ont pas les mêmes destinataires :
+            les RH voient les intervenants, le marketing et la finance les clients.
+            Le détail par dossier est en infobulle — c'est ce qu'un contrôle de
+            confidentialité demande à voir. */}
+        <span
+          className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium ${STEP_STYLES[m.folderPermissionStatus]}`}
+          title={
+            m.folderPermissions.length > 0
+              ? m.folderPermissions
+                  .map(
+                    (f) =>
+                      `${f.folderName ?? f.type} : ${f.applied.join(', ') || 'aucun droit posé'}` +
+                      (f.failures.length > 0 ? `\n  en échec : ${f.failures.join('\n  ')}` : ''),
+                  )
+                  .join('\n')
+              : 'Plan de droits non encore appliqué'
+          }
+        >
+          <FolderLock className="h-3 w-3" />
+          Dossiers : {STEP_LABELS[m.folderPermissionStatus]}
+        </span>
         {m.hasDeltaToken && (
           <span
             className="rounded bg-indigo-50 px-2 py-0.5 font-medium text-indigo-700"
@@ -222,7 +246,7 @@ export function XimiMigrationCard({ migration: m }: { migration: XimiMigrationRe
         )}
       </div>
 
-      {(m.siteError || m.permissionError) && (
+      {(m.siteError || m.permissionError || m.folderPermissionError) && (
         <div className="mt-2 space-y-1">
           {m.siteError && (
             <p className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -233,6 +257,12 @@ export function XimiMigrationCard({ migration: m }: { migration: XimiMigrationRe
             <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
               <ShieldAlert className="mr-1 inline h-3.5 w-3.5" />
               Droits : {m.permissionError}
+            </p>
+          )}
+          {m.folderPermissionError && (
+            <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <FolderLock className="mr-1 inline h-3.5 w-3.5" />
+              Droits des dossiers : {m.folderPermissionError}
             </p>
           )}
         </div>
@@ -367,6 +397,16 @@ export function XimiMigrationCard({ migration: m }: { migration: XimiMigrationRe
           >
             <Users className="h-3.5 w-3.5" />
             Réappliquer les droits
+          </button>
+        )}
+        {m.folderPermissionStatus === 'error' && !isActive && (
+          <button
+            onClick={() => retryFolderPerms.mutate(m.id)}
+            disabled={retryFolderPerms.isPending}
+            className="inline-flex items-center gap-1.5 rounded border border-amber-200 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+          >
+            <FolderLock className="h-3.5 w-3.5" />
+            Réappliquer les droits des dossiers
           </button>
         )}
         {!m.analyzeOnly && m.startedAt && (

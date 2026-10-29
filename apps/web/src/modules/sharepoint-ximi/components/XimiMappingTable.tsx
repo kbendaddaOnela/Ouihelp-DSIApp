@@ -41,6 +41,8 @@ export function XimiMappingTable({ expanded }: { expanded: boolean }) {
       'Site Ouihelp (ID)',
       'Groupes dynamiques',
       'Droits',
+      'Droits des dossiers',
+      'Détail des dossiers',
       'Statut migration',
       'Fichiers migrés',
       'Dernière synchro',
@@ -58,6 +60,8 @@ export function XimiMappingTable({ expanded }: { expanded: boolean }) {
           esc(r.targetSiteId),
           esc(r.dynamicGroups),
           esc(PERMISSION_LABELS[r.permissionStatus]),
+          esc(PERMISSION_LABELS[r.folderPermissionStatus]),
+          esc(r.folderPermissions),
           esc(STATUS_LABELS[r.status]),
           esc(r.filesMigrated),
           esc(r.lastSyncAt ? new Date(r.lastSyncAt).toLocaleString('fr-FR') : ''),
@@ -168,6 +172,18 @@ export function XimiMappingTable({ expanded }: { expanded: boolean }) {
                       }
                     >
                       droits : {PERMISSION_LABELS[r.permissionStatus]}
+                    </div>
+                    <div
+                      className={
+                        r.folderPermissionStatus === 'success'
+                          ? 'text-green-600'
+                          : r.folderPermissionStatus === 'error'
+                            ? 'text-red-600'
+                            : 'text-gray-400'
+                      }
+                      title={r.folderPermissions}
+                    >
+                      dossiers : {PERMISSION_LABELS[r.folderPermissionStatus]}
                     </div>
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-gray-700">

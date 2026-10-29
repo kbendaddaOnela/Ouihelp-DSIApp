@@ -66,6 +66,20 @@ export const ximiMigrations = mysqlTable('ximi_migrations', {
   permissionStatus: mysqlEnum('permission_status', stepStatus).default('pending').notNull(),
   permissionError: text('permission_error'),
 
+  // ── Droits par DOSSIER (plan Clients / Intervenants) ───────────────────────
+  /**
+   * Compte rendu de l'application du plan de droits, en JSON :
+   * [{ type, folderName, status, applied[], failures[] }].
+   *
+   * Un site n'a que deux dossiers régis : une colonne JSON suffit, et évite une
+   * table de plus à joindre pour afficher une carte.
+   */
+  folderPermissions: text('folder_permissions'),
+  folderPermissionStatus: mysqlEnum('folder_permission_status', stepStatus)
+    .default('pending')
+    .notNull(),
+  folderPermissionError: text('folder_permission_error'),
+
   // ── Transfert ──────────────────────────────────────────────────────────────
   status: mysqlEnum('status', migrationStatus).default('pending').notNull(),
   analyzeOnly: boolean('analyze_only').default(false).notNull(),

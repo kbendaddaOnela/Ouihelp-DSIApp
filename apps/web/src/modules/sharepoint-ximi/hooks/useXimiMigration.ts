@@ -99,9 +99,13 @@ export function useUnstickXimiMigration() {
 }
 
 export function useRetryXimiPermissions() {
-  return useXimiMutation(({ id, groupName }: { id: string; groupName?: string }) =>
-    ximiApi.retryPermissions(id, groupName),
+  return useXimiMutation(({ id, groupNames }: { id: string; groupNames?: string[] }) =>
+    ximiApi.retryPermissions(id, groupNames),
   )
+}
+
+export function useRetryXimiFolderPermissions() {
+  return useXimiMutation((id: string) => ximiApi.retryFolderPermissions(id))
 }
 
 export function useRenameXimiMigration() {

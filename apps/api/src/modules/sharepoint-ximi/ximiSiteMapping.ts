@@ -1,8 +1,13 @@
 // Correspondance EXPLICITE entre le code d'un site Ximi et la ou les agences
 // ONELA qu'il dessert.
 //
-// SOURCE : classeur « Mappage Sites Ximi ONELA.xlsx » fourni par la DSI le
-// 28/10/2026, recoupé avec le référentiel `ONELA_AGENCIES`.
+// SOURCES : classeur « Mappage Sites Ximi ONELA.xlsx » (DSI, 28/10/2026), puis
+// l'export des droits « Permissionsgroupsandusers » (DSI, 29/10/2026) qui porte
+// les groupes `SG-DYN-ONELA-AG-*` réellement positionnés site par site. Le
+// second corrige le premier sur deux sites : `roue` dessert QUATRE agences
+// (Dieppe, Elbeuf, Rouen, Yvetot) et non Rouen seule, et `nime` en dessert deux
+// (Nîmes + Montpellier). Avec l'ancienne table, Dieppe, Elbeuf et Yvetot
+// n'auraient eu accès à aucun site.
 //
 // POURQUOI UNE TABLE ET PAS UNE RÈGLE
 //
@@ -65,13 +70,13 @@ export const XIMI_CODE_TO_TRIGRAMMES: Record<string, string[]> = {
   mtpl: ['MON'], // Montpellier
   nant: ['NAN'], // Nantes
   neui: ['NEU'], // Neuilly-sur-Seine
-  nime: ['NIM'], // Nîmes
+  nime: ['NIM', 'MON'], // Nîmes + Montpellier (cf. export des droits)
   nois: ['NOI'], // Noisy-le-Sec
   orle: ['ORL'], // Orléans
   pa16: ['PA16'], // Paris 16
   reim: ['REI'], // Reims
   renn: ['REN'], // Rennes
-  roue: ['ROU'], // Rouen
+  // roue est multi-agences, cf. bloc ci-dessous
   sger: ['SAI'], // Saint-Germain-en-Laye
   stna: ['SAN'], // Saint-Nazaire
   stra: ['STR'], // Strasbourg
@@ -85,10 +90,13 @@ export const XIMI_CODE_TO_TRIGRAMMES: Record<string, string[]> = {
   vlfr: ['VIF'], // Villefranche-sur-Saône
 
   // ── Multi-agences : le site reçoit TOUS ces groupes ──────────────────────
+  boul: ['BOU'], // Boulogne-Billancourt — trigramme confirmé par l'export des droits
   dlys: ['DAM', 'CSM'], // Seine-et-Marne : Melun + Champs-sur-Marne
   loir: ['MBR', 'STS', 'SCH'], // Loire : Montbrison + Saint-Etienne + Saint-Chamond
   paca: ['NIC', 'MENT'], // PACA : Nice + Menton
   pari: ['PAR', 'PA13'], // Paris : Paris 11 + Paris 13
+  roue: ['DIE', 'ELB', 'ROU', 'YVE'], // Rouen : Dieppe + Elbeuf + Rouen + Yvetot
+  mar2: ['MAR'], // ancien site Marseille — même agence que « mars »
 }
 
 /**
@@ -101,7 +109,6 @@ export const XIMI_NON_AGENCY_CODES = new Map<string, string>([
   ['dfpr', 'Domifacile Pro'],
   ['hq-balm', 'Siège (entité BALM)'],
   ['hq-hori', 'Siège (entité Horizon)'],
-  ['mar2', 'Ancienne agence Marseille'],
   ['onse', 'ONELA Services'],
   ['sieg', 'Application Siège BALM'],
   ['sien', 'Application Support NHS'],
@@ -112,28 +119,40 @@ export const XIMI_NON_AGENCY_CODES = new Map<string, string>([
  * `ONELA_AGENCIES`. Elles n'ont donc pas de trigramme connu, et aucun groupe
  * dynamique ne peut en être déduit.
  *
- * Deux issues possibles, à trancher avec la DSI : les ajouter au référentiel
- * (il faut leur trigramme, qui conditionne le nom du groupe), ou saisir le
- * groupe à la main sur la carte. Tant que ce n'est pas tranché, le site est
- * migrable mais ne reçoit aucun droit — c'est le défaut sûr.
+ * L'export des droits du 29/10/2026 confirme qu'aucun groupe `AG-*` n'est
+ * positionné sur leurs sites côté ONELA : ces agences n'ont pas (encore) de
+ * groupe dynamique. Il n'y a donc rien à reproduire, et rien à deviner. Le site
+ * est migrable, reçoit les droits transverses du plan (RH, Marketing, Finance…)
+ * mais aucun groupe d'agence — ce qui est l'état de la source.
+ *
+ * Boulogne-Billancourt, elle, EST sortie de cette liste : l'export porte bien
+ * `SG-DYN-ONELA-AG-BOU`. Son trigramme reste absent de `ONELA_AGENCIES` (données
+ * de seed), sans conséquence : les groupes du site sont désormais dérivés du
+ * plan, pas du référentiel.
  */
 export const XIMI_AGENCY_OUTSIDE_REFERENTIAL = new Map<string, string>([
-  ['anti', 'Antibes'],
-  ['boul', 'Boulogne-Billancourt'],
-  ['monb', 'Montauban'],
-  ['stbr', 'Saint-Brieuc'],
+  ['anti', 'Antibes — aucun groupe d\'agence dans l\'export des droits'],
+  ['monb', 'Montauban — aucun groupe d\'agence dans l\'export des droits'],
+  ['stbr', 'Saint-Brieuc — aucun groupe d\'agence dans l\'export des droits'],
 ])
 
 /**
  * Codes volontairement NON mappés, en attente d'une confirmation.
  *
  * `lill` : le classeur indique « Lille » en agence mais « je ne sais pas » en
- * commentaire, et un second site (`lile`) porte déjà Lille. Tant que la DSI n'a
- * pas dit lequel sert quoi, on n'accorde rien : donner le groupe de Lille au
- * mauvais site exposerait les données d'une agence à une autre.
+ * commentaire, et un second site (`lile`) porte déjà Lille. L'export des droits
+ * tranche dans le sens de la prudence : `lile` porte `SG-DYN-ONELA-AG-LIL`,
+ * `lill` n'a aucun groupe d'agence. On reproduit la source — donner le groupe de
+ * Lille aux deux sites exposerait les données d'une agence à une autre.
+ *
+ * `dem1`, `dem2`, `tour` : présents dans l'export, sans groupe d'agence non
+ * plus ; vus de la DSI ce sont des sites de démonstration / une agence fermée.
  */
 export const XIMI_PENDING_CONFIRMATION = new Map<string, string>([
-  ['lill', 'Lille ? — doublon avec « lile », à confirmer (classeur : « je ne sais pas »)'],
+  ['lill', 'Doublon de « lile » — aucun groupe d\'agence dans l\'export des droits'],
+  ['dem1', 'Site de démonstration'],
+  ['dem2', 'Site de démonstration'],
+  ['tour', 'Tours — aucun groupe d\'agence dans l\'export des droits'],
 ])
 
 /**

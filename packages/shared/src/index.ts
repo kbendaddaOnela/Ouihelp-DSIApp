@@ -91,6 +91,7 @@ export type {
   XimiTargetGroupsResponse,
   CreateXimiMigrationRequest,
   XimiMigrationRecord,
+  XimiFolderPermission,
   XimiMigrationHistoryResponse,
   XimiMappingRow,
   XimiMappingResponse,

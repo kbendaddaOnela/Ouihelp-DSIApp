@@ -499,10 +499,13 @@ export async function findChildByName(
 }
 
 /** Id du dossier racine de la bibliothèque cible. */
-export async function getRootItemId(driveId: string): Promise<string> {
+export async function getRootItemId(
+  driveId: string,
+  token: TokenProvider = TARGET,
+): Promise<string> {
   const d = await graphJson<{ id: string }>(
     `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/root?$select=id`,
-    TARGET,
+    token,
     'getRootItemId',
   )
   return d.id
@@ -750,4 +753,128 @@ export async function deleteTargetItem(driveId: string, itemId: string): Promise
   )
   if (res.ok || res.status === 404) return
   throw new Error(`Suppression cible échouée (${res.status}): ${(await res.text()).slice(0, 300)}`)
+}
+
+// ── Utilisateurs (tenant Ouihelp) ─────────────────────────────────────────────
+
+export interface UserInfo {
+  id: string
+  displayName: string
+  userPrincipalName: string
+}
+
+interface RawUser {
+  id: string
+  displayName?: string
+  userPrincipalName?: string
+  givenName?: string | null
+  surname?: string | null
+}
+
+function mapUser(u: RawUser): UserInfo {
+  return {
+    id: u.id,
+    displayName: u.displayName ?? u.userPrincipalName ?? '(compte)',
+    userPrincipalName: u.userPrincipalName ?? '',
+  }
+}
+
+/** Compte par UPN exact, ou null s'il n'existe pas. */
+export async function findUserByUpn(upn: string): Promise<UserInfo | null> {
+  const res = await graphFetch(
+    `${GRAPH_BASE}/users/${encodeURIComponent(upn)}?$select=id,displayName,userPrincipalName`,
+    TARGET,
+    `findUserByUpn ${upn}`,
+  )
+  if (res.status === 404) return null
+  if (!res.ok) {
+    throw new Error(`Lecture du compte ${upn} échouée (${res.status}): ${(await res.text()).slice(0, 200)}`)
+  }
+  return mapUser((await res.json()) as RawUser)
+}
+
+/**
+ * Comptes d'un nom de famille donné sur un domaine donné.
+ *
+ * Sert à retrouver le compte Ouihelp d'un compte ONELA en `<initiale><nom>`
+ * quand la table de correspondance ne le porte pas. Le filtrage sur l'initiale
+ * du prénom est fait par l'appelant, qui exige une correspondance UNIQUE.
+ */
+export async function findUsersBySurname(surname: string, domain: string): Promise<
+  Array<UserInfo & { givenName: string | null }>
+> {
+  const filter = `surname eq '${surname.replace(/'/g, "''")}'`
+  const data = await graphJson<{ value: RawUser[] }>(
+    `${GRAPH_BASE}/users?$filter=${encodeURIComponent(filter)}&$select=id,displayName,userPrincipalName,givenName,surname&$top=50`,
+    TARGET,
+    `findUsersBySurname ${surname}`,
+  )
+  const suffix = `@${domain.toLowerCase()}`
+  return data.value
+    .filter((u) => (u.userPrincipalName ?? '').toLowerCase().endsWith(suffix))
+    .map((u) => ({ ...mapUser(u), givenName: u.givenName ?? null }))
+}
+
+/**
+ * Dossiers enfants directs d'un item (utilisé pour retrouver Clients /
+ * Intervenants). Les dates sont remontées pour que le dossier recréé côté cible
+ * porte celles de la source, comme le fait la passe de transfert.
+ */
+export async function listChildFolders(
+  driveId: string,
+  parentItemId: string,
+  token: TokenProvider,
+): Promise<Array<{ id: string; name: string; times: FileTimes }>> {
+  interface RawChild {
+    id: string
+    name: string
+    folder?: unknown
+    createdDateTime?: string
+    lastModifiedDateTime?: string
+    fileSystemInfo?: { createdDateTime?: string; lastModifiedDateTime?: string }
+  }
+  interface ChildrenPage {
+    value: RawChild[]
+    '@odata.nextLink'?: string
+  }
+  const out: Array<{ id: string; name: string; times: FileTimes }> = []
+  let url: string | null =
+    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(parentItemId)}/children?$select=id,name,folder,createdDateTime,lastModifiedDateTime,fileSystemInfo&$top=200`
+  while (url) {
+    const data: ChildrenPage = await graphJson<ChildrenPage>(url, token, 'listChildFolders')
+    for (const it of data.value) {
+      if (!it.folder) continue
+      out.push({
+        id: it.id,
+        name: it.name,
+        times: {
+          createdDateTime: it.fileSystemInfo?.createdDateTime ?? it.createdDateTime ?? null,
+          lastModifiedDateTime:
+            it.fileSystemInfo?.lastModifiedDateTime ?? it.lastModifiedDateTime ?? null,
+        },
+      })
+    }
+    url = data['@odata.nextLink'] ?? null
+  }
+  return out
+}
+
+/**
+ * Chemin relatif au serveur d'un item cible, ex. /sites/ximi-arge/Documents/Clients.
+ *
+ * L'API REST SharePoint désigne un dossier par ce chemin, que Graph ne donne pas
+ * directement : on le dérive de `webUrl` (qui est percent-encodé — d'où le
+ * décodage, sans quoi « Dossiers clients » arriverait en « Dossiers%20clients »).
+ */
+export async function getTargetItemServerRelativePath(
+  driveId: string,
+  itemId: string,
+): Promise<string> {
+  const d = await graphJson<{ webUrl?: string }>(
+    `${GRAPH_BASE}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=webUrl`,
+    TARGET,
+    'getTargetItemServerRelativePath',
+  )
+  if (!d.webUrl) throw new Error(`Item ${itemId} sans webUrl — chemin SharePoint indéterminable`)
+  return decodeURIComponent(new URL(d.webUrl).pathname)
 }

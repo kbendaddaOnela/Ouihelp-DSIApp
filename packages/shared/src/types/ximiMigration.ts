@@ -94,6 +94,18 @@ export interface CreateXimiMigrationRequest {
   analyzeOnly?: boolean
 }
 
+/** Droits appliqués à un dossier régi par le plan. */
+export interface XimiFolderPermission {
+  type: 'clients' | 'intervenants'
+  /** Nom réel du dossier sur le site, ou null s'il est absent de la source. */
+  folderName: string | null
+  status: XimiStepStatus
+  /** Principaux effectivement autorisés, en noms côté Ouihelp. */
+  applied: string[]
+  /** Principaux non autorisés, avec la raison. */
+  failures: string[]
+}
+
 export interface XimiMigrationRecord {
   id: string
   label: string | null
@@ -117,6 +129,14 @@ export interface XimiMigrationRecord {
   dynamicGroups: Array<{ name: string; id: string | null }>
   permissionStatus: XimiStepStatus
   permissionError: string | null
+  /**
+   * Compte rendu de l'application du plan de droits aux dossiers de la
+   * bibliothèque (« Clients », « Intervenants »). Un dossier du plan absent du
+   * site source ressort en `skipped`.
+   */
+  folderPermissions: XimiFolderPermission[]
+  folderPermissionStatus: XimiStepStatus
+  folderPermissionError: string | null
   // ── Transfert ─────────────────────────────────────────────────────────────
   status: XimiMigrationStatus
   analyzeOnly: boolean
@@ -162,6 +182,9 @@ export interface XimiMappingRow {
   /** Groupes dynamiques autorisés, joints par « + » pour l'export */
   dynamicGroups: string
   permissionStatus: XimiStepStatus
+  /** Droits des dossiers, résumés pour l'export : « Clients: OK ; … ». */
+  folderPermissions: string
+  folderPermissionStatus: XimiStepStatus
   status: XimiMigrationStatus
   filesMigrated: number
   lastSyncAt: string | null

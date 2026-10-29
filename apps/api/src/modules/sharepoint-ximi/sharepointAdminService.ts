@@ -328,3 +328,197 @@ export function thumbprintOf(certPem: string): string {
   )
   return createHash('sha1').update(der).digest('hex').toUpperCase()
 }
+
+// ── Droits au niveau d'un DOSSIER de la bibliothèque ──────────────────────────
+//
+// Les deux dossiers d'un site Ximi (« Clients », « Intervenants ») n'ont pas les
+// mêmes destinataires : les RH voient les intervenants, le marketing et la
+// finance voient les clients. Reproduire cela demande de casser l'héritage des
+// droits sur le dossier, puis de poser des attributions explicites.
+//
+// POURQUOI PAS GRAPH : `/permissions` sur un driveItem crée des liens de partage,
+// pas des attributions de rôle SharePoint. Un lien de partage n'apparaît pas
+// dans « Autorisations », expire, et ne sait pas viser un groupe de sécurité.
+
+/** Nom de connexion d'un utilisateur (claims d'appartenance au tenant). */
+export function userLoginName(upn: string): string {
+  return `i:0#.f|membership|${upn}`
+}
+
+/** Nom de connexion d'un groupe de sécurité Entra. */
+export function securityGroupLoginName(groupObjectId: string): string {
+  return groupLoginName(groupObjectId)
+}
+
+/**
+ * `RoleTypeKind` plutôt que le nom du rôle : les noms des niveaux
+ * d'autorisation sont LOCALISÉS (« Contribuer », « Contrôle total » sur un site
+ * créé en LCID 1036). Chercher « Contribute » par son nom échouerait sur tous
+ * les sites que ce module crée.
+ */
+const ROLE_TYPE = { READER: 2, CONTRIBUTOR: 3, ADMINISTRATOR: 5, EDITOR: 6 } as const
+
+interface RoleDefs {
+  contributor: number
+  fullControl: number
+}
+const roleDefCache = new Map<string, RoleDefs>()
+
+async function roleDefinitions(origin: string, webPath: string): Promise<RoleDefs> {
+  const key = `${origin}${webPath}`
+  const cached = roleDefCache.get(key)
+  if (cached) return cached
+  const res = await spRest(origin, `${webPath}/_api/web/roledefinitions?$select=Id,RoleTypeKind,Name`)
+  if (!res.ok) {
+    throw new Error(
+      `Lecture des niveaux d'autorisation échouée (${res.status}): ${(await res.text()).slice(0, 300)}`,
+    )
+  }
+  const data = (await res.json()) as {
+    d?: { results?: Array<{ Id: number; RoleTypeKind: number; Name: string }> }
+  }
+  const defs = data.d?.results ?? []
+  const wanted = Number(process.env['XIMI_FOLDER_ROLE_TYPE'] ?? ROLE_TYPE.CONTRIBUTOR)
+  const contributor =
+    defs.find((d) => d.RoleTypeKind === wanted)?.Id ??
+    defs.find((d) => d.RoleTypeKind === ROLE_TYPE.EDITOR)?.Id
+  const fullControl = defs.find((d) => d.RoleTypeKind === ROLE_TYPE.ADMINISTRATOR)?.Id
+  if (!contributor || !fullControl) {
+    throw new Error(
+      `Niveaux d'autorisation introuvables sur ${webPath} (reçus : ${defs.map((d) => `${d.Name}#${d.RoleTypeKind}`).join(', ')})`,
+    )
+  }
+  const out = { contributor, fullControl }
+  roleDefCache.set(key, out)
+  return out
+}
+
+/** Id de principal SharePoint d'un compte ou d'un groupe, créé au besoin. */
+async function ensurePrincipalId(
+  origin: string,
+  webPath: string,
+  loginName: string,
+): Promise<number> {
+  const res = await spRest(origin, `${webPath}/_api/web/ensureuser`, {
+    method: 'POST',
+    body: { logonName: loginName },
+  })
+  if (!res.ok) {
+    throw new Error(
+      `Principal « ${loginName} » introuvable sur le site (${res.status}): ${(await res.text()).slice(0, 200)}`,
+    )
+  }
+  const data = (await res.json()) as { d?: { Id?: number } }
+  const id = data.d?.Id
+  if (!id) throw new Error(`Réponse ensureuser inattendue pour « ${loginName} »`)
+  return id
+}
+
+export interface FolderAclPrincipal {
+  /** Libellé lisible, pour le compte rendu (nom du groupe ou UPN). */
+  label: string
+  loginName: string
+}
+
+export interface FolderAclResult {
+  applied: string[]
+  failures: string[]
+}
+
+/**
+ * Pose le plan de droits sur un dossier : héritage cassé, puis une attribution
+ * « Contribuer » par principal du plan.
+ *
+ * L'héritage est cassé SANS recopier les attributions (`copyRoleAssignments:
+ * false`) : recopier aurait laissé le groupe « Membres » du site — donc toute
+ * l'agence — sur les deux dossiers, ce qui annulerait la séparation voulue entre
+ * Clients et Intervenants. On réinjecte en revanche le groupe « Propriétaires »
+ * en contrôle total : sans lui, les administrateurs du site perdent la main sur
+ * un dossier de leur propre site, et plus personne ne peut corriger les droits
+ * depuis l'interface.
+ *
+ * Idempotent : l'héritage n'est cassé que s'il ne l'est pas déjà, et
+ * `addroleassignment` sur un principal déjà présent est sans effet.
+ */
+export async function applyFolderAcl(params: {
+  siteUrl: string
+  /** Chemin relatif au serveur du dossier, ex. /sites/ximi-arge/Documents/Clients */
+  folderServerRelativePath: string
+  principals: FolderAclPrincipal[]
+}): Promise<FolderAclResult> {
+  const origin = new URL(params.siteUrl).origin
+  const webPath = new URL(params.siteUrl).pathname.replace(/\/$/, '')
+  const folderApi = `${webPath}/_api/web/GetFolderByServerRelativePath(decodedurl='${params.folderServerRelativePath.replace(/'/g, "''")}')`
+
+  const itemRes = await spRest(
+    origin,
+    `${folderApi}/ListItemAllFields?$select=Id,HasUniqueRoleAssignments`,
+  )
+  if (!itemRes.ok) {
+    throw new Error(
+      `Dossier « ${params.folderServerRelativePath} » introuvable côté SharePoint (${itemRes.status}): ${(await itemRes.text()).slice(0, 300)}`,
+    )
+  }
+  const itemData = (await itemRes.json()) as {
+    d?: { Id?: number; HasUniqueRoleAssignments?: boolean }
+  }
+  if (!itemData.d?.Id) {
+    throw new Error(`Le dossier « ${params.folderServerRelativePath} » n'a pas d'élément de liste`)
+  }
+
+  if (!itemData.d.HasUniqueRoleAssignments) {
+    const breakRes = await spRest(
+      origin,
+      `${folderApi}/ListItemAllFields/breakroleinheritance(copyRoleAssignments=false,clearSubscopes=false)`,
+      { method: 'POST' },
+    )
+    if (!breakRes.ok) {
+      throw new Error(
+        `Rupture d'héritage des droits échouée (${breakRes.status}): ${(await breakRes.text()).slice(0, 300)}`,
+      )
+    }
+  }
+
+  const roles = await roleDefinitions(origin, webPath)
+  const assignPath = `${folderApi}/ListItemAllFields/roleassignments/addroleassignment`
+  const applied: string[] = []
+  const failures: string[] = []
+
+  // Propriétaires du site d'abord : si la suite échoue, le dossier reste
+  // administrable.
+  try {
+    const ownerRes = await spRest(origin, `${webPath}/_api/web/AssociatedOwnerGroup?$select=Id`)
+    if (ownerRes.ok) {
+      const ownerId = ((await ownerRes.json()) as { d?: { Id?: number } }).d?.Id
+      if (ownerId) {
+        await spRest(
+          origin,
+          `${assignPath}(principalid=${ownerId},roledefid=${roles.fullControl})`,
+          { method: 'POST' },
+        )
+      }
+    }
+  } catch (err) {
+    console.warn(`[ximi] propriétaires non réinjectés sur ${params.folderServerRelativePath}:`, err)
+  }
+
+  // Un principal par un : sur un dossier ouvert à sept groupes, l'échec de l'un
+  // ne doit pas priver les six autres.
+  for (const p of params.principals) {
+    try {
+      const principalId = await ensurePrincipalId(origin, webPath, p.loginName)
+      const res = await spRest(
+        origin,
+        `${assignPath}(principalid=${principalId},roledefid=${roles.contributor})`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`)
+      }
+      applied.push(p.label)
+    } catch (err) {
+      failures.push(`${p.label} : ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  return { applied, failures }
+}

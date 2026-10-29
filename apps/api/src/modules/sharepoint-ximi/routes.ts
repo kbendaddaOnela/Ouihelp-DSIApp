@@ -11,6 +11,7 @@ import { normalizeAlias } from './sharepointAdminService'
 import { signalStopXimi } from './worker'
 import { agenciesOf, dynamicGroupNameFor, unmatchedReason } from './agencyMatch'
 import { ximiCodeOf } from './ximiSiteMapping'
+import { folderPlanFor, siteAgencyGroupsFor, targetGroupName } from './ximiPermissionPlan'
 import type {
   XimiSourceSitesResponse,
   XimiTargetGroupsResponse,
@@ -22,10 +23,24 @@ import type {
   XimiMappingRow,
   XimiChangedItem,
   XimiMigrationChangesResponse,
+  XimiFolderPermission,
 } from '@dsi-app/shared'
 
 export const ximiMigrationRouter = new Hono<{ Variables: RbacVariables }>()
 ximiMigrationRouter.use('*', authMiddleware, loadUserRole)
+
+/** Compte rendu des droits de dossiers, ou tableau vide si la colonne est vide. */
+function parseFolderPermissions(
+  m: typeof ximiMigrations.$inferSelect,
+): XimiFolderPermission[] {
+  if (!m.folderPermissions) return []
+  try {
+    const arr = JSON.parse(m.folderPermissions)
+    return Array.isArray(arr) ? (arr as XimiFolderPermission[]) : []
+  } catch {
+    return []
+  }
+}
 
 /**
  * Groupes dynamiques d'une migration. Repli sur les colonnes mono-groupe pour
@@ -68,6 +83,9 @@ function toRecord(m: typeof ximiMigrations.$inferSelect): XimiMigrationRecord {
     dynamicGroups: parseGroups(m),
     permissionStatus: m.permissionStatus,
     permissionError: m.permissionError,
+    folderPermissions: parseFolderPermissions(m),
+    folderPermissionStatus: m.folderPermissionStatus,
+    folderPermissionError: m.folderPermissionError,
     status: m.status,
     analyzeOnly: m.analyzeOnly,
     totalItems: m.totalItems,
@@ -179,12 +197,18 @@ async function insertMigration(
   const id = randomUUID()
   const sourceLabel = body.sourceSiteName
   const sourceAlias = body.sourceSiteUrl.split('/sites/')[1]?.split('/')[0] ?? null
-  // Les groupes viennent de la table de correspondance, sauf si l'opérateur les
-  // impose. Un site mutualisé en reçoit plusieurs (Loire, Paris, Seine-et-Marne,
-  // PACA) : les saisir à la main sur 70 sites serait une source d'erreurs.
+  // Les groupes du site viennent de l'export des droits, qui dit directement
+  // quels groupes `AG-*` sont posés sur quel site — plutôt que du détour par le
+  // trigramme et le référentiel d'agences. Ce détour coûtait deux sites : `roue`
+  // dessert quatre agences et n'en recevait qu'une, `boul` n'en recevait aucune
+  // faute de trigramme au référentiel. Repli sur le trigramme pour les sites
+  // absents de l'export ; l'opérateur peut toujours imposer la liste.
+  const planGroups = siteAgencyGroupsFor(ximiCodeOf(sourceLabel, sourceAlias)).map(targetGroupName)
   const groupNames =
     body.dynamicGroupNames?.map((n) => n.trim()).filter(Boolean) ??
-    agenciesOf(sourceLabel, sourceAlias).map((a) => dynamicGroupNameFor(a.trigramme))
+    (planGroups.length > 0
+      ? planGroups
+      : agenciesOf(sourceLabel, sourceAlias).map((a) => dynamicGroupNameFor(a.trigramme)))
   const preexisting = !!body.existingTargetSiteUrl?.trim()
 
   await db.insert(ximiMigrations).values({
@@ -202,6 +226,10 @@ async function insertMigration(
       : null,
     // Sans groupe à appliquer, l'étape est « sans objet », pas « en attente ».
     permissionStatus: groupNames.length > 0 ? 'pending' : 'skipped',
+    // Un site absent de l'export des droits n'a pas de plan : « sans objet ».
+    folderPermissionStatus: folderPlanFor(ximiCodeOf(sourceLabel, sourceAlias))
+      ? 'pending'
+      : 'skipped',
     analyzeOnly: body.analyzeOnly === true,
     initiatedBy,
   })
@@ -331,6 +359,28 @@ ximiMigrationRouter.post('/:id/retry-permissions', requirePermission('migration:
   const [updated] = await db.select().from(ximiMigrations).where(eq(ximiMigrations.id, id))
   return c.json<XimiMigrationRecord>(toRecord(updated!))
 })
+
+// ── Rejouer uniquement les droits des dossiers ────────────────────────────────
+// Même logique que /retry-permissions : l'étape est non bloquante, elle doit
+// pouvoir être reprise sans relancer un transfert de plusieurs dizaines de Go.
+ximiMigrationRouter.post(
+  '/:id/retry-folder-permissions',
+  requirePermission('migration:write'),
+  async (c) => {
+    const id = c.req.param('id')
+    const [row] = await db.select().from(ximiMigrations).where(eq(ximiMigrations.id, id))
+    if (!row) return c.json({ error: 'Migration introuvable' }, 404)
+    if (!row.targetSiteUrl) {
+      return c.json({ error: 'Le site cible n\'existe pas encore — lance d\'abord la migration' }, 409)
+    }
+    await db
+      .update(ximiMigrations)
+      .set({ folderPermissionStatus: 'pending', folderPermissionError: null, status: 'pending' })
+      .where(eq(ximiMigrations.id, id))
+    const [updated] = await db.select().from(ximiMigrations).where(eq(ximiMigrations.id, id))
+    return c.json<XimiMigrationRecord>(toRecord(updated!))
+  },
+)
 
 // ── Renommer ──────────────────────────────────────────────────────────────────
 ximiMigrationRouter.patch('/:id', requirePermission('migration:write'), async (c) => {
@@ -483,6 +533,10 @@ function buildMappingRows(rows: Array<typeof ximiMigrations.$inferSelect>): Ximi
       targetSiteUrl: m.targetSiteUrl,
       dynamicGroups: parseGroups(m).map((g) => g.name).join(' + '),
       permissionStatus: m.permissionStatus,
+      folderPermissions: parseFolderPermissions(m)
+        .map((f) => `${f.folderName ?? f.type} : ${f.applied.length} droit(s)${f.failures.length > 0 ? ` / ${f.failures.length} en échec` : ''}`)
+        .join(' ; '),
+      folderPermissionStatus: m.folderPermissionStatus,
       status: m.status,
       filesMigrated: m.migratedItems,
       lastSyncAt: (m.lastDeltaAt ?? m.finishedAt)?.toISOString() ?? null,

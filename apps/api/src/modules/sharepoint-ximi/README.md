@@ -82,3 +82,81 @@ module Drive ; `XIMI_BATCH_SIZE` pilote le parallélisme de ce module seul
   la source bouge ensuite. Règle opérationnelle : **un seul côté à la fois**.
 - Une suppression côté source envoie l'item **à la corbeille** du site cible
   (récupérable 93 jours), jamais une suppression définitive.
+
+## Droits des dossiers « Clients » / « Intervenants »
+
+Chaque site Ximi porte, dans sa bibliothèque « Documents », deux dossiers aux
+destinataires différents : les RH voient les intervenants, le marketing et la
+finance voient les clients. Le module reproduit ce découpage.
+
+### Source des droits
+
+Le plan est figé dans `ximiPermissionPlan.ts`, depuis l'export DSI
+« Permissionsgroupsandusers » du 29/10/2026 : 73 sites × 2 dossiers, 81
+principaux distincts.
+
+Il n'est **pas** relu sur le tenant ONELA à l'exécution. Ce n'est pas un
+raccourci : les groupes ONELA portent des `objectId` propres à ce tenant, qui
+n'existent pas côté Ouihelp. Une copie d'ACL devrait de toute façon re-résoudre
+chaque principal **par son nom** sur le tenant cible. Le plan figé n'ajoute donc
+aucune imprécision, évite une permission Graph de lecture des ACL sur ONELA, et
+a l'avantage décisif d'être relu par un humain et auditable en revue de code.
+
+Deux coquilles de l'export (`SG-DYN-ONELA-QUALITE`, `SG-DYN-ONELA-FORMATION`,
+une occurrence chacune sur 73) sont corrigées explicitement par
+`SOURCE_GROUP_ALIASES`.
+
+### Traduction des principaux
+
+| Source (ONELA)                 | Cible (Ouihelp)                 |
+| ------------------------------ | ------------------------------- |
+| `SG-DYN-ONELA-AG-ARG`          | `ONELA - SG-DYN-AG-ARG`         |
+| `SG-DYN-ONELA-RH-PAIE`         | `ONELA - SG-DYN-RH-PAIE`        |
+| `cmarmouze@onela.com`          | `cathy.marmouze@mig.onela.com`  |
+
+Les groupes suivent la convention déjà utilisée au niveau du site (« ONELA » passe
+du milieu au préfixe) ; le préfixe est réglable par `XIMI_GROUP_TARGET_PREFIX`.
+
+Les comptes passent d'abord par `ONELA_TO_OUIHELP_UPN` (la source est en
+`<initiale><nom>`, la cible en `<prénom>.<nom>` : l'initiale ne permet pas de
+remonter au prénom). À défaut, une recherche par nom de famille sur
+`XIMI_USER_TARGET_DOMAIN` est tentée, et n'est retenue que si la correspondance
+est **unique**. Deux homonymes ⇒ échec explicite, jamais un choix au hasard.
+
+### Application
+
+`applyFolderAcl` casse l'héritage des droits du dossier **sans recopier** les
+attributions héritées : les recopier aurait laissé le groupe « Membres » du site
+— donc toute l'agence — sur les deux dossiers, ce qui annulerait la séparation
+voulue. Le groupe « Propriétaires » est en revanche réinjecté en contrôle total,
+sans quoi les administrateurs du site perdraient la main sur un dossier de leur
+propre site.
+
+Les niveaux d'autorisation sont cherchés par `RoleTypeKind` et non par nom :
+les sites sont créés en LCID 1036, où « Contribute » s'appelle « Contribuer ».
+Réglable par `XIMI_FOLDER_ROLE_TYPE` (défaut 3 = Contribuer).
+
+L'étape s'exécute **avant** la passe de transfert, et crée les deux dossiers au
+besoin : les poser après aurait laissé une fenêtre pendant laquelle des documents
+nominatifs arrivent dans un dossier encore ouvert à tous les membres du site.
+
+Elle est non bloquante. Un échec ne laisse rien d'exposé — il prive d'accès les
+groupes transverses pendant que l'agence, membre du site, garde le sien. C'est un
+manque de droits, pas une fuite, et cela ne justifie pas d'arrêter un transfert de
+plusieurs dizaines de Go. Reprise seule par
+`POST /sharepoint-ximi/:id/retry-folder-permissions`.
+
+### Prérequis supplémentaires
+
+- app Ouihelp : `Sites.FullControl.All` (SharePoint, par certificat) — déjà
+  requise pour la création des sites ;
+- app Ouihelp : `User.Read.All` (Graph) pour résoudre les comptes du plan ;
+- les groupes `ONELA - SG-DYN-*` doivent exister sur le tenant Ouihelp. Ceux qui
+  manquent ressortent en échec nommé, dossier par dossier, sur la carte.
+
+### Ce que l'étape ne fait pas
+
+- aucun droit n'est posé sous les deux dossiers : les sous-dossiers héritent ;
+- les droits de la source ne sont pas *comparés* à ceux de la cible — une
+  modification faite à la main côté ONELA après l'export n'est pas détectée. Le
+  plan est la référence ; il faut le régénérer pour la refléter.
