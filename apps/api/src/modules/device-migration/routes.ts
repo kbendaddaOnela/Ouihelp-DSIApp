@@ -202,6 +202,9 @@ function toAgentSummary(a: DeviceAgentRow | undefined): DeviceAgentSummary | nul
     id: a.id,
     firstCheckinAt: a.firstCheckinAt.toISOString(),
     lastCheckinAt: a.lastCheckinAt.toISOString(),
+    lastContactAt: new Date(
+      Math.max(a.lastCheckinAt.getTime(), a.lastContactAt?.getTime() ?? 0)
+    ).toISOString(),
     silent: Date.now() - a.lastCheckinAt.getTime() > AGENT_SILENT_MS,
     joinedToOuihelp: !!ouihelp && report.dsreg.azureAdJoined && report.dsreg.tenantId === ouihelp,
     report,

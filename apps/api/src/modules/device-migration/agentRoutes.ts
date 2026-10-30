@@ -381,6 +381,7 @@ deviceAgentRouter.post('/checkin', async (c) => {
       remoteIp: null,
       firstCheckinAt: now,
       lastCheckinAt: now,
+      lastContactAt: null,
     }
     await db
       .insert(deviceAgents)
@@ -549,7 +550,14 @@ async function agentDevice(bearerHeader: string | undefined): Promise<string | n
     .select()
     .from(deviceAgents)
     .where(eq(deviceAgents.tokenHash, hashToken(bearer)))
-  return agent?.deviceMigrationId ?? null
+  if (!agent) return null
+  // Dernier contact, écrit au plus une fois par minute : la DSI App signale un PC muet
+  // pendant une bascule (Wi-Fi d'agence perdu à la sortie du domaine, par exemple).
+  const now = new Date()
+  if (!agent.lastContactAt || now.getTime() - agent.lastContactAt.getTime() > 60_000) {
+    await db.update(deviceAgents).set({ lastContactAt: now }).where(eq(deviceAgents.id, agent.id))
+  }
+  return agent.deviceMigrationId ?? null
 }
 
 /**
