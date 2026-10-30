@@ -137,6 +137,8 @@ export const deviceAgents = mysqlTable(
     remoteIp: varchar('remote_ip', { length: 64 }),
     firstCheckinAt: timestamp('first_checkin_at').defaultNow().notNull(),
     lastCheckinAt: timestamp('last_checkin_at').defaultNow().notNull(),
+    /** Dernier appel de l'agent, sondage compris (toutes les 2 min) : détecte un PC hors ligne */
+    lastContactAt: timestamp('last_contact_at'),
   },
   (t) => ({
     uqMachine: uniqueIndex('uq_device_agents_machine').on(t.machineGuid),

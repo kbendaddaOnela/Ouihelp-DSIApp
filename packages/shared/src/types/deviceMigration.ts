@@ -410,6 +410,8 @@ export interface DeviceAgentSummary {
   id: string
   firstCheckinAt: string
   lastCheckinAt: string
+  /** Dernier appel de l'agent, sondage de bascule compris (toutes les 2 min) */
+  lastContactAt: string
   /** Pas de check-in depuis plus de 24 h */
   silent: boolean
   /** Le PC est déjà joint au tenant Ouihelp (dsregcmd) */

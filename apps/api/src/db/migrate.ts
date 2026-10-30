@@ -229,6 +229,7 @@ async function ensureSchemaPatches() {
     { table: 'device_migrations', column: 'ouihelp_device_name', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`ouihelp_device_name\` varchar(255)` },
     { table: 'device_migrations', column: 'deleted_at', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`deleted_at\` timestamp NULL` },
     { table: 'device_migrations', column: 'deleted_by', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`deleted_by\` varchar(255)` },
+    { table: 'device_agents', column: 'last_contact_at', ddl: `ALTER TABLE \`device_agents\` ADD COLUMN \`last_contact_at\` timestamp NULL` },
     { table: 'device_migrations', column: 'intune_logons', ddl: `ALTER TABLE \`device_migrations\` ADD COLUMN \`intune_logons\` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` },
   ]
   for (const p of columnPatches) {
@@ -891,6 +892,7 @@ async function ensureSchemaPatches() {
         \`remote_ip\` varchar(64),
         \`first_checkin_at\` timestamp NOT NULL DEFAULT (now()),
         \`last_checkin_at\` timestamp NOT NULL DEFAULT (now()),
+        \`last_contact_at\` timestamp NULL,
         PRIMARY KEY (\`id\`),
         UNIQUE KEY \`uq_device_agents_machine\` (\`machine_guid\`),
         KEY \`idx_device_agents_device\` (\`device_migration_id\`)

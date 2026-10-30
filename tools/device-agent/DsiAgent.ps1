@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.20'
+$AgentVersion = '1.2.21'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1783,6 +1783,9 @@ function Test-PhaseAttempt($State, [int]$Max) {
 # Message sur l'écran de verrouillage pendant les deux redémarrages. On ne désactive PAS le
 # fournisseur d'identifiants (contrairement à V9) : il est aussi celui du compte de secours.
 # Les comptes ONELA, eux, ne peuvent plus s'authentifier dès la sortie du tenant.
+$SwitchNoticeCaption = 'Bascule vers Ouihelp en cours'
+$SwitchNoticeText = "Ce poste rejoint le tenant Ouihelp. Il redémarre deux fois tout seul : merci de ne pas l'éteindre. Ensuite, connectez-vous avec votre adresse et votre mot de passe Ouihelp."
+
 function Set-MigrationNotice([string]$Caption, [string]$Text) {
   Safe 'notice' {
     Set-RegValue $PoliciesKey 'legalnoticecaption' $Caption 'String'
@@ -1983,6 +1986,23 @@ function Invoke-EntraLeave {
   if (-not $left) { return $false }
   Start-Sleep -Seconds 30
   return $true
+}
+
+# Internet joignable : la jonction (et le compte rendu à la DSI App) en dépendent. En agence, le
+# Wi-Fi peut tomber dès la sortie du domaine ONELA (authentification du poste).
+function Test-Internet {
+  foreach ($h in @('login.microsoftonline.com', 'enterpriseregistration.windows.net')) {
+    try { if (@([Net.Dns]::GetHostAddresses($h)).Count -gt 0) { return $true } } catch { }
+  }
+  return $false
+}
+
+# Début de la fenêtre de diagnostic : installation du PPKG (les erreurs d'avant viennent des
+# jetons ONELA de la sortie et ne disent rien de la jonction Ouihelp).
+function Get-DiagnosticSince($State, [int]$FallbackHours) {
+  $since = (Get-Date).AddHours(-$FallbackHours)
+  if ($State.ppkgInstalledAt) { try { $since = [datetime]::Parse($State.ppkgInstalledAt) } catch { } }
+  return $since
 }
 
 # Erreurs récentes de jonction (journaux Provisioning et AAD), en une ligne par événement pour
@@ -2282,8 +2302,7 @@ function Start-InplaceSwitch($Order) {
     return
   }
   Send-Progress 'bascule' 'info' 'Bascule en place lancée : sortie d''ONELA puis PPKG Ouihelp' @{ resetTriggered = $true }
-  Set-MigrationNotice 'Bascule vers Ouihelp en cours' `
-    "Ce poste rejoint le tenant Ouihelp. Il redémarre deux fois tout seul : merci de ne pas l'éteindre. Ensuite, connectez-vous avec votre adresse et votre mot de passe Ouihelp."
+  Set-MigrationNotice $SwitchNoticeCaption $SwitchNoticeText
   $uiStep = 'prep'
   try {
     New-BreakglassAccount $Order.breakglassUser $Order.breakglassPassword
@@ -2306,6 +2325,7 @@ function Start-InplaceSwitch($Order) {
     $uiStep = 'ouihelp'; Write-UiProgress $uiStep $Order
     $ppkgInfo = Install-OuihelpPackage $InplacePpkg
     $state | Add-Member -NotePropertyName ppkgInstalled -NotePropertyValue $true -Force
+    $state | Add-Member -NotePropertyName ppkgInstalledAt -NotePropertyValue (Get-Date).ToString('o') -Force
     Save-Inplace $state
     Send-Progress 'ppkg' 'ok' "PPKG Ouihelp installé ($ppkgInfo) : jonction au prochain démarrage"
   } catch {
@@ -2422,6 +2442,28 @@ function Invoke-InplaceProfiles($State) {
 # nom DSI appliqué (après le PPKG, qui peut imposer le sien), compte rendu « joined » au
 # serveur, qui termine côté tenants (suppression ONELA, Autopilot et utilisateur principal).
 function Invoke-InplaceJoin($State) {
+  # Sans Internet, la jonction ne peut pas aboutir : on ne compte pas de tentative (pas
+  # d'abandon ni de réinstallation du PPKG) et on demande à l'utilisateur de se connecter.
+  $dsregNow = Safe 'dsregJonction' { Get-DsregStatus }
+  $joinedNow = $dsregNow -and $dsregNow.azureAdJoined -and (-not $State.ouihelpTenantId -or $dsregNow.tenantId -eq $State.ouihelpTenantId)
+  if (-not $joinedNow -and -not (Test-Internet)) {
+    if (-not $State.offlineSince) {
+      $State | Add-Member -NotePropertyName offlineSince -NotePropertyValue (Get-Date).ToString('o') -Force
+      Save-Inplace $State
+      Set-MigrationNotice 'Connectez ce PC à Internet' `
+        "La mise à jour vers Ouihelp attend une connexion Internet pour se terminer. Après OK, choisissez un réseau Wi-Fi avec l'icône réseau en bas à droite de l'écran (ou branchez un câble), sans ouvrir de session."
+    }
+    Write-Log 'Jonction Ouihelp en attente : pas d''accès à Internet (tentative non comptée)'
+    return
+  }
+  if ($State.offlineSince) {
+    $from = '?'
+    try { $from = ([datetime]::Parse($State.offlineSince)).ToString('HH:mm') } catch { }
+    $State.offlineSince = $null
+    Save-Inplace $State
+    Set-MigrationNotice $SwitchNoticeCaption $SwitchNoticeText
+    Send-Progress 'reseau' 'info' "Poste sans accès à Internet de $from à $((Get-Date).ToString('HH:mm')) : jonction reprise"
+  }
   $joined = $false
   $deadline = (Get-Date).AddMinutes(5)
   while ($true) {
@@ -2435,7 +2477,7 @@ function Invoke-InplaceJoin($State) {
   }
   if (-not $joined) {
     if (-not (Test-PhaseAttempt $State $JoinAttempts)) {
-      $diag = Get-JoinDiagnostic (Get-Date).AddHours(-3)
+      $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 3)
       Clear-MigrationNotice
       Send-Progress 'jonction' 'error' "Poste sorti d'ONELA mais toujours pas joint à Ouihelp : PPKG à reprendre à la main (jeton en bloc expiré ?). Journaux : $diag" @{ fatal = $true }
       Remove-InplacePayload
@@ -2445,7 +2487,7 @@ function Invoke-InplaceJoin($State) {
     # la débloque (constaté le 28/10/2026). Une seule fois par bascule, sans redémarrage :
     # installé poste ouvert, le PPKG joint le poste aussitôt.
     if ([int]$State.attempts -ge $JoinRepairAfter -and -not $State.ppkgReinstalled -and (Test-Path $InplacePpkg)) {
-      $diag = Get-JoinDiagnostic (Get-Date).AddHours(-2)
+      $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 2)
       $State | Add-Member -NotePropertyName ppkgReinstalled -NotePropertyValue $true -Force
       Save-Inplace $State
       try {
@@ -2454,6 +2496,8 @@ function Invoke-InplaceJoin($State) {
           Safe 'ppkgRetrait' { Uninstall-ProvisioningPackage -PackageId $id } | Out-Null
         }
         $info = Install-OuihelpPackage $InplacePpkg
+        $State | Add-Member -NotePropertyName ppkgInstalledAt -NotePropertyValue (Get-Date).ToString('o') -Force
+        Save-Inplace $State
         Send-Progress 'jonction' 'info' "Jonction Ouihelp bloquée : PPKG réinstallé ($info). Journaux : $diag"
       } catch {
         Send-Progress 'jonction' 'error' "Réinstallation du PPKG en échec : $($_.Exception.Message). Journaux : $diag"

@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   XCircle,
   Info,
+  WifiOff,
 } from 'lucide-react'
 import type {
   DeviceAppCatalogEntry,
@@ -67,6 +68,9 @@ const ACTIVE: MigrationStatus[] = [
 const CANCELLABLE: MigrationStatus[] = ['scheduled', 'staging', 'staged']
 /** Sans nouvelles du poste au-delà, la réinstallation a probablement buté (WinRE, réseau…) */
 const RESET_SILENCE_MS = 3 * 3600_000
+// L'agent sonde toutes les 2 min (5 à 6 min pendant la jonction, redémarrages compris) :
+// au-delà de 15 min sans appel, le poste a très probablement perdu Internet.
+const AGENT_OFFLINE_MS = 15 * 60_000
 /** Version minimale de l'agent pour une bascule en place (même garde-fou que l'API). */
 const INPLACE_AGENT_VERSION = '1.2.2'
 
@@ -508,6 +512,12 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
   // peut reprendre le travail restant (profils, jonction) au lieu d'une reprise manuelle.
   const canResume = m?.mode === 'inplace' && m.status === 'failed' && m.profiles.length > 0
 
+  const offlineMinutes =
+    switchStarted && d.agent
+      ? Math.floor((Date.now() - new Date(d.agent.lastContactAt).getTime()) / 60_000)
+      : 0
+  const agentOffline = offlineMinutes * 60_000 > AGENT_OFFLINE_MS
+
   const onResume = async () => {
     const res = await confirm({
       title: 'Reprendre la bascule sur le poste ?',
@@ -701,6 +711,12 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
       {m?.error && (
         <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-800">
           <ShieldAlert className="h-4 w-4 shrink-0" /> {m.error}
+        </div>
+      )}
+      {agentOffline && !silentReset && (
+        <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+          <WifiOff className="h-4 w-4 shrink-0" />
+          {`Aucune nouvelle de l’agent depuis ${offlineMinutes} min : le poste n’a sans doute plus Internet (Wi-Fi d’agence perdu à la sortie du domaine ?). La jonction Ouihelp attend le réseau : sur l’écran de connexion, choisir un Wi-Fi avec l’icône réseau en bas à droite, ou brancher un câble.`}
         </div>
       )}
       {silentReset && (
