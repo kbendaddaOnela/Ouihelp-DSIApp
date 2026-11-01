@@ -1,5 +1,5 @@
-import { fetchWithTimeout } from './httpClient'
-import { getGoogleAccessTokenForUser } from './googleService'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
 
 // ── Enterprise License Manager API ────────────────────────────────────────────
 // Doc : https://developers.google.com/admin-sdk/licensing/reference/rest

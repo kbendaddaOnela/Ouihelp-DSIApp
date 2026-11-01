@@ -7,8 +7,8 @@
 // On réutilise le même token app-only que le reste du module migration
 // (getOnelaToken). Pas de SDK Graph : appels REST directs comme partout ailleurs.
 
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getOnelaToken } from '../migration/service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getOnelaToken } from '../../lib/msAuth'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 

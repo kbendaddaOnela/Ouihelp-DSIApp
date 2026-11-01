@@ -7,9 +7,9 @@
 // L'API Groups Migration accepte du RFC822 et préserve la date d'origine du message :
 // idéal pour migrer une BAL partagée Exchange sans consommer de licence Workspace.
 
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getGoogleAccessTokenForUser } from '../migration/googleService'
-import { googleUserExists } from '../migration/googleService'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { googleUserExists } from '../../lib/google'
 
 const SCOPE_DIRECTORY_GROUP = 'https://www.googleapis.com/auth/admin.directory.group'
 const SCOPE_GROUPS_MIGRATION = 'https://www.googleapis.com/auth/apps.groups.migration'

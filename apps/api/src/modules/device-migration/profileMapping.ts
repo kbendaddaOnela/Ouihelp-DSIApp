@@ -1,7 +1,7 @@
 import { eq, or } from 'drizzle-orm'
 import type { DeviceAgentProfile, MigrationProfileMapping } from '@dsi-app/shared'
 import { db } from '../../db/index'
-import { getMsToken, ouihelpCreds } from '../inventory/syncService'
+import { getMsToken, ouihelpCreds } from '../../lib/msAuth'
 import { migrations } from '../migration/schema'
 
 /**

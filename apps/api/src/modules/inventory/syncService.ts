@@ -2,50 +2,10 @@ import { randomUUID } from 'crypto'
 import { eq, sql } from 'drizzle-orm'
 import { db } from '../../db/index'
 import { cachedUsers, cachedDevices, syncStatus } from './schema'
-import { getGoogleAccessTokenForUser } from '../migration/googleService'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getMsToken, ouihelpCreds, onelaCreds } from '../../lib/msAuth'
 
 const ADMIN_DIRECTORY_SCOPE = 'https://www.googleapis.com/auth/admin.directory.user.readonly'
-
-// ── Token helpers ─────────────────────────────────────────────────────────────
-
-const msTokenCache = new Map<string, { token: string; expiresAt: number }>()
-
-export async function getMsToken(tenantId: string, clientId: string, clientSecret: string): Promise<string> {
-  const key = `${tenantId}|${clientId}`
-  const cached = msTokenCache.get(key)
-  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token
-
-  const res = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: clientSecret,
-      scope: 'https://graph.microsoft.com/.default',
-    }),
-  })
-  if (!res.ok) throw new Error(`MS token error (${res.status}): ${await res.text()}`)
-  const data = (await res.json()) as { access_token: string; expires_in: number }
-  msTokenCache.set(key, { token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 })
-  return data.access_token
-}
-
-export function ouihelpCreds() {
-  const tid = process.env['AZURE_TENANT_ID']
-  const cid = process.env['AZURE_CLIENT_ID']
-  const sec = process.env['AZURE_CLIENT_SECRET']
-  if (!tid || !cid || !sec) throw new Error('Credentials Ouihelp (AZURE_*) manquants')
-  return { tid, cid, sec }
-}
-
-export function onelaCreds() {
-  const tid = process.env['ONELA_TENANT_ID']
-  const cid = process.env['ONELA_CLIENT_ID']
-  const sec = process.env['ONELA_CLIENT_SECRET']
-  if (!tid || !cid || !sec) throw new Error('Credentials ONELA manquants')
-  return { tid, cid, sec }
-}
 
 // ── Fetch MS users (tous, actifs uniquement) ──────────────────────────────────
 

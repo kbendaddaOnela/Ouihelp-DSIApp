@@ -1,9 +1,9 @@
 // Migration calendrier Exchange → Google Calendar
 // Lecture Graph (Calendars.Read App) → Écriture Calendar API (impersonation user)
 
-import { fetchWithTimeout } from './httpClient'
-import { getGoogleAccessTokenForUser } from './googleService'
-import { getOnelaToken } from './service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getOnelaToken } from '../../lib/msAuth'
 
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar'
 

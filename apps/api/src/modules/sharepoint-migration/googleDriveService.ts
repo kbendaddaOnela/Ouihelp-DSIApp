@@ -11,8 +11,8 @@
 //    compte Google. Tous les appels portent supportsAllDrives=true (cible = Drive
 //    partagé, pas un Mon Drive).
 
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getGoogleAccessTokenForUser } from '../migration/googleService'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
 const FOLDER_MIME = 'application/vnd.google-apps.folder'

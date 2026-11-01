@@ -11,8 +11,8 @@
 // - + un rôle Entra ID sur le SPN : "Exchange Administrator" (ou "Compliance Administrator"
 //   selon le scope cmdlet utilisé).
 
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getAccessToken } from '../migration/service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getAccessToken } from '../../lib/msAuth'
 
 async function exchangeAdminToken(): Promise<string> {
   const tid = process.env['ONELA_TENANT_ID']

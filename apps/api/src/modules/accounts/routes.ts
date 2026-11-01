@@ -13,7 +13,7 @@ import {
   searchGohUsers,
   checkGohUserExists,
 } from '../migration/service'
-import { googleUserExists, moveUserToOu, addGoogleAlias } from '../migration/googleService'
+import { googleUserExists, moveUserToOu, addGoogleAlias } from '../../lib/google'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { ensureGmailDelegate } from '../shared-mailbox/googleUserService'
 import { assignLicense, skuDisplayName } from '../migration/googleLicenseService'
