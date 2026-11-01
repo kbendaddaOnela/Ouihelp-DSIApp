@@ -26,8 +26,8 @@
 //   (ou "Exchange Administrator") sur le SPN.
 
 import { randomBytes } from 'crypto'
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getAccessToken } from '../migration/service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getAccessToken } from '../../lib/msAuth'
 
 /** Mot de passe fort et aléatoire pour le MailUser (jamais communiqué). */
 function strongRandomPassword(): string {

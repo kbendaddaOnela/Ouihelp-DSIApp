@@ -2,9 +2,9 @@
 // - Lecture via Microsoft Graph (App-only, Mail.ReadWrite)
 // - Écriture via Gmail API (impersonation user, scope mail.google.com)
 
-import { fetchWithTimeout } from './httpClient'
-import { getGoogleAccessTokenForUser } from './googleService'
-import { getAccessToken } from './service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getAccessToken } from '../../lib/msAuth'
 
 const GMAIL_SCOPE = 'https://mail.google.com/'
 

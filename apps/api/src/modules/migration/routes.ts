@@ -32,7 +32,7 @@ function logoBaseUrl(c: { req: { header: (n: string) => string | undefined; url:
 import { getServiceGroups } from './onelaServiceGroups'
 import { getAgencyGroups, REGION_ORDER } from './onelaAgencyGroups'
 import { agencyContactByCode, getAgencyContacts } from './onelaAgencyContacts'
-import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu, setGmailSignature } from './googleService'
+import { googleUserExists, addGoogleAlias, moveUserToOu, countUsersInOu, setGmailSignature } from '../../lib/google'
 import { listLicenseSkusWithUsage, assignLicense, skuDisplayName } from './googleLicenseService'
 import { ensureSendAs, setSendAsAsDefault } from '../shared-mailbox/gmailUserSetupService'
 import { enqueueMailMigration, enqueueCalendarMigration, enqueueContactsMigration, signalStop, relabelMail } from './mailWorker'

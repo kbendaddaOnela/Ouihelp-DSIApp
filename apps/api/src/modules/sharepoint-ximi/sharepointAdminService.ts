@@ -24,7 +24,7 @@
 //   XIMI_SITE_LCID            défaut 1036 (français)
 
 import { createSign, createHash, randomUUID } from 'crypto'
-import { fetchWithTimeout } from '../migration/httpClient'
+import { fetchWithTimeout } from '../../lib/httpClient'
 
 /** Modèle de site de communication (Topic). */
 const WEB_TEMPLATE = 'SITEPAGEPUBLISHING#0'

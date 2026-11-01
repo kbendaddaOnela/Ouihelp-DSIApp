@@ -12,8 +12,8 @@
 //   - app Ouihelp: Sites.ReadWrite.All (+ Group.Read.All pour résoudre les
 //     groupes dynamiques d'agence par nom)
 
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getAccessToken, getOnelaToken } from '../migration/service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getAccessToken, getOnelaToken } from '../../lib/msAuth'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 

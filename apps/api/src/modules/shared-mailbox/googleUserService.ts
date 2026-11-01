@@ -16,8 +16,8 @@
 // n'existe pas sur le compte et l'import mail échouerait.
 
 import { randomBytes } from 'crypto'
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getGoogleAccessTokenForUser } from '../migration/googleService'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
 
 const SCOPE_DIRECTORY_USER = 'https://www.googleapis.com/auth/admin.directory.user'
 const SCOPE_GMAIL_SETTINGS_SHARING = 'https://www.googleapis.com/auth/gmail.settings.sharing'

@@ -33,7 +33,7 @@ import {
   type GraphFolder,
   type GraphMessageMeta,
 } from '../migration/mailService'
-import { addGoogleAlias } from '../migration/googleService'
+import { addGoogleAlias } from '../../lib/google'
 import { ensureGoogleGroup, archiveMessageToGroup, addGroupAlias } from './googleGroupsService'
 import { ensureBccTransportRule, buildGoogleRoutingAddress } from './transportRuleService'
 import { ensureSendAs, setSendAsAsDefault } from './gmailUserSetupService'

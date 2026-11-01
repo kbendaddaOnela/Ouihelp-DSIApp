@@ -1,9 +1,9 @@
 // Migration contacts Exchange → Google Contacts (People API)
 // Lecture Graph (Contacts.Read App) → Écriture People API (impersonation user)
 
-import { fetchWithTimeout } from './httpClient'
-import { getGoogleAccessTokenForUser } from './googleService'
-import { getOnelaToken } from './service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getOnelaToken } from '../../lib/msAuth'
 
 const CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts'
 

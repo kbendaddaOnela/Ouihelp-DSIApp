@@ -35,7 +35,7 @@ import {
   ensureSendAs,
   setSendAsAsDefault,
 } from './gmailUserSetupService'
-import { addGoogleAlias } from '../migration/googleService'
+import { addGoogleAlias } from '../../lib/google'
 import {
   searchGoogleUsers,
   removeGmailDelegate,

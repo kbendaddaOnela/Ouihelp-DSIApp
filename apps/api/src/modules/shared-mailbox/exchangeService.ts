@@ -6,8 +6,8 @@
 // du module migration (iterateOnelaMessages, fetchOnelaMessageMime, listOnelaFolders).
 // L'app a déjà la permission Mail.ReadWrite tenant-wide → marche sur les BAL partagées.
 
-import { fetchWithTimeout } from '../migration/httpClient'
-import { getAccessToken } from '../migration/service'
+import { fetchWithTimeout } from '../../lib/httpClient'
+import { getAccessToken } from '../../lib/msAuth'
 
 interface ExchangeMailbox {
   Identity: string
