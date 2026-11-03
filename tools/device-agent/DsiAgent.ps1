@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.21'
+$AgentVersion = '1.2.22'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -2067,9 +2067,16 @@ function Invoke-DomainUnjoin([string]$User, [string]$Password) {
   # Sinon le contrôleur de domaine resterait joignable malgré la coupure des DNS ci-dessous
   Remove-AdDnsRule
   $adapter = Safe 'adaptateur' { (Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).InterfaceAlias }
+  # DNS fixés à la main sur la carte (NameServer) ; vide = DNS reçus du DHCP. Get-DnsClientServerAddress
+  # ne fait pas la différence : rétablir ses valeurs figeait en statique les DNS DHCP du réseau
+  # de l'agence, qui ne répondaient plus ailleurs (ni parfois après la sortie du domaine).
   $dns = @()
   if ($adapter) {
-    $dns = @(Safe 'dns' { (Get-DnsClientServerAddress -InterfaceAlias $adapter -AddressFamily IPv4).ServerAddresses } @())
+    $dns = @(Safe 'dns' {
+        $guid = (Get-NetAdapter -InterfaceAlias $adapter).InterfaceGuid
+        $ns = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid" -ErrorAction SilentlyContinue).NameServer
+        if ($ns) { @($ns -split '[,\s]+' | Where-Object { $_ }) } else { @() }
+      } @())
   }
   $domain = (Get-CimInstance Win32_ComputerSystem).Domain
   $broken = $false
@@ -2084,9 +2091,13 @@ function Invoke-DomainUnjoin([string]$User, [string]$Password) {
     if ($r.ReturnValue -ne 0) { throw "UnjoinDomainOrWorkGroup a renvoyé le code $($r.ReturnValue)" }
   } finally {
     if ($broken) {
-      if ($dns.Count -gt 0) { Safe 'dnsRetabli' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ServerAddresses $dns } }
-      else { Safe 'dnsReinit' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ResetServerAddresses } }
-      Write-Log 'DNS d''origine rétablis'
+      if ($dns.Count -gt 0) {
+        Safe 'dnsRetabli' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ServerAddresses $dns }
+        Write-Log "DNS fixes d'origine rétablis ($($dns -join ', '))"
+      } else {
+        Safe 'dnsReinit' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ResetServerAddresses }
+        Write-Log 'DNS rendus au DHCP'
+      }
     }
   }
 }
