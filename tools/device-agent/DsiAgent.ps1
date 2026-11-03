@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.21'
+$AgentVersion = '1.2.23'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1933,15 +1933,27 @@ function Remove-SccmClient {
   return -not (Get-Service -Name 'CcmExec' -ErrorAction SilentlyContinue)
 }
 
+# Inscriptions ONELA à retirer : Intune (MS DM Server) et co-gestion SCCM (WMI_Bridge_SCCM_Server,
+# restée après la désinstallation du client SCCM : Windows refusait ensuite l'inscription Intune
+# Ouihelp, « Pointeur non valide » 0x80004003, et le PPKG annulait sa jonction - HTTP 400 sur
+# AADJ/BPRT). Les inscriptions sans ProviderID (paquets de provisionnement, Windows) restent.
+$OnelaMdmProviders = @('MS DM Server', 'WMI_Bridge_SCCM_Server')
+
 function Remove-MdmEnrollment {
-  foreach ($c in @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue | Where-Object { $_.Issuer -match 'Microsoft Intune MDM Device CA' })) {
+  # Émetteur « Microsoft Intune MDM Device CA » ou « Microsoft Intune Device Management Device CA »
+  foreach ($c in @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue | Where-Object { $_.Issuer -match 'Microsoft Intune' })) {
     Remove-Item -LiteralPath $c.PSPath -Force -ErrorAction SilentlyContinue
+  }
+  Safe 'mdmRelances' {
+    Get-ScheduledTask -TaskPath '\Microsoft\Windows\EnterpriseMgmt\SessionRetry\*' -ErrorAction SilentlyContinue |
+      Unregister-ScheduledTask -Confirm:$false
   }
   $base = 'HKLM:\SOFTWARE\Microsoft\Enrollments'
   foreach ($e in @(Get-ChildItem $base -ErrorAction SilentlyContinue)) {
     $p = Get-ItemProperty -LiteralPath $e.PSPath -ErrorAction SilentlyContinue
-    if (-not $p.DiscoveryServiceFullURL) { continue }
+    if (-not $p.DiscoveryServiceFullURL -and $OnelaMdmProviders -notcontains $p.ProviderID) { continue }
     $id = Split-Path $e.PSPath -Leaf
+    Write-Log "Inscription retirée : $id ($($p.ProviderID))"
     Safe 'mdmTasks' {
       Get-ScheduledTask -TaskPath "\Microsoft\Windows\EnterpriseMgmt\$id\" -ErrorAction SilentlyContinue |
         Unregister-ScheduledTask -Confirm:$false
@@ -1988,6 +2000,34 @@ function Invoke-EntraLeave {
   return $true
 }
 
+# Inscription Intune Ouihelp présente : le PPKG joint le poste puis l'inscrit ; si l'inscription
+# échoue, Windows annule la jonction quelques secondes plus tard. La jonction seule ne prouve rien.
+function Test-MdmEnrolled {
+  foreach ($e in @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Enrollments' -ErrorAction SilentlyContinue)) {
+    $p = Get-ItemProperty -LiteralPath $e.PSPath -ErrorAction SilentlyContinue
+    if ($p.ProviderID -eq 'MS DM Server' -and $p.EnrollmentState -eq 1) { return $true }
+  }
+  return $false
+}
+
+# DNS fixés sur les cartes (NameServer) rendus au DHCP avant la jonction : des DNS de l'AD ONELA
+# figés sur la carte Wi-Fi ne répondaient plus hors du domaine (poste injoignable, jonction
+# impossible). Le DHCP du réseau où se trouve le poste fournit toujours des DNS.
+function Reset-StaticDns {
+  $reset = @()
+  foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+    $ns = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)" -ErrorAction SilentlyContinue).NameServer
+    if (-not $ns) { continue }
+    Safe 'dnsAuto' { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ResetServerAddresses }
+    $reset += "$($a.Name) ($ns)"
+  }
+  if ($reset.Count -gt 0) {
+    Clear-DnsClientCache
+    return "DNS fixes rendus au DHCP : $($reset -join ' ; ')"
+  }
+  return $null
+}
+
 # Internet joignable : la jonction (et le compte rendu à la DSI App) en dépendent. En agence, le
 # Wi-Fi peut tomber dès la sortie du domaine ONELA (authentification du poste).
 function Test-Internet {
@@ -2010,7 +2050,7 @@ function Get-DiagnosticSince($State, [int]$FallbackHours) {
 # des paramètres du PPKG.
 function Get-JoinDiagnostic([datetime]$Since) {
   $lines = @()
-  foreach ($log in @('Microsoft-Windows-Provisioning-Diagnostics-Provider/Admin', 'Microsoft-Windows-AAD/Operational', 'Microsoft-Windows-User Device Registration/Admin')) {
+  foreach ($log in @('Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider/Admin', 'Microsoft-Windows-Provisioning-Diagnostics-Provider/Admin', 'Microsoft-Windows-AAD/Operational', 'Microsoft-Windows-User Device Registration/Admin')) {
     $events = @(Safe "journal $log" {
         Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $Since; Level = 1, 2, 3 } -MaxEvents 10 -ErrorAction Stop
       } @())
@@ -2067,9 +2107,16 @@ function Invoke-DomainUnjoin([string]$User, [string]$Password) {
   # Sinon le contrôleur de domaine resterait joignable malgré la coupure des DNS ci-dessous
   Remove-AdDnsRule
   $adapter = Safe 'adaptateur' { (Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).InterfaceAlias }
+  # DNS fixés à la main sur la carte (NameServer) ; vide = DNS reçus du DHCP. Get-DnsClientServerAddress
+  # ne fait pas la différence : rétablir ses valeurs figeait en statique les DNS DHCP du réseau
+  # de l'agence, qui ne répondaient plus ailleurs (ni parfois après la sortie du domaine).
   $dns = @()
   if ($adapter) {
-    $dns = @(Safe 'dns' { (Get-DnsClientServerAddress -InterfaceAlias $adapter -AddressFamily IPv4).ServerAddresses } @())
+    $dns = @(Safe 'dns' {
+        $guid = (Get-NetAdapter -InterfaceAlias $adapter).InterfaceGuid
+        $ns = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid" -ErrorAction SilentlyContinue).NameServer
+        if ($ns) { @($ns -split '[,\s]+' | Where-Object { $_ }) } else { @() }
+      } @())
   }
   $domain = (Get-CimInstance Win32_ComputerSystem).Domain
   $broken = $false
@@ -2084,9 +2131,13 @@ function Invoke-DomainUnjoin([string]$User, [string]$Password) {
     if ($r.ReturnValue -ne 0) { throw "UnjoinDomainOrWorkGroup a renvoyé le code $($r.ReturnValue)" }
   } finally {
     if ($broken) {
-      if ($dns.Count -gt 0) { Safe 'dnsRetabli' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ServerAddresses $dns } }
-      else { Safe 'dnsReinit' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ResetServerAddresses } }
-      Write-Log 'DNS d''origine rétablis'
+      if ($dns.Count -gt 0) {
+        Safe 'dnsRetabli' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ServerAddresses $dns }
+        Write-Log "DNS fixes d'origine rétablis ($($dns -join ', '))"
+      } else {
+        Safe 'dnsReinit' { Set-DnsClientServerAddress -InterfaceAlias $adapter -ResetServerAddresses }
+        Write-Log 'DNS rendus au DHCP'
+      }
     }
   }
 }
@@ -2322,6 +2373,9 @@ function Start-InplaceSwitch($Order) {
       Send-Progress 'domaine' 'ok' 'Poste sorti du domaine ONELA'
     }
 
+    $dnsInfo = Safe 'dnsAuto' { Reset-StaticDns }
+    if ($dnsInfo) { Send-Progress 'dns' 'ok' $dnsInfo }
+
     $uiStep = 'ouihelp'; Write-UiProgress $uiStep $Order
     $ppkgInfo = Install-OuihelpPackage $InplacePpkg
     $state | Add-Member -NotePropertyName ppkgInstalled -NotePropertyValue $true -Force
@@ -2464,16 +2518,30 @@ function Invoke-InplaceJoin($State) {
     Set-MigrationNotice $SwitchNoticeCaption $SwitchNoticeText
     Send-Progress 'reseau' 'info' "Poste sans accès à Internet de $from à $((Get-Date).ToString('HH:mm')) : jonction reprise"
   }
+  # Jonction retenue seulement avec l'inscription Intune Ouihelp, et toujours là une minute
+  # après : sans inscription, Windows annule la jonction (vu le 02/11/2026, poste déclaré basculé
+  # entre une jonction et son annulation).
   $joined = $false
+  $sawJoinOnly = $false
   $deadline = (Get-Date).AddMinutes(5)
   while ($true) {
     $s = Safe 'dsregJonction' { Get-DsregStatus }
-    if ($s -and $s.azureAdJoined -and (-not $State.ouihelpTenantId -or $s.tenantId -eq $State.ouihelpTenantId)) {
-      $joined = $true
-      break
+    $inTenant = $s -and $s.azureAdJoined -and (-not $State.ouihelpTenantId -or $s.tenantId -eq $State.ouihelpTenantId)
+    if ($inTenant -and (Test-MdmEnrolled)) {
+      Start-Sleep -Seconds 60
+      $s2 = Safe 'dsregJonction' { Get-DsregStatus }
+      if ($s2 -and $s2.azureAdJoined -and (Test-MdmEnrolled)) {
+        $joined = $true
+        break
+      }
+    } elseif ($inTenant) {
+      $sawJoinOnly = $true
     }
     if ((Get-Date) -ge $deadline) { break }
     Start-Sleep -Seconds 20
+  }
+  if (-not $joined -and $sawJoinOnly) {
+    Write-Log 'Joint à Entra Ouihelp mais sans inscription Intune : jonction non retenue'
   }
   if (-not $joined) {
     if (-not (Test-PhaseAttempt $State $JoinAttempts)) {
@@ -2504,7 +2572,11 @@ function Invoke-InplaceJoin($State) {
       }
       return
     }
-    Send-Progress 'jonction' 'info' 'Jonction Ouihelp pas encore constatée : nouvelle tentative au prochain passage'
+    if ($sawJoinOnly) {
+      Send-Progress 'jonction' 'info' 'Joint à Entra Ouihelp mais pas encore inscrit dans Intune (Windows annule la jonction sans inscription) : nouvelle tentative au prochain passage'
+    } else {
+      Send-Progress 'jonction' 'info' 'Jonction Ouihelp pas encore constatée : nouvelle tentative au prochain passage'
+    }
     return
   }
 
