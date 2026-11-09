@@ -360,11 +360,29 @@ export async function* iterateOnelaMessages(
   const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages?$top=100&$select=id,internetMessageId,parentFolderId,isRead,isDraft,categories,subject,receivedDateTime&$orderby=${encodeURIComponent(`receivedDateTime ${order}`)}`
   const filter = buildReceivedDateFilter(since, until)
   let url: string | null = base + filter
+  // Retry sur 429/503/504 (throttling / indispo transitoire côté Graph), comme le
+  // téléchargement $value et le fetch des dossiers. Sans ça, un seul 503 sur une
+  // page de liste faisait remonter l'exception jusqu'au worker, qui passait TOUTE
+  // la phase mail en 'error' (ex. « Graph messages error (503) » à 44 %).
+  const RETRYABLE = new Set([429, 503, 504])
+  const MAX_ATTEMPTS = 5
   while (url) {
-    const token = await onelaToken()
-    const res: Response = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
-    if (!res.ok) throw new Error(`Graph messages error (${res.status}): ${await res.text()}`)
-    const data = (await res.json()) as { value: GraphMessageMeta[]; '@odata.nextLink'?: string }
+    let res: Response | null = null
+    let delay = 1500
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const token = await onelaToken()
+      res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } })
+      if (res.ok) break
+      if (!RETRYABLE.has(res.status) || attempt === MAX_ATTEMPTS) {
+        throw new Error(`Graph messages error (${res.status}): ${await res.text()}`)
+      }
+      const retryAfter = res.headers.get('Retry-After')
+      const waitMs = retryAfter ? Math.max(parseInt(retryAfter, 10) * 1000, 1000) : delay
+      console.warn(`[mail] messages list ${res.status} — retry ${attempt}/${MAX_ATTEMPTS - 1} dans ${waitMs}ms`)
+      await new Promise((r) => setTimeout(r, waitMs))
+      delay = Math.min(delay * 2, 12_000)
+    }
+    const data = (await res!.json()) as { value: GraphMessageMeta[]; '@odata.nextLink'?: string }
     for (const msg of data.value) yield msg
     url = data['@odata.nextLink'] ?? null
   }
