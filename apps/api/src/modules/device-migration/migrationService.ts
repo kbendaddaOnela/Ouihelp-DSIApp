@@ -10,7 +10,7 @@ import {
 import { db } from '../../db/index'
 import { getMsToken, onelaCreds, ouihelpCreds } from '../../lib/msAuth'
 import { deviceMigrations, type DeviceMigrationRow } from './schema'
-import { parseProfileMap } from './profileMapping'
+import { parseProfileMap, primaryProfile } from './profileMapping'
 
 /**
  * Bascule d'un poste vers Ouihelp par réinstallation propre (lot 3).
@@ -323,7 +323,8 @@ async function setOuihelpPrimaryUser(
   d: DeviceMigrationRow,
   step: (status: 'ok' | 'error' | 'info', message: string) => Promise<void>
 ): Promise<void> {
-  const main = parseProfileMap(d.migrationProfileMap).find((m) => m.newUpn)
+  // Le profil principal donne l'utilisateur principal (les autres profils conservés, non)
+  const main = primaryProfile(parseProfileMap(d.migrationProfileMap).filter((m) => m.newUpn))
   if (!main?.newUpn) {
     await step('info', 'Aucun profil transféré : utilisateur principal Intune non renseigné')
     return

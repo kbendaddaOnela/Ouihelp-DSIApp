@@ -211,9 +211,11 @@ const SOURCE_LABEL: Record<NonNullable<MigrationProfileMapping['source']>, strin
 }
 
 /**
- * Profils ONELA du poste. Un seul est conservé et transféré au compte Ouihelp (par défaut le
- * dernier connecté) ; les autres sont supprimés du poste à la bascule, clé de registre et
- * dossier compris. Éditable avant programmation.
+ * Profils ONELA du poste. Le profil principal (par défaut le dernier connecté) est conservé et
+ * transféré au compte Ouihelp, qui devient l'utilisateur principal Intune. La DSI peut en
+ * conserver d'autres (remplaçant d'un salarié absent), chacun repris par son propre compte
+ * Ouihelp ; les autres sont supprimés du poste à la bascule, clé de registre et dossier
+ * compris. Éditable avant programmation.
  */
 function ProfileMap({
   profiles,
@@ -222,6 +224,8 @@ function ProfileMap({
   setTargets,
   mainSid,
   setMainSid,
+  extraSids,
+  setExtraSids,
 }: {
   profiles: MigrationProfileMapping[]
   editable: boolean
@@ -229,6 +233,8 @@ function ProfileMap({
   setTargets: (t: Record<string, string | null>) => void
   mainSid: string | null
   setMainSid: (sid: string | null) => void
+  extraSids: string[]
+  setExtraSids: (sids: string[]) => void
 }) {
   const [editing, setEditing] = useState<string | null>(null)
   const [value, setValue] = useState('')
@@ -239,6 +245,17 @@ function ProfileMap({
     if (upn === undefined) delete next[sid]
     else next[sid] = upn
     setTargets(next)
+  }
+  // Bascules programmées avant les profils multiples : pas de marque, le 1er conservé
+  const primarySid =
+    profiles.find((p) => p.primary)?.oldSid ?? profiles.find((p) => p.action === 'migrate')?.oldSid
+  const keptCount = profiles.filter((p) => p.action === 'migrate').length
+  // Un profil conservé devient le principal : l'ancien principal reste conservé
+  const makePrimary = (sid: string) => {
+    const next = extraSids.filter((x) => x !== sid)
+    if (primarySid && primarySid !== sid && !next.includes(primarySid)) next.push(primarySid)
+    setExtraSids(next)
+    setMainSid(sid)
   }
   return (
     <table className="w-full">
@@ -265,12 +282,22 @@ function ProfileMap({
                     Supprimé du poste (registre et dossier C:\Users)
                   </span>
                   {editable && (
-                    <button
-                      className="text-primary-600 hover:underline"
-                      onClick={() => setMainSid(p.oldSid)}
-                    >
-                      Conserver celui-ci
-                    </button>
+                    <>
+                      <button
+                        className="text-primary-600 hover:underline"
+                        title="Ce profil est conservé en plus du profil principal, et repris par son propre compte Ouihelp (remplacement d'un absent, poste partagé)"
+                        onClick={() => setExtraSids([...extraSids, p.oldSid])}
+                      >
+                        Conserver aussi
+                      </button>
+                      <button
+                        className="text-gray-500 hover:underline"
+                        title="Ce profil remplace le profil principal, qui sera supprimé"
+                        onClick={() => setMainSid(p.oldSid)}
+                      >
+                        Conserver celui-ci à la place
+                      </button>
+                    </>
                   )}
                 </span>
               ) : editing === p.oldSid ? (
@@ -298,9 +325,16 @@ function ProfileMap({
               ) : (
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="font-medium text-gray-700">
-                    Conservé
-                    {editable && (mainSid === p.oldSid ? ' (choix DSI)' : ' (dernier connecté)')},
-                    repris par
+                    {p.oldSid === primarySid
+                      ? `Conservé${keptCount > 1 ? ', principal' : ''}${
+                          editable
+                            ? mainSid === p.oldSid
+                              ? ' (choix DSI)'
+                              : ' (dernier connecté)'
+                            : ''
+                        }`
+                      : 'Conservé aussi'}
+                    , repris par
                   </span>
                   {p.newUpn ? (
                     <span className="font-mono text-gray-800">{p.newUpn}</span>
@@ -328,6 +362,23 @@ function ProfileMap({
                         >
                           Correspondance auto
                         </button>
+                      )}
+                      {p.oldSid !== primarySid && (
+                        <>
+                          <button
+                            className="text-primary-600 hover:underline"
+                            title="Son compte Ouihelp devient l'utilisateur principal Intune du poste"
+                            onClick={() => makePrimary(p.oldSid)}
+                          >
+                            Profil principal
+                          </button>
+                          <button
+                            className="text-gray-500 hover:underline"
+                            onClick={() => setExtraSids(extraSids.filter((x) => x !== p.oldSid))}
+                          >
+                            Ne plus conserver
+                          </button>
+                        </>
                       )}
                     </>
                   )}
@@ -432,6 +483,8 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
   const [targets, setTargets] = useState<Record<string, string | null>>({})
   // Profil conservé et transféré ; null = le dernier connecté, choisi par le serveur
   const [mainSid, setMainSid] = useState<string | null>(null)
+  // Autres profils conservés (remplaçant d'un absent, poste partagé)
+  const [extraSids, setExtraSids] = useState<string[]>([])
   const m = d.migration
   const active = !!m && ACTIVE.includes(m.status)
   const block = blockers(d, mode)
@@ -439,20 +492,22 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
     d.id,
     targets,
     mainSid,
+    extraSids,
     canWrite && !active && mode === 'inplace' && !!d.agent
   )
   const previewProfiles = preview.data?.profiles ?? []
-  const mainProfile = previewProfiles.find((p) => p.action === 'migrate')
+  const keptProfiles = previewProfiles.filter((p) => p.action === 'migrate')
   const removedProfiles = previewProfiles.filter((p) => p.action === 'delete')
+  const keptError = keptProfiles.find((p) => p.error || !p.newSid)
   const previewBlock =
     mode === 'inplace' && preview.data
-      ? !mainProfile
+      ? keptProfiles.length === 0
         ? 'Aucun profil d’utilisateur ONELA sur ce poste'
-        : mainProfile.error
-          ? `Profil conservé : ${mainProfile.error}`
-          : !mainProfile.newSid
-            ? 'Compte Ouihelp du profil conservé à choisir'
-            : null
+        : keptError
+          ? `Profil ${keptError.oldUpn ?? keptError.oldAccount} : ${
+              keptError.error ?? 'compte Ouihelp à choisir'
+            }`
+          : null
       : null
   const silentReset =
     m?.status === 'resetting' &&
@@ -473,10 +528,16 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
             <strong>{d.targetName}</strong>.
           </p>
           <p>
-            <strong>Windows, applications et fichiers sont conservés.</strong> Le profil de{' '}
-            <strong>{mainProfile?.oldUpn ?? mainProfile?.oldAccount}</strong> est transféré au
-            compte <strong>{mainProfile?.newUpn}</strong>. Les applications décochées dans le
-            catalogue « Applications » sont désinstallées.
+            <strong>Windows, applications et fichiers sont conservés.</strong>{' '}
+            {keptProfiles.length > 1 ? 'Profils transférés : ' : 'Le profil transféré : '}
+            {keptProfiles.map((k, i) => (
+              <span key={k.oldSid}>
+                {i > 0 && ', '}
+                <strong>{k.oldUpn ?? k.oldAccount}</strong> → <strong>{k.newUpn}</strong>
+                {keptProfiles.length > 1 && k.primary && ' (principal, utilisateur Intune)'}
+              </span>
+            ))}
+            . Les applications décochées dans le catalogue « Applications » sont désinstallées.
           </p>
           {removedProfiles.length > 0 && (
             <p className="text-amber-700">
@@ -487,7 +548,10 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
           )}
           <p>
             Deux redémarrages, puis l’utilisateur se connecte avec son adresse Ouihelp et retrouve
-            son bureau. Annulation possible jusqu’à l’étape « prêt ».
+            son bureau.
+            {keptProfiles.length > 1 &&
+              ' Chaque personne dont le profil est conservé se connecte avec sa propre adresse Ouihelp (« Autre utilisateur ») et retrouve le sien.'}{' '}
+            Annulation possible jusqu’à l’étape « prêt ».
           </p>
         </div>
       ),
@@ -500,6 +564,7 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
       promptUser,
       profileTargets: targets,
       mainProfileSid: mainSid,
+      extraProfileSids: extraSids,
     })
   }
 
@@ -675,6 +740,8 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
           setTargets={() => {}}
           mainSid={null}
           setMainSid={() => {}}
+          extraSids={[]}
+          setExtraSids={() => {}}
         />
       ) : (
         canWrite &&
@@ -692,7 +759,12 @@ export function MigrationPanel({ d, canWrite }: { d: DeviceMigrationRecord; canW
             targets={targets}
             setTargets={setTargets}
             mainSid={mainSid}
-            setMainSid={setMainSid}
+            setMainSid={(sid) => {
+              setMainSid(sid)
+              setExtraSids((prev) => prev.filter((x) => x !== sid))
+            }}
+            extraSids={extraSids}
+            setExtraSids={setExtraSids}
           />
         ))
       )}
