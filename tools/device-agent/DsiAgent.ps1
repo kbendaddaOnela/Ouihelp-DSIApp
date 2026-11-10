@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.23'
+$AgentVersion = '1.2.24'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -2235,7 +2235,14 @@ function Convert-UserProfile($Map) {
   if (-not $Map.newSid -or -not $Map.newSam) { return @{ ok = $false; message = 'compte Ouihelp absent de l''ordre' } }
   if ($Map.oldSid -eq $Map.newSid) { return @{ ok = $true; message = 'même compte, rien à faire' } }
   $old = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $Map.oldSid }
-  if (-not $old) { return @{ ok = $false; message = 'profil absent du poste' } }
+  # Profil ONELA absent : déjà transféré (profil du compte Ouihelp présent) ou disparu depuis la
+  # programmation. Rien à transférer : ce n'est pas une raison de bloquer la bascule (ONL-ARM-
+  # 8237600, poste resté joint à Ouihelp sans nom DSI ni finalisation après 5 essais).
+  if (-not $old) {
+    $new = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object { $_.SID -eq $Map.newSid }
+    if ($new) { return @{ ok = $true; skipped = $true; message = 'déjà transféré (profil Ouihelp présent)' } }
+    return @{ ok = $true; skipped = $true; message = 'profil ONELA absent du poste, rien à transférer' }
+  }
   if ($old.Loaded) { return @{ ok = $false; message = 'profil encore chargé' } }
 
   foreach ($b in @(Get-ChildItem (Join-Path $old.LocalPath 'AppData\Local\Packages') -Filter 'Microsoft.AAD.BrokerPlugin_*' -Directory -ErrorAction SilentlyContinue)) {
@@ -2435,7 +2442,9 @@ function Invoke-InplaceProfiles($State) {
     $label = $m.oldUpn
     if (-not $label) { $label = $m.oldSid }
     $r = Convert-UserProfile $m
-    if ($r.ok) { $ok += "$label → $($m.newUpn)" } else { $failed += "$label : $($r.message)" }
+    if ($r.ok -and $r.skipped) { $ok += "$label : $($r.message)" }
+    elseif ($r.ok) { $ok += "$label → $($m.newUpn)" }
+    else { $failed += "$label : $($r.message)" }
   }
   if ($ok.Count -eq 0) {
     Send-Progress 'profils' 'error' "Transfert en échec : $($failed -join ' ; ') - nouvelle tentative au prochain passage"
@@ -2547,8 +2556,16 @@ function Invoke-InplaceJoin($State) {
     if (-not (Test-PhaseAttempt $State $JoinAttempts)) {
       $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 3)
       Clear-MigrationNotice
-      Send-Progress 'jonction' 'error' "Poste sorti d'ONELA mais toujours pas joint à Ouihelp : PPKG à reprendre à la main (jeton en bloc expiré ?). Journaux : $diag" @{ fatal = $true }
-      Remove-InplacePayload
+      if ($sawJoinOnly) {
+        # PPKG laissé sur le poste : la reprise se fait sur place, une fois l'inscription réparée
+        Send-Progress 'jonction' 'error' "Poste joint à Entra Ouihelp mais jamais inscrit dans Intune : inscription refusée par Intune, à reprendre à la main (PPKG laissé dans $MigDir). Journaux : $diag" @{ fatal = $true }
+        # État effacé (sinon l'agent retenterait à chaque passage) : « Reprendre la bascule »
+        # le reconstruit depuis l'ordre
+        Remove-Item $InplacePath -Force -ErrorAction SilentlyContinue
+      } else {
+        Send-Progress 'jonction' 'error' "Poste sorti d'ONELA mais toujours pas joint à Ouihelp : PPKG à reprendre à la main (jeton en bloc expiré ?). Journaux : $diag" @{ fatal = $true }
+        Remove-InplacePayload
+      }
       return
     }
     # Jonction restée bloquée sans erreur après le redémarrage : la réinstallation du même PPKG
