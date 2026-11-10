@@ -7,10 +7,14 @@ import { migrations } from '../migration/schema'
 /**
  * Bascule en place : quel profil Windows est conservé, et quel compte Ouihelp en hérite.
  *
- * Décision DSI (16/10/2026) : **un seul profil est transféré, celui du dernier utilisateur
- * connecté** ; tous les autres profils ONELA du poste sont supprimés par l'agent (clé
- * ProfileList et dossier de C:\Users). Un poste d'agence accumule des profils d'anciens
+ * Décision DSI (16/10/2026) : **par défaut un seul profil est transféré, celui du dernier
+ * utilisateur connecté** ; tous les autres profils ONELA du poste sont supprimés par l'agent
+ * (clé ProfileList et dossier de C:\Users). Un poste d'agence accumule des profils d'anciens
  * salariés et d'intervenants, dont les comptes ONELA disparaissent de toute façon le 31/12.
+ *
+ * 10/11/2026 : la DSI peut conserver d'autres profils (remplaçant d'un salarié absent : le
+ * titulaire retrouve son profil à son retour). Chacun est transféré à son propre compte
+ * Ouihelp ; le profil principal donne l'utilisateur principal Intune.
  *
  * Le transfert (Win32_UserProfile.ChangeOwner, côté agent) demande le SID du compte Ouihelp.
  * Pour un compte Entra, c'est l'attribut `securityIdentifier` (S-1-12-1-…), lisible par Graph
@@ -136,16 +140,18 @@ export function pickMainProfile(
 }
 
 /**
- * Devenir de chaque profil ONELA du poste : un seul est conservé et transféré (le dernier
- * connecté, ou celui imposé par `mainSid`), les autres sont supprimés. `targets` (saisie DSI) :
- * SID → compte Ouihelp du profil conservé.
+ * Devenir de chaque profil ONELA du poste : le profil principal (le dernier connecté, ou celui
+ * imposé par `mainSid`) et ceux de `extraSids` sont conservés et transférés, les autres sont
+ * supprimés. `targets` (saisie DSI) : SID → compte Ouihelp d'un profil conservé.
  */
 export async function resolveProfileMap(
   profiles: DeviceAgentProfile[],
   targets: Record<string, string | null> = {},
-  mainSid?: string | null
+  mainSid?: string | null,
+  extraSids: string[] = []
 ): Promise<MigrationProfileMapping[]> {
   const main = pickMainProfile(profiles, mainSid)
+  const kept = new Set([main?.sid, ...extraSids].filter((x): x is string => !!x))
   const c = ouihelpCreds()
   const token = await getMsToken(c.tid, c.cid, c.sec)
   const out: MigrationProfileMapping[] = []
@@ -156,7 +162,8 @@ export async function resolveProfileMap(
       oldUpn: p.upn ?? null,
       localDataMb: p.localDataMb,
       lastLogonAt: p.lastLogonTime ?? p.lastUseTime,
-      action: p.sid === main?.sid ? 'migrate' : 'delete',
+      action: kept.has(p.sid) ? 'migrate' : 'delete',
+      primary: p.sid === main?.sid,
       newUpn: null,
       newSid: null,
       newSam: null,
@@ -220,12 +227,29 @@ export async function resolveProfileMap(
       out.push({ ...base, error: err instanceof Error ? err.message : String(err) })
     }
   }
-  // Le profil conservé en premier, les profils supprimés ensuite, du plus récent au plus ancien
+  // Deux profils vers le même compte Ouihelp : le second écraserait le premier (même SID)
+  const seen = new Map<string, string>()
+  for (const m of out) {
+    if (m.action !== 'migrate' || !m.newSid || m.error) continue
+    const other = seen.get(m.newSid)
+    if (other) m.error = `${m.newUpn} reprend déjà le profil ${other} : choisir un autre compte`
+    else seen.set(m.newSid, m.oldUpn ?? m.oldAccount ?? m.oldSid)
+  }
+  // Le profil principal, puis les autres profils conservés, puis les profils supprimés, chaque
+  // groupe du plus récent au plus ancien
+  const rank = (m: MigrationProfileMapping) => (m.primary ? 0 : m.action === 'migrate' ? 1 : 2)
   return out.sort(
     (a, b) =>
-      (a.action === 'migrate' ? 0 : 1) - (b.action === 'migrate' ? 0 : 1) ||
+      rank(a) - rank(b) ||
       new Date(b.lastLogonAt ?? 0).getTime() - new Date(a.lastLogonAt ?? 0).getTime()
   )
+}
+
+/** Profil principal d'une bascule : marqué, ou le 1er conservé (bascules plus anciennes). */
+export function primaryProfile(
+  map: MigrationProfileMapping[]
+): MigrationProfileMapping | undefined {
+  return map.find((m) => m.primary) ?? map.find((m) => m.action === 'migrate')
 }
 
 export function parseProfileMap(raw: string | null): MigrationProfileMapping[] {

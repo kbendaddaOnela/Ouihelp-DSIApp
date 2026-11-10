@@ -55,12 +55,14 @@ export const deviceMigrationApi = {
   previewProfiles: (
     id: string,
     profileTargets: Record<string, string | null>,
-    mainProfileSid: string | null
+    mainProfileSid: string | null,
+    extraProfileSids: string[]
   ) =>
     apiClient
       .post<MigrationProfilesResponse>(`/device-migration/devices/${id}/migration/profiles`, {
         profileTargets,
         mainProfileSid,
+        extraProfileSids,
       })
       .then((r) => r.data),
 

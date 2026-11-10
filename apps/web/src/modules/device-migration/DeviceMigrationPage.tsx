@@ -20,6 +20,7 @@ import type {
   DeviceJoinType,
   DeviceMigrationRecord,
   DeviceMigrationState,
+  MigrationStatus,
 } from '@dsi-app/shared'
 import { cn } from '@/lib/utils'
 import { usePermission } from '@/hooks/usePermission'
@@ -717,6 +718,22 @@ function DeviceDetail({ d, canWrite }: { d: DeviceMigrationRecord; canWrite: boo
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
+// Bascule engagée (programmée → jonction) ou en échec : les postes à suivre de près
+const RUNNING_STATUSES: MigrationStatus[] = [
+  'scheduled',
+  'staging',
+  'staged',
+  'cleanup',
+  'ready',
+  'resetting',
+  'joining',
+  'failed',
+]
+
+function isRunning(d: DeviceMigrationRecord): boolean {
+  return !!d.migration && RUNNING_STATUSES.includes(d.migration.status)
+}
+
 export default function DeviceMigrationPage() {
   const canWrite = usePermission('migration:write')
   const { data, isLoading, error } = useDeviceMigrations()
@@ -725,6 +742,7 @@ export default function DeviceMigrationPage() {
 
   const [q, setQ] = useState('')
   const [state, setState] = useState<DeviceMigrationState | ''>('')
+  const [running, setRunning] = useState(false)
   const [join, setJoin] = useState<DeviceJoinType | ''>('')
   const [region, setRegion] = useState('')
   const [agency, setAgency] = useState('')
@@ -781,14 +799,20 @@ export default function DeviceMigrationPage() {
       unknown: 0,
     }
     let withAgent = 0
+    let running = 0
+    let failed = 0
     for (const d of devices) {
       byState[d.state]++
+      if (isRunning(d)) {
+        running++
+        if (d.migration?.status === 'failed') failed++
+      }
       if (d.state === 'to_migrate') {
         byJoin[d.joinType]++
         if (d.agent) withAgent++
       }
     }
-    return { byState, byJoin, withAgent }
+    return { byState, byJoin, withAgent, running, failed }
   }, [devices])
 
   const filtered = useMemo(() => {
@@ -797,6 +821,7 @@ export default function DeviceMigrationPage() {
       .filter(
         (d) =>
           (!state || d.state === state) &&
+          (!running || isRunning(d)) &&
           (!join || d.joinType === join) &&
           (!region || d.region === region) &&
           (!agency || d.agency === agency) &&
@@ -828,7 +853,7 @@ export default function DeviceMigrationPage() {
             ].some((v) => v?.toLowerCase().includes(needle)))
       )
       .sort((a, b) => listRank(a) - listRank(b))
-  }, [devices, q, state, join, region, agency, agentFilter, intune, latestAgent])
+  }, [devices, q, state, running, join, region, agency, agentFilter, intune, latestAgent])
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 py-6">
@@ -912,32 +937,54 @@ export default function DeviceMigrationPage() {
         </p>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+            <Tile
+              label="Migration en cours"
+              value={counts.running}
+              sub={counts.failed ? `dont ${counts.failed} en échec` : 'programmées ou sur le poste'}
+              active={running}
+              onClick={() => {
+                setRunning(!running)
+                setState('')
+              }}
+            />
             <Tile
               label="À migrer"
               value={counts.byState.to_migrate}
               sub={`${counts.byJoin.entra_joined} joined · ${counts.byJoin.hybrid} hybrides · ${counts.byJoin.registered + counts.byJoin.unknown} autres`}
               active={state === 'to_migrate'}
-              onClick={() => setState(state === 'to_migrate' ? '' : 'to_migrate')}
+              onClick={() => {
+                setRunning(false)
+                setState(state === 'to_migrate' ? '' : 'to_migrate')
+              }}
             />
             <Tile
               label="Chez Ouihelp"
               value={counts.byState.migrated}
               active={state === 'migrated'}
-              onClick={() => setState(state === 'migrated' ? '' : 'migrated')}
+              onClick={() => {
+                setRunning(false)
+                setState(state === 'migrated' ? '' : 'migrated')
+              }}
             />
             <Tile
               label="Inactifs > 90 j"
               value={counts.byState.stale}
               sub="à nettoyer plutôt qu’à migrer"
               active={state === 'stale'}
-              onClick={() => setState(state === 'stale' ? '' : 'stale')}
+              onClick={() => {
+                setRunning(false)
+                setState(state === 'stale' ? '' : 'stale')
+              }}
             />
             <Tile
               label="Exclus"
               value={counts.byState.excluded}
               active={state === 'excluded'}
-              onClick={() => setState(state === 'excluded' ? '' : 'excluded')}
+              onClick={() => {
+                setRunning(false)
+                setState(state === 'excluded' ? '' : 'excluded')
+              }}
             />
             <Tile
               label="Avec agent (à migrer)"
@@ -946,6 +993,7 @@ export default function DeviceMigrationPage() {
               active={state === 'to_migrate' && agentFilter === 'with'}
               onClick={() => {
                 const on = state === 'to_migrate' && agentFilter === 'with'
+                setRunning(false)
                 setState(on ? '' : 'to_migrate')
                 setAgentFilter(on ? '' : 'with')
               }}
@@ -955,7 +1003,10 @@ export default function DeviceMigrationPage() {
               value={counts.byState.gone}
               sub="absents de la dernière synchro"
               active={state === 'gone'}
-              onClick={() => setState(state === 'gone' ? '' : 'gone')}
+              onClick={() => {
+                setRunning(false)
+                setState(state === 'gone' ? '' : 'gone')
+              }}
             />
           </div>
 

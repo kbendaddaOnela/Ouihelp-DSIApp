@@ -101,6 +101,7 @@ export function useScheduleMigration() {
       promptUser: boolean
       profileTargets?: Record<string, string | null>
       mainProfileSid?: string | null
+      extraProfileSids?: string[]
     }) => deviceMigrationApi.scheduleMigration(id, req),
     onSettled: () => qc.invalidateQueries({ queryKey: ['device-migrations'] }),
   })
@@ -144,11 +145,13 @@ export function useProfilePreview(
   id: string,
   targets: Record<string, string | null>,
   mainProfileSid: string | null,
+  extraProfileSids: string[],
   enabled: boolean
 ) {
   return useQuery({
-    queryKey: ['device-migration-profiles', id, targets, mainProfileSid],
-    queryFn: () => deviceMigrationApi.previewProfiles(id, targets, mainProfileSid),
+    queryKey: ['device-migration-profiles', id, targets, mainProfileSid, extraProfileSids],
+    queryFn: () =>
+      deviceMigrationApi.previewProfiles(id, targets, mainProfileSid, extraProfileSids),
     enabled,
     staleTime: 60_000,
   })

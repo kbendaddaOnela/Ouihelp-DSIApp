@@ -607,6 +607,14 @@ function parseMainSid(raw: unknown): string | null | undefined {
   return raw
 }
 
+/** Autres profils conservés (SID) ; null = saisie invalide. */
+function parseExtraSids(raw: unknown): string[] | null {
+  if (raw === undefined || raw === null) return []
+  if (!Array.isArray(raw)) return null
+  if (!raw.every((s) => typeof s === 'string' && /^S-1-[\d-]+$/.test(s))) return null
+  return [...new Set(raw as string[])]
+}
+
 function parseTargets(raw: unknown): Record<string, string | null> | null {
   if (raw === undefined) return {}
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
@@ -629,6 +637,7 @@ deviceMigrationRouter.post(
     const body = (await c.req.json().catch(() => ({}))) as {
       profileTargets?: unknown
       mainProfileSid?: unknown
+      extraProfileSids?: unknown
     }
     const targets = parseTargets(body.profileTargets)
     if (!targets)
@@ -642,11 +651,17 @@ deviceMigrationRouter.post(
         { error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' },
         400
       )
+    const extraSids = parseExtraSids(body.extraProfileSids)
+    if (!extraSids)
+      return c.json(
+        { error: 'Bad Request', message: 'extraProfileSids : liste de SID de profils' },
+        400
+      )
     const a = await latestAgent(id)
     if (!a?.report)
       return c.json({ error: 'Not Found', message: 'Aucun rapport d’agent pour ce poste' }, 404)
     const body2: MigrationProfilesResponse = {
-      profiles: await resolveProfileMap(a.report.profiles, targets, mainSid),
+      profiles: await resolveProfileMap(a.report.profiles, targets, mainSid, extraSids),
     }
     return c.json(body2)
   }
@@ -681,6 +696,12 @@ deviceMigrationRouter.post(
     if (mainSid === undefined)
       return c.json(
         { error: 'Bad Request', message: 'mainProfileSid : SID de profil ou null' },
+        400
+      )
+    const extraSids = parseExtraSids(body?.extraProfileSids)
+    if (!extraSids)
+      return c.json(
+        { error: 'Bad Request', message: 'extraProfileSids : liste de SID de profils' },
         400
       )
     const d = await loadDevice(id)
@@ -726,12 +747,15 @@ deviceMigrationRouter.post(
         return refuse(
           `Agent ${a.report.agentVersion} trop ancien : la bascule en place demande l’agent ${INPLACE_AGENT_VERSION}`
         )
-      profileMap = await resolveProfileMap(a.report.profiles, targets, mainSid)
-      const main = profileMap.find((m) => m.action === 'migrate')
-      if (!main) return refuse('Aucun profil d’utilisateur ONELA sur ce poste : rien à transférer')
-      if (main.error) return refuse(`Profil ${main.oldAccount ?? main.oldSid} : ${main.error}`)
-      if (!main.newSid)
-        return refuse(`Profil ${main.oldAccount ?? main.oldSid} : compte Ouihelp à choisir`)
+      profileMap = await resolveProfileMap(a.report.profiles, targets, mainSid, extraSids)
+      const kept = profileMap.filter((m) => m.action === 'migrate')
+      if (kept.length === 0)
+        return refuse('Aucun profil d’utilisateur ONELA sur ce poste : rien à transférer')
+      for (const k of kept) {
+        if (k.error) return refuse(`Profil ${k.oldAccount ?? k.oldSid} : ${k.error}`)
+        if (!k.newSid)
+          return refuse(`Profil ${k.oldAccount ?? k.oldSid} : compte Ouihelp à choisir`)
+      }
     }
 
     const allRows = groupDeviceRows(await db.select().from(deviceMigrations)).map((g) => g.primary)
@@ -745,7 +769,7 @@ deviceMigrationRouter.post(
     const promptUser = body!.promptUser !== false
     const by = c.get('dbUser').email
     const now = new Date()
-    const main = profileMap.find((m) => m.action === 'migrate')
+    const kept = profileMap.filter((m) => m.action === 'migrate')
     const removed = profileMap.filter((m) => m.action === 'delete')
     const removedLabel = removed.length
       ? ` — ${removed.length} autre(s) profil(s) supprimé(s) du poste : ${removed
@@ -754,7 +778,12 @@ deviceMigrationRouter.post(
       : ' — aucun autre profil sur le poste'
     const what =
       mode === 'inplace'
-        ? `Bascule en place programmée par ${by} — profil conservé ${main?.oldUpn ?? main?.oldAccount} → ${main?.newUpn}${removedLabel}`
+        ? `Bascule en place programmée par ${by} — ${kept.length > 1 ? `${kept.length} profils conservés` : 'profil conservé'} ${kept
+            .map(
+              (k) =>
+                `${k.oldUpn ?? k.oldAccount} → ${k.newUpn}${kept.length > 1 && k.primary ? ' (principal)' : ''}`
+            )
+            .join(', ')}${removedLabel}`
         : `Réinstallation propre programmée par ${by}`
     await db
       .update(deviceMigrations)

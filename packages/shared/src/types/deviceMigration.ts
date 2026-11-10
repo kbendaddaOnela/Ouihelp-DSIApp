@@ -159,7 +159,8 @@ export type MigrationMode = 'inplace' | 'reset'
 
 /**
  * Devenir d'un profil Windows ONELA à la bascule en place :
- * - migrate : profil conservé et donné au compte Ouihelp (un seul par poste, le dernier connecté) ;
+ * - migrate : profil conservé et donné au compte Ouihelp. Par défaut un seul, le dernier
+ *   connecté ; la DSI peut en conserver d'autres (poste partagé, remplacement d'un absent) ;
  * - delete  : profil supprimé du poste (clé ProfileList et dossier de C:\Users). Le compte ONELA
  *   ne pourra de toute façon plus ouvrir de session une fois le poste sorti du tenant.
  */
@@ -175,6 +176,11 @@ export interface MigrationProfileMapping {
   /** Dernière ouverture de session connue : c'est elle qui désigne le profil conservé */
   lastLogonAt: string | null
   action: MigrationProfileAction
+  /**
+   * Profil principal : son compte Ouihelp devient l'utilisateur principal Intune du poste.
+   * Absent des bascules programmées avant les profils multiples (= le 1er profil conservé).
+   */
+  primary?: boolean
   /** Compte Ouihelp retenu (profil conservé uniquement) */
   newUpn: string | null
   newSid: string | null
@@ -238,13 +244,18 @@ export interface ScheduleMigrationRequest {
   /** true (défaut) : prévenir l'utilisateur et attendre « Démarrer » ; false : agir hors session */
   promptUser?: boolean
   /**
-   * Bascule en place : profil conservé et transféré (SID). Absent = le dernier profil connecté.
-   * Tous les autres profils ONELA du poste sont supprimés.
+   * Bascule en place : profil principal, conservé et transféré (SID), dont le compte devient
+   * l'utilisateur principal Intune. Absent = le dernier profil connecté.
    */
   mainProfileSid?: string | null
   /**
+   * Bascule en place : autres profils conservés et transférés chacun à son compte Ouihelp
+   * (poste partagé, remplacement d'un absent). Tous les autres profils ONELA sont supprimés.
+   */
+  extraProfileSids?: string[]
+  /**
    * Bascule en place : compte Ouihelp choisi par la DSI pour un profil (clé = SID du profil).
-   * Seul celui du profil conservé est utilisé. Absent = correspondance automatique.
+   * Seuls ceux des profils conservés sont utilisés. Absent = correspondance automatique.
    */
   profileTargets?: Record<string, string | null>
 }
