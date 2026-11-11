@@ -1,5 +1,5 @@
 // Service annuaire ONELA : parsing CSV + push dans les contacts Google (People API)
-import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getGoogleAccessTokenForUser } from '../../integrations/google/directory'
 import { fetchWithTimeout } from '../../lib/httpClient'
 
 const CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts'

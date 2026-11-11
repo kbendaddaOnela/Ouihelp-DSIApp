@@ -2,8 +2,8 @@ import { randomUUID } from 'crypto'
 import { eq, sql } from 'drizzle-orm'
 import { db } from '../../db/index'
 import { cachedUsers, cachedDevices, syncStatus } from './schema'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
-import { getMsToken, ouihelpCreds, onelaCreds } from '../../lib/msAuth'
+import { getGoogleAccessTokenForUser } from '../../integrations/google/directory'
+import { getMsToken, ouihelpCreds, onelaCreds } from '../../integrations/microsoft/auth'
 
 const ADMIN_DIRECTORY_SCOPE = 'https://www.googleapis.com/auth/admin.directory.user.readonly'
 

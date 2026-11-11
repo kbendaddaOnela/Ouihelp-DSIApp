@@ -12,7 +12,7 @@
 //   selon le scope cmdlet utilisé).
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getAccessToken } from '../../lib/msAuth'
+import { getAccessToken } from '../../integrations/microsoft/auth'
 
 async function exchangeAdminToken(): Promise<string> {
   const tid = process.env['ONELA_TENANT_ID']

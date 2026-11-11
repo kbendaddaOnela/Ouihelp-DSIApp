@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { meRouter } from './me'
-import { migrationRouter } from '../modules/migration/routes'
+import { migrationRouter } from '../modules/migration/routes/index'
 import { migrationTargetsRouter } from '../modules/migration/targetRoutes'
 import { inventoryRouter } from '../modules/inventory/routes'
 import { budgetRouter } from '../modules/budget/routes'

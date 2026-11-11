@@ -13,7 +13,7 @@ import {
   retryFailedMessages,
   isSharedMigrationBusy,
 } from './worker'
-import { assignLicense, skuDisplayName } from '../migration/googleLicenseService'
+import { assignLicense, skuDisplayName } from '../../integrations/google/licensing'
 import {
   allowExternalPostsOnGroup,
   enableCollaborativeInbox as enableCollabInboxOnGroup,
@@ -34,15 +34,15 @@ import {
   setupSendAsForAllMembers,
   ensureSendAs,
   setSendAsAsDefault,
-} from './gmailUserSetupService'
-import { addGoogleAlias } from '../../lib/google'
+} from '../../integrations/google/gmailSettings'
+import { addGoogleAlias } from '../../integrations/google/directory'
 import {
   searchGoogleUsers,
   removeGmailDelegate,
   listGmailDelegates,
   getGoogleUser,
   ensureGoogleUserName,
-} from './googleUserService'
+} from '../../integrations/google/users'
 import { resolveOnelaUpnsToGoogle, normalizeDelegateEmail } from './delegateService'
 import type {
   SearchSharedMailboxesResponse,

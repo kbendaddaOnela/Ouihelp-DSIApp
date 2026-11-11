@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import type { DeviceEntraObject, DeviceJoinType, DeviceMigrationSyncState } from '@dsi-app/shared'
 import { db } from '../../db/index'
 import { syncStatus } from '../inventory/schema'
-import { getMsToken, ouihelpCreds, onelaCreds } from '../../lib/msAuth'
+import { getMsToken, ouihelpCreds, onelaCreds } from '../../integrations/microsoft/auth'
 import { deviceMigrations, type DeviceMigrationRow, type NewDeviceMigrationRow } from './schema'
 
 /**

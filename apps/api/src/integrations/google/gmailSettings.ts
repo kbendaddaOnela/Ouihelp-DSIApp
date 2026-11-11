@@ -15,7 +15,7 @@
 //   - https://www.googleapis.com/auth/gmail.settings.sharing
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getGoogleAccessTokenForUser } from './directory'
 
 const SCOPE_GMAIL_LABELS = 'https://www.googleapis.com/auth/gmail.labels'
 const SCOPE_GMAIL_SETTINGS_BASIC = 'https://www.googleapis.com/auth/gmail.settings.basic'

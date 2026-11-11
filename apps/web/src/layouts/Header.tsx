@@ -3,20 +3,7 @@ import { LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-
-// Libellés des routes pour le breadcrumb
-const ROUTE_LABELS: Record<string, string> = {
-  tickets: 'Ticketing',
-  accounts: 'Création de comptes',
-  inventory: 'Inventaire matériel',
-  apps: 'Inventaire applicatif',
-  licenses: 'Licences',
-  budget: 'Budget & Facturation',
-  migration: 'Migration ONELA',
-  'shared-mailbox': 'Migration Shared Mailbox',
-  'sharepoint-migration': 'Migration SharePoint',
-  'sharepoint-ximi': 'Migration SharePoint Ximi',
-}
+import { routeLabel } from '@/routes'
 
 const ROLE_LABELS = {
   admin: 'Admin',
@@ -29,7 +16,7 @@ export const Header = ({ onOpenNav }: { onOpenNav: () => void }) => {
   const { pathname } = useLocation()
 
   const segments = pathname.split('/').filter(Boolean)
-  const currentLabel = segments[0] ? (ROUTE_LABELS[segments[0]] ?? segments[0]) : 'Tableau de bord'
+  const currentLabel = segments[0] ? (routeLabel(segments[0]) ?? segments[0]) : 'Tableau de bord'
 
   const initials = user?.name
     .split(' ')
@@ -79,7 +66,7 @@ export const Header = ({ onOpenNav }: { onOpenNav: () => void }) => {
         {/* Déconnexion */}
         <button
           onClick={() => void logout()}
-          className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
           aria-label="Se déconnecter"
         >
           <LogOut className="h-4 w-4" />

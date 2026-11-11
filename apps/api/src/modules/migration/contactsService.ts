@@ -2,8 +2,8 @@
 // Lecture Graph (Contacts.Read App) → Écriture People API (impersonation user)
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
-import { getOnelaToken } from '../../lib/msAuth'
+import { getGoogleAccessTokenForUser } from '../../integrations/google/directory'
+import { getOnelaToken } from '../../integrations/microsoft/auth'
 
 const CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts'
 

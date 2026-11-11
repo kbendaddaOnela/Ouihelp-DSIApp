@@ -7,7 +7,7 @@
 // L'app a déjà la permission Mail.ReadWrite tenant-wide → marche sur les BAL partagées.
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getAccessToken } from '../../lib/msAuth'
+import { getAccessToken } from '../../integrations/microsoft/auth'
 
 interface ExchangeMailbox {
   Identity: string

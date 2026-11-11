@@ -35,13 +35,7 @@ import {
   useDeleteXimiMigration,
 } from '../hooks/useXimiMigration'
 import { ximiApi } from '../api'
-
-function fmtBytes(n: number): string {
-  if (!n) return '0 o'
-  const units = ['o', 'Ko', 'Mo', 'Go', 'To']
-  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1)
-  return `${(n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`
-}
+import { fmtBytes } from '@/lib/format'
 
 const STATUS_STYLES: Record<
   XimiMigrationRecord['status'],

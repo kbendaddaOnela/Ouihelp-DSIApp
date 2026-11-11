@@ -1,6 +1,10 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { AuthenticatedTemplate, UnauthenticatedTemplate, useMsalAuthentication } from '@azure/msal-react'
+import {
+  AuthenticatedTemplate,
+  UnauthenticatedTemplate,
+  useMsalAuthentication,
+} from '@azure/msal-react'
 import { InteractionType } from '@azure/msal-browser'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppShell } from '@/layouts/AppShell'
@@ -8,20 +12,7 @@ import LoginPage from '@/pages/LoginPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 import DashboardPage from '@/pages/DashboardPage'
 import { Spinner } from '@/components/ui/spinner'
-
-// Chargement différé des pages pour optimiser le bundle initial
-const TicketingPage = lazy(() => import('@/modules/ticketing/TicketingPage'))
-const AccountsPage = lazy(() => import('@/modules/accounts/AccountsPage'))
-const OffboardingPage = lazy(() => import('@/modules/offboarding/OffboardingPage'))
-const DeviceMigrationPage = lazy(() => import('@/modules/device-migration/DeviceMigrationPage'))
-const InventoryPage = lazy(() => import('@/modules/inventory/InventoryPage'))
-const AppsInventoryPage = lazy(() => import('@/modules/apps-inventory/AppsInventoryPage'))
-const LicensesPage = lazy(() => import('@/modules/licenses/LicensesPage'))
-const BudgetPage = lazy(() => import('@/modules/budget/BudgetPage'))
-const MigrationPage = lazy(() => import('@/modules/migration/MigrationPage'))
-const SharedMailboxPage = lazy(() => import('@/modules/shared-mailbox/SharedMailboxPage'))
-const SharepointMigrationPage = lazy(() => import('@/modules/sharepoint-migration/SharepointMigrationPage'))
-const XimiMigrationPage = lazy(() => import('@/modules/sharepoint-ximi/XimiMigrationPage'))
+import { APP_ROUTES } from '@/routes'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -53,102 +44,18 @@ export function App() {
           <Routes>
             <Route path="/" element={<AppShell />}>
               <Route index element={<DashboardPage />} />
-              <Route
-                path="tickets"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <TicketingPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="accounts"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <AccountsPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="offboarding"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <OffboardingPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="device-migration"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <DeviceMigrationPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="inventory"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <InventoryPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="apps"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <AppsInventoryPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="licenses"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <LicensesPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="budget"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <BudgetPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="migration"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <MigrationPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="shared-mailbox"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <SharedMailboxPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="sharepoint-migration"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <SharepointMigrationPage />
-                  </Suspense>
-                }
-              />
-              <Route
-                path="sharepoint-ximi"
-                element={
-                  <Suspense fallback={<PageLoader />}>
-                    <XimiMigrationPage />
-                  </Suspense>
-                }
-              />
+              {/* Une route par entrée du registre (src/routes.tsx), chargée à la demande */}
+              {APP_ROUTES.map(({ path, component: Page }) => (
+                <Route
+                  key={path}
+                  path={path}
+                  element={
+                    <Suspense fallback={<PageLoader />}>
+                      <Page />
+                    </Suspense>
+                  }
+                />
+              ))}
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>

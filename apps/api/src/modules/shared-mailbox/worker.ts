@@ -33,17 +33,17 @@ import {
   type GraphFolder,
   type GraphMessageMeta,
 } from '../migration/mailService'
-import { addGoogleAlias } from '../../lib/google'
+import { addGoogleAlias } from '../../integrations/google/directory'
 import { ensureGoogleGroup, archiveMessageToGroup, addGroupAlias } from './googleGroupsService'
 import { ensureBccTransportRule, buildGoogleRoutingAddress } from './transportRuleService'
-import { ensureSendAs, setSendAsAsDefault } from './gmailUserSetupService'
+import { ensureSendAs, setSendAsAsDefault } from '../../integrations/google/gmailSettings'
 import {
   ensureSharedGoogleAccount,
   ensureGmailDelegate,
   ensureGoogleUserName,
   strongRandomPassword,
   waitForMailboxSetup,
-} from './googleUserService'
+} from '../../integrations/google/users'
 
 const sanitize = (s: string | undefined | null, maxLen = 500): string | null =>
   s ? s.replace(/[\u{10000}-\u{10FFFF}]/gu, '').slice(0, maxLen) || null : null

@@ -2,8 +2,8 @@
 // Lecture Graph (Calendars.Read App) → Écriture Calendar API (impersonation user)
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
-import { getOnelaToken } from '../../lib/msAuth'
+import { getGoogleAccessTokenForUser } from '../../integrations/google/directory'
+import { getOnelaToken } from '../../integrations/microsoft/auth'
 
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar'
 

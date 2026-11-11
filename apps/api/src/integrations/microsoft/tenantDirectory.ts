@@ -1,6 +1,6 @@
 // Graph API client — client credentials flow (no SDK dependency)
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getAccessToken, getOnelaToken } from '../../lib/msAuth'
+import { getAccessToken, getOnelaToken } from './auth'
 
 async function graphRequest<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetchWithTimeout(`https://graph.microsoft.com/v1.0${path}`, {

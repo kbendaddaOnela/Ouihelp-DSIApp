@@ -13,7 +13,7 @@
 //     groupes dynamiques d'agence par nom)
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getAccessToken, getOnelaToken } from '../../lib/msAuth'
+import { getAccessToken, getOnelaToken } from '../../integrations/microsoft/auth'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 

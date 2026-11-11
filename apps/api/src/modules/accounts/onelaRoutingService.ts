@@ -27,7 +27,7 @@
 
 import { randomBytes } from 'crypto'
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getAccessToken } from '../../lib/msAuth'
+import { getAccessToken } from '../../integrations/microsoft/auth'
 
 /** Mot de passe fort et aléatoire pour le MailUser (jamais communiqué). */
 function strongRandomPassword(): string {

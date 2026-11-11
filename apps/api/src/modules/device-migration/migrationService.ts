@@ -8,7 +8,7 @@ import {
   type MigrationStep,
 } from '@dsi-app/shared'
 import { db } from '../../db/index'
-import { getMsToken, onelaCreds, ouihelpCreds } from '../../lib/msAuth'
+import { getMsToken, onelaCreds, ouihelpCreds } from '../../integrations/microsoft/auth'
 import { deviceMigrations, type DeviceMigrationRow } from './schema'
 import { parseProfileMap, primaryProfile } from './profileMapping'
 

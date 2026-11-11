@@ -1,113 +1,34 @@
 import { NavLink, Link } from 'react-router-dom'
-import {
-  UserPlus,
-  UserMinus,
-  Monitor,
-  AppWindow,
-  KeyRound,
-  Wallet,
-  ChevronLeft,
-  ChevronRight,
-  Building2,
-  ArrowRightLeft,
-  Mail,
-  HardDriveDownload,
-  Network,
-  Laptop,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, Building2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAnyPermission } from '@/hooks/usePermission'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
-import type { Permission } from '@dsi-app/shared'
+import { APP_ROUTES, type AppRoute } from '@/routes'
 
-interface NavItem {
-  path: string
-  label: string
-  icon: React.ElementType
-  requiredPermissions: Permission[]
-}
+// Entrées du menu : les pages du registre marquées `inNav`, dans l'ordre du registre.
+const NAV_ITEMS = APP_ROUTES.filter((r) => r.inNav)
 
-const NAV_ITEMS: NavItem[] = [
-  {
-    path: '/migration',
-    label: 'Migration ONELA',
-    icon: ArrowRightLeft,
-    requiredPermissions: ['migration:read'],
-  },
-  {
-    path: '/shared-mailbox',
-    label: 'Migration Shared Mailbox',
-    icon: Mail,
-    requiredPermissions: ['migration:read'],
-  },
-  {
-    path: '/sharepoint-migration',
-    label: 'Migration SharePoint',
-    icon: HardDriveDownload,
-    requiredPermissions: ['migration:read'],
-  },
-  {
-    path: '/sharepoint-ximi',
-    label: 'Migration SharePoint Ximi',
-    icon: Network,
-    requiredPermissions: ['migration:read'],
-  },
-  {
-    path: '/device-migration',
-    label: 'Migration des postes',
-    icon: Laptop,
-    requiredPermissions: ['migration:read'],
-  },
-  {
-    path: '/accounts',
-    label: 'Création de comptes',
-    icon: UserPlus,
-    requiredPermissions: ['accounts:read'],
-  },
-  {
-    path: '/offboarding',
-    label: 'Offboarding',
-    icon: UserMinus,
-    requiredPermissions: ['offboarding:read'],
-  },
-  {
-    path: '/inventory',
-    label: 'Inventaire matériel',
-    icon: Monitor,
-    requiredPermissions: ['inventory:read'],
-  },
-  {
-    path: '/apps',
-    label: 'Inventaire applicatif',
-    icon: AppWindow,
-    requiredPermissions: ['apps-inventory:read'],
-  },
-  {
-    path: '/licenses',
-    label: 'Licences',
-    icon: KeyRound,
-    requiredPermissions: ['licenses:read'],
-  },
-  {
-    path: '/budget',
-    label: 'Budget & Facturation',
-    icon: Wallet,
-    requiredPermissions: ['budget:read'],
-  },
-]
+type NavItem = Pick<AppRoute, 'path' | 'label' | 'icon' | 'requiredPermissions'>
 
 interface NavItemProps extends NavItem {
   collapsed: boolean
   onNavigate: () => void
 }
 
-const SidebarNavItem = ({ path, label, icon: Icon, requiredPermissions, collapsed, onNavigate }: NavItemProps) => {
+const SidebarNavItem = ({
+  path,
+  label,
+  icon: Icon,
+  requiredPermissions,
+  collapsed,
+  onNavigate,
+}: NavItemProps) => {
   const hasAccess = useAnyPermission(requiredPermissions)
   if (!hasAccess) return null
 
   return (
     <NavLink
-      to={path}
+      to={`/${path}`}
       onClick={onNavigate}
       className={({ isActive }) =>
         cn(
@@ -147,40 +68,47 @@ export const Sidebar = ({ mobileOpen, onClose }: { mobileOpen: boolean; onClose:
           collapsed ? 'w-16' : 'w-64'
         )}
       >
-      {/* Logo / App name */}
-      <Link to="/" onClick={onClose} className={cn('flex items-center gap-3 border-b border-gray-200 px-4 py-5 hover:bg-gray-50 transition-colors', collapsed && 'justify-center px-2')}>
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary-600">
-          <Building2 className="h-5 w-5 text-white" />
-        </div>
-        {!collapsed && (
-          <div className="min-w-0">
-            <p className="truncate text-sm font-bold text-gray-900">DSI App</p>
-            <p className="truncate text-xs text-gray-500">ONELA</p>
-          </div>
-        )}
-      </Link>
-
-      {/* Navigation */}
-      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-        {NAV_ITEMS.map((item) => (
-          <SidebarNavItem key={item.path} {...item} collapsed={collapsed} onNavigate={onClose} />
-        ))}
-      </nav>
-
-      {/* Bouton collapse — sans objet sur mobile où la sidebar est un tiroir */}
-      <div className="hidden border-t border-gray-200 p-3 lg:block">
-        <button
-          onClick={() => setCollapsed((c) => !c)}
+        {/* Logo / App name */}
+        <Link
+          to="/"
+          onClick={onClose}
           className={cn(
-            'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors',
+            'flex items-center gap-3 border-b border-gray-200 px-4 py-5 transition-colors hover:bg-gray-50',
             collapsed && 'justify-center px-2'
           )}
-          aria-label={collapsed ? 'Déplier la sidebar' : 'Replier la sidebar'}
         >
-          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-          {!collapsed && <span>Réduire</span>}
-        </button>
-      </div>
+          <div className="bg-primary-600 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
+            <Building2 className="h-5 w-5 text-white" />
+          </div>
+          {!collapsed && (
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-gray-900">DSI App</p>
+              <p className="truncate text-xs text-gray-500">ONELA</p>
+            </div>
+          )}
+        </Link>
+
+        {/* Navigation */}
+        <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+          {NAV_ITEMS.map((item) => (
+            <SidebarNavItem key={item.path} {...item} collapsed={collapsed} onNavigate={onClose} />
+          ))}
+        </nav>
+
+        {/* Bouton collapse — sans objet sur mobile où la sidebar est un tiroir */}
+        <div className="hidden border-t border-gray-200 p-3 lg:block">
+          <button
+            onClick={() => setCollapsed((c) => !c)}
+            className={cn(
+              'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700',
+              collapsed && 'justify-center px-2'
+            )}
+            aria-label={collapsed ? 'Déplier la sidebar' : 'Replier la sidebar'}
+          >
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            {!collapsed && <span>Réduire</span>}
+          </button>
+        </div>
       </aside>
     </>
   )

@@ -8,8 +8,8 @@
 // idéal pour migrer une BAL partagée Exchange sans consommer de licence Workspace.
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
-import { googleUserExists } from '../../lib/google'
+import { getGoogleAccessTokenForUser } from '../../integrations/google/directory'
+import { googleUserExists } from '../../integrations/google/directory'
 
 const SCOPE_DIRECTORY_GROUP = 'https://www.googleapis.com/auth/admin.directory.group'
 const SCOPE_GROUPS_MIGRATION = 'https://www.googleapis.com/auth/apps.groups.migration'

@@ -27,14 +27,14 @@ import {
   ensureGmailDelegate,
   removeGmailDelegate,
   type GoogleUser,
-} from '../shared-mailbox/googleUserService'
+} from '../../integrations/google/users'
 import { normalizeDelegateEmail } from '../shared-mailbox/delegateService'
 import {
   findGohUserByEmails,
   resetGohUserPassword,
   revokeGohUserSessions,
   listGohUserDirectoryRoles,
-} from '../migration/service'
+} from '../../integrations/microsoft/tenantDirectory'
 import type {
   OffboardingActionType,
   OffboardingGoogleUser,

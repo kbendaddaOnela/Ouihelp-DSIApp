@@ -12,7 +12,7 @@
 //    partagé, pas un Mon Drive).
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getGoogleAccessTokenForUser } from '../../integrations/google/directory'
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
 const FOLDER_MIME = 'application/vnd.google-apps.folder'

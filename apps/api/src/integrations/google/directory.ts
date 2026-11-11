@@ -1,5 +1,5 @@
 import { SignJWT, importPKCS8 } from 'jose'
-import { fetchWithTimeout } from './httpClient'
+import { fetchWithTimeout } from '../../lib/httpClient'
 
 interface TokenCache {
   token: string

@@ -8,7 +8,7 @@
 // (getOnelaToken). Pas de SDK Graph : appels REST directs comme partout ailleurs.
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getOnelaToken } from '../../lib/msAuth'
+import { getOnelaToken } from '../../integrations/microsoft/auth'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 

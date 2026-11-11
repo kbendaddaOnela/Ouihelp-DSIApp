@@ -15,7 +15,7 @@ import { inArray, or, sql } from 'drizzle-orm'
 import { db } from '../../db/index'
 import { migrations } from '../migration/schema'
 import { accountCreations } from '../accounts/schema'
-import { getGoogleUser } from './googleUserService'
+import { getGoogleUser } from '../../integrations/google/users'
 
 export interface ResolvedDelegate {
   sourceUpn: string

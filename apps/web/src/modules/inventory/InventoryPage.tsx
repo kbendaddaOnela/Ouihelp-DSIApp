@@ -4,6 +4,7 @@ import { Monitor, Search, RefreshCw, CheckCircle2, XCircle, AlertCircle, HelpCir
 import { cn } from '@/lib/utils'
 import { useDevices, useUsers, useInventoryStats, useInventorySync } from './hooks'
 import type { CachedDevice, CachedUser } from './api'
+import { fmtDate } from '@/lib/format'
 
 // ── Conformité ────────────────────────────────────────────────────────────────
 const COMPLIANCE_CONFIG: Record<string, { label: string; color: string; icon: React.ElementType }> = {
@@ -26,11 +27,6 @@ function ComplianceBadge({ state }: { state: string }) {
       {cfg.label}
     </span>
   )
-}
-
-function formatDate(d: string | null) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' })
 }
 
 // ── Tableau users ─────────────────────────────────────────────────────────────
@@ -102,7 +98,7 @@ function DevicesTable({ devices }: { devices: CachedDevice[] }) {
                 <div className="max-w-[180px] truncate text-gray-700">{d.userDisplayName ?? '—'}</div>
                 {d.userPrincipalName && <div className="max-w-[180px] truncate text-[10px] text-gray-400">{d.userPrincipalName}</div>}
               </td>
-              <td className="px-4 py-3 text-gray-500">{formatDate(d.lastSyncDateTime)}</td>
+              <td className="px-4 py-3 text-gray-500">{fmtDate(d.lastSyncDateTime)}</td>
               <td className="px-4 py-3">
                 <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', d.source === 'ouihelp' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700')}>
                   {d.source}

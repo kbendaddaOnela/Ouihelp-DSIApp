@@ -37,11 +37,7 @@ import {
   useUpdateTargetName,
   useUploadMigrationPackage,
 } from './hooks'
-
-function fmtDateTime(d: string | null) {
-  if (!d) return '—'
-  return new Date(d).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
-}
+import { fmtDateTime } from '@/lib/format'
 
 export const MIGRATION_CFG: Record<MigrationStatus, { label: string; cls: string }> = {
   scheduled: { label: 'Bascule programmée', cls: 'bg-indigo-50 text-indigo-700' },

@@ -42,6 +42,7 @@ import {
   useResetDeviceAgent,
   useDeleteDevice,
 } from './hooks'
+import { fmtDate, fmtDateTime } from '@/lib/format'
 
 const inputCls =
   'rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500'
@@ -60,20 +61,6 @@ const JOIN_CFG: Record<DeviceJoinType, { label: string; hint: string }> = {
   registered: { label: 'Registered', hint: 'Entra registered seul (AD local ou workgroup)' },
   ad_only: { label: 'AD seul', hint: 'Joint à l’AD local sans objet Entra (remonté par l’agent)' },
   unknown: { label: 'Inconnu', hint: 'Vu par Intune / Autopilot sans objet Entra' },
-}
-
-function fmtDate(d: string | null) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-FR', {
-    day: '2-digit',
-    month: '2-digit',
-    year: '2-digit',
-  })
-}
-
-function fmtDateTime(d: string | null) {
-  if (!d) return '—'
-  return new Date(d).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
 /** Données locales de tous les profils AD / Entra (export CSV), en Mo */

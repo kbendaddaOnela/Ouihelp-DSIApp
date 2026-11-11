@@ -3,8 +3,8 @@
 // - Écriture via Gmail API (impersonation user, scope mail.google.com)
 
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
-import { getAccessToken } from '../../lib/msAuth'
+import { getGoogleAccessTokenForUser } from '../../integrations/google/directory'
+import { getAccessToken } from '../../integrations/microsoft/auth'
 
 const GMAIL_SCOPE = 'https://mail.google.com/'
 

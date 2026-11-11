@@ -32,13 +32,7 @@ import {
   useDeleteSharepointMigration,
 } from '../hooks/useSharepointMigration'
 import { sharepointMigrationApi } from '../api'
-
-function fmtBytes(n: number): string {
-  if (!n) return '0 o'
-  const units = ['o', 'Ko', 'Mo', 'Go', 'To']
-  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1)
-  return `${(n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`
-}
+import { fmtBytes } from '@/lib/format'
 
 function fmtDuration(sec: number): string {
   if (sec < 90) return 'moins d’une minute'

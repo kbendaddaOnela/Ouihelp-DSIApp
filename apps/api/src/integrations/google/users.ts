@@ -17,7 +17,7 @@
 
 import { randomBytes } from 'crypto'
 import { fetchWithTimeout } from '../../lib/httpClient'
-import { getGoogleAccessTokenForUser } from '../../lib/google'
+import { getGoogleAccessTokenForUser } from './directory'
 
 const SCOPE_DIRECTORY_USER = 'https://www.googleapis.com/auth/admin.directory.user'
 const SCOPE_GMAIL_SETTINGS_SHARING = 'https://www.googleapis.com/auth/gmail.settings.sharing'
