@@ -175,7 +175,13 @@ function blockers(d: DeviceMigrationRecord, mode: MigrationMode): string[] {
   if (mode === 'reset' && d.joinType !== 'entra_joined')
     b.push('Réinstallation limitée aux PC Entra Joined')
   if (mode === 'inplace' && d.joinType !== 'entra_joined' && d.joinType !== 'hybrid')
-    b.push('Bascule en place limitée aux PC Entra Joined ou hybrides')
+    b.push(
+      // Bascule en échec après la sortie d'ONELA : le poste n'est plus joint à rien, c'est la
+      // reprise (profils puis jonction) qu'il faut, pas une nouvelle programmation.
+      d.migration?.status === 'failed' && d.migration.mode === 'inplace'
+        ? 'Poste déjà sorti d’ONELA : utiliser « Reprendre la bascule » (l’agent réinstalle le PPKG)'
+        : 'Bascule en place limitée aux PC Entra Joined ou hybrides'
+    )
   if (!d.serialNumber) b.push('N° de série inconnu')
   if (!d.agent) b.push('Agent DSI non installé')
   else {

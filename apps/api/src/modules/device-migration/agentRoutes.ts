@@ -603,15 +603,21 @@ deviceAgentRouter.get('/migration', async (c) => {
   return c.json({ status: d?.status ?? null, error: d?.error ?? null })
 })
 
-/** PPKG actif, remis uniquement à l'agent d'un poste en cours de préparation. */
+/**
+ * PPKG actif, remis à l'agent d'un poste en cours de préparation, ou d'un poste dont la bascule
+ * en place est engagée (« resetting » / « joining ») : après un échec de jonction, le paquet
+ * n'est plus forcément sur le poste, et « Reprendre la bascule » ne pouvait alors rien
+ * réinstaller. Toujours authentifié par le jeton propre au poste, jamais par la clé d'enrôlement.
+ */
 deviceAgentRouter.get('/migration/package', async (c) => {
   const deviceId = await agentDevice(c.req.header('Authorization'))
   if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
   const [d] = await db
-    .select({ status: deviceMigrations.migrationStatus })
+    .select({ status: deviceMigrations.migrationStatus, mode: deviceMigrations.migrationMode })
     .from(deviceMigrations)
     .where(eq(deviceMigrations.id, deviceId))
-  if (d?.status !== 'staging')
+  const engaged = d?.mode === 'inplace' && (d.status === 'resetting' || d.status === 'joining')
+  if (d?.status !== 'staging' && !engaged)
     return c.json({ error: 'Forbidden', message: 'Aucune bascule en préparation' }, 403)
   const [pkg] = await db
     .select()
@@ -624,7 +630,9 @@ deviceAgentRouter.get('/migration/package', async (c) => {
     step: 'ppkg',
     status: 'info',
     source: 'serveur',
-    message: `PPKG ${pkg.fileName} remis à l’agent`,
+    message: engaged
+      ? `PPKG ${pkg.fileName} remis de nouveau à l’agent (reprise)`
+      : `PPKG ${pkg.fileName} remis à l’agent`,
   })
   return c.body(Buffer.from(pkg.content, 'base64'), 200, {
     'Content-Type': 'application/octet-stream',
@@ -654,11 +662,14 @@ deviceAgentRouter.post('/migration/progress', async (c) => {
   if (!deviceId) return c.json({ error: 'Unauthorized' }, 401)
   const b = ((await c.req.json().catch(() => null)) ?? {}) as ProgressBody
   const [d] = await db
-    .select({ status: deviceMigrations.migrationStatus })
+    .select({ status: deviceMigrations.migrationStatus, mode: deviceMigrations.migrationMode })
     .from(deviceMigrations)
     .where(eq(deviceMigrations.id, deviceId))
   const current = d?.status as MigrationStatus | undefined
-  if (!current || !ACTIVE_STATUSES.includes(current)) {
+  // Bascule en place en échec : l'agent (≥ 1.2.25) garde le poste et retente la jonction. Ses
+  // comptes rendus restent acceptés, et une jonction tardive termine la bascule.
+  const lateInplace = current === 'failed' && d?.mode === 'inplace'
+  if (!current || (!ACTIVE_STATUSES.includes(current) && !lateInplace)) {
     return c.json({ error: 'Conflict', message: 'Aucune bascule en cours' }, 409)
   }
   const stepStatus = b.status === 'ok' || b.status === 'error' ? b.status : 'info'
@@ -667,6 +678,21 @@ deviceAgentRouter.post('/migration/progress', async (c) => {
     status: stepStatus as 'ok' | 'error' | 'info',
     source: 'agent' as const,
     message: str(b.message, 1000) ?? '',
+  }
+
+  if (lateInplace) {
+    if (b.joined === true) {
+      await recordStep(deviceId, step, { status: 'done', error: null })
+      finalizeAfterJoin(deviceId).catch((err) =>
+        console.error(
+          '[device-migration] finalize error:',
+          err instanceof Error ? err.message : err
+        )
+      )
+    } else {
+      await recordStep(deviceId, step)
+    }
+    return c.json({ ok: true })
   }
 
   if (
