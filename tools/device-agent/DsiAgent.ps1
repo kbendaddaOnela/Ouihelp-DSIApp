@@ -72,7 +72,7 @@ $ApiUrl        = 'https://REMPLACER.azurewebsites.net'   # URL de l'API DSI App,
 $EnrollmentKey = 'REMPLACER'                             # = DEVICE_AGENT_ENROLLMENT_KEY côté API
 # ─────────────────────────────────────────────────────────────────────────────
 
-$AgentVersion = '1.2.24'
+$AgentVersion = '1.2.25'
 $ErrorActionPreference = 'Stop'
 $Root        = Join-Path $env:ProgramData 'DSI'
 $InstalledPs = Join-Path $Root 'DsiAgent.ps1'
@@ -1699,6 +1699,11 @@ $SwitchAttempts   = 3
 $ProfileAttempts  = 5
 $JoinAttempts     = 20
 $JoinRepairAfter  = 3      # passages sans jonction avant de réinstaller le PPKG (~20 min)
+# Après l'échec de la jonction (poste sorti d'ONELA), l'agent garde le PPKG et le réinstalle à
+# intervalle régulier : une cause passagère (réseau de l'agence, refus côté Entra) ne demande
+# alors pas de déplacement. Au-delà, le PPKG (jeton en bloc) est retiré du poste.
+$JoinRetryMinutes = 30
+$JoinRetryHours   = 48
 # Espace libre exigé : désinstallations, nouveau profil, PPKG (rien n'est recopié en place).
 # Marge demandée avant la bascule. Le transfert de profil ne copie rien (changement de
 # propriétaire) : c'est la place dont Windows aura besoin ensuite (stratégies et applications
@@ -2045,23 +2050,92 @@ function Get-DiagnosticSince($State, [int]$FallbackHours) {
   return $since
 }
 
-# Erreurs récentes de jonction (journaux Provisioning et AAD), en une ligne par événement pour
-# le journal de la DSI App. Première ligne du message seulement : le détail ProvXML peut citer
-# des paramètres du PPKG.
-function Get-JoinDiagnostic([datetime]$Since) {
-  $lines = @()
-  foreach ($log in @('Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider/Admin', 'Microsoft-Windows-Provisioning-Diagnostics-Provider/Admin', 'Microsoft-Windows-AAD/Operational', 'Microsoft-Windows-User Device Registration/Admin')) {
-    $events = @(Safe "journal $log" {
-        Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $Since; Level = 1, 2, 3 } -MaxEvents 10 -ErrorAction Stop
-      } @())
-    foreach ($e in $events) {
-      $first = ([string]$e.Message -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
-      $lines += "$($e.TimeCreated.ToString('HH:mm')) $($e.Id) $first"
+# Services Microsoft dont dépendent la jonction Entra et l'inscription Intune, testés en HTTPS
+# (pas seulement en DNS) avant de quitter ONELA : un filtrage ou une inspection TLS du réseau
+# de l'agence laisserait le poste entre les deux tenants. Toute réponse HTTP, même une erreur,
+# prouve que le service est joignable. Renvoie la liste des hôtes injoignables.
+function Test-JoinEndpoints {
+  $bad = @()
+  foreach ($h in @('login.microsoftonline.com', 'enterpriseregistration.windows.net', 'enrollment.manage.microsoft.com')) {
+    try {
+      $req = [Net.HttpWebRequest]::Create("https://$h/")
+      $req.Method = 'GET'
+      $req.Timeout = 15000
+      $req.AllowAutoRedirect = $false
+      $res = $req.GetResponse()
+      $res.Close()
+    } catch {
+      $ex = $_.Exception
+      while ($ex -and -not ($ex -is [Net.WebException])) { $ex = $ex.InnerException }
+      if ($ex -and $ex.Response) {
+        try { $ex.Response.Close() } catch { }
+        continue
+      }
+      $why = if ($ex) { [string]$ex.Status } else { [string]$_.Exception.Message }
+      $bad += "$h ($why)"
     }
   }
-  $uniq = @($lines | Select-Object -Unique | Select-Object -First 6)
-  if ($uniq.Count -eq 0) { return 'aucune erreur dans les journaux Provisioning et AAD' }
-  return ($uniq -join ' | ')
+  return $bad
+}
+
+# Une ligne par événement pour le journal de la DSI App. Journaux d'enregistrement et AAD : la
+# première ligne ne dit que « l'enregistrement a échoué » ; le motif est plus bas (erreur du
+# serveur, code de sortie, code AADSTS d'un refus d'Entra, code 0x...). Journaux MDM et
+# Provisioning : première ligne seulement, le détail ProvXML peut citer des paramètres du PPKG.
+function Format-JoinEvent($Entry, [bool]$Detail) {
+  $rows = @([string]$Entry.Message -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  if ($rows.Count -eq 0) { return '' }
+  $first = $rows[0]
+  if (-not $Detail) {
+    # Début et fin gardés : le résultat (URI, code HTTP) est en fin de ligne
+    if ($first.Length -gt 180) { $first = $first.Substring(0, 70) + ' ... ' + $first.Substring($first.Length - 105) }
+    return $first
+  }
+  if ($first.Length -gt 90) { $first = $first.Substring(0, 90) }
+  $codes = @([regex]::Matches([string]$Entry.Message, 'AADSTS\d+|0x[0-9A-Fa-f]{8}') | ForEach-Object { $_.Value } | Select-Object -Unique | Select-Object -First 4)
+  $more = @($rows | Select-Object -Skip 1 | Where-Object { $_ -match '(?i)server|serveur|exit code|code de sortie|description|AADSTS' } | Select-Object -First 2 | ForEach-Object {
+      if ($_.Length -gt 120) { $_.Substring(0, 120) } else { $_ }
+    })
+  $text = $first
+  if ($codes.Count -gt 0) { $text += " [$($codes -join ', ')]" }
+  if ($more.Count -gt 0) { $text += " ; $($more -join ' ; ')" }
+  return $text
+}
+
+# Erreurs récentes de jonction, les journaux les plus parlants d'abord : le compte rendu est
+# limité à 1 000 caractères côté serveur, et les événements 404 du journal MDM (un par essai,
+# tous identiques) prenaient jusqu'ici toute la place.
+function Get-JoinDiagnostic([datetime]$Since) {
+  $logs = @(
+    @{ Name = 'Microsoft-Windows-User Device Registration/Admin'; Tag = 'Enregistrement'; Detail = $true; Max = 2 },
+    @{ Name = 'Microsoft-Windows-AAD/Operational'; Tag = 'AAD'; Detail = $true; Max = 2 },
+    @{ Name = 'Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider/Admin'; Tag = 'MDM'; Detail = $false; Max = 1 },
+    @{ Name = 'Microsoft-Windows-Provisioning-Diagnostics-Provider/Admin'; Tag = 'Provisioning'; Detail = $false; Max = 1 }
+  )
+  $parts = @()
+  foreach ($l in $logs) {
+    $events = @(Safe "journal $($l.Name)" {
+        Get-WinEvent -FilterHashtable @{ LogName = $l.Name; StartTime = $Since; Level = 1, 2, 3 } -MaxEvents 30 -ErrorAction Stop
+      } @())
+    $seen = @{}
+    $kept = @()
+    foreach ($e in $events) {
+      # 360 / 362 : Windows Hello Entreprise non lancé, sans rapport avec la jonction
+      if (@(360, 362) -contains [int]$e.Id) { continue }
+      $text = Format-JoinEvent $e $l.Detail
+      if (-not $text) { continue }
+      $key = "$($e.Id) $text"
+      if ($seen.ContainsKey($key)) { continue }
+      $seen[$key] = $true
+      $kept += "$($e.TimeCreated.ToString('HH:mm')) $($e.Id) $text"
+      if ($kept.Count -ge $l.Max) { break }
+    }
+    if ($kept.Count -gt 0) { $parts += "[$($l.Tag)] $($kept -join ' | ')" }
+  }
+  if ($parts.Count -eq 0) { return 'aucune erreur dans les journaux Enregistrement, AAD, MDM et Provisioning' }
+  $out = $parts -join ' || '
+  if ($out.Length -gt 780) { $out = $out.Substring(0, 780) }
+  return $out
 }
 
 # Sortie du domaine ONELA avec le compte local de secours. La vue sur un contrôleur de domaine
@@ -2164,6 +2238,45 @@ function Install-OuihelpPackage([string]$Path) {
   if ($added.Count -gt 0) { return "paquet $($added -join ', ') ajouté" }
   if ($after.Count -gt 0) { return "$($after.Count) paquet(s) installé(s) sur le poste" }
   return 'installation acceptée, liste des paquets vide (contrôle à la jonction)'
+}
+
+# PPKG absent du poste alors que la bascule est engagée (échec d'une version antérieure, qui le
+# supprimait ; agent réinstallé) : le serveur le remet pendant une bascule en cours ou reprise
+# par la DSI. Même contrôle d'empreinte qu'à la préparation.
+function Restore-OuihelpPackage($Order) {
+  if (Test-Path $InplacePpkg) { return $true }
+  try {
+    if (-not (Test-Path $MigDir)) { $null = New-Item -ItemType Directory -Path $MigDir -Force }
+    $null = Invoke-Api 'GET' '/migration/package' $null $InplacePpkg
+    $hash = (Get-FileHash -Path $InplacePpkg -Algorithm SHA256).Hash.ToLower()
+    if ($hash -ne $Order.packageSha256) { throw "empreinte $hash au lieu de $($Order.packageSha256)" }
+    Write-Log 'PPKG Ouihelp de nouveau téléchargé pour la reprise'
+    return $true
+  } catch {
+    Remove-Item $InplacePpkg -Force -ErrorAction SilentlyContinue
+    Write-Log "PPKG non récupéré pour la reprise : $($_.Exception.Message)"
+    return $false
+  }
+}
+
+# Réinstallation du PPKG pour relancer une jonction qui n'a pas eu lieu. Le paquet est d'abord
+# retiré (sans quoi Windows ne rejoue pas la jonction), ce qui ANNULE aussi une jonction Entra
+# faite par ce paquet : jamais sur un poste déjà joint à Ouihelp, qui n'attend plus que son
+# inscription Intune. Renvoie $null dans ce cas.
+function Repair-OuihelpPackage($State) {
+  $s = Safe 'dsregReparation' { Get-DsregStatus }
+  if ($s -and $s.azureAdJoined -and (-not $State.ouihelpTenantId -or $s.tenantId -eq $State.ouihelpTenantId)) {
+    Write-Log 'PPKG non réinstallé : poste joint à Entra Ouihelp, en attente de son inscription Intune'
+    return $null
+  }
+  $ids = @(Safe 'ppkgId' { Get-ProvisioningPackage -PackagePath $InplacePpkg | ForEach-Object { $_.PackageId } } @())
+  foreach ($id in $ids) {
+    Safe 'ppkgRetrait' { Uninstall-ProvisioningPackage -PackageId $id } | Out-Null
+  }
+  $info = Install-OuihelpPackage $InplacePpkg
+  $State | Add-Member -NotePropertyName ppkgInstalledAt -NotePropertyValue (Get-Date).ToString('o') -Force
+  Save-Inplace $State
+  return $info
 }
 
 $script:ProfileApiReady = $false
@@ -2346,6 +2459,24 @@ function Start-InplaceSwitch($Order) {
     Complete-InplaceSwitch $state $Order
     return
   }
+  # Dernier contrôle avant le point de non-retour, hors tentatives : le poste reste dans ONELA
+  # tant que les services de jonction ne répondent pas en HTTPS depuis ce réseau.
+  $blocked = @(Test-JoinEndpoints)
+  if ($blocked.Count -gt 0) {
+    Write-Log "Bascule en attente : services Microsoft injoignables ($($blocked -join ', '))"
+    Write-UiProgress 'prep' $Order 'En attente du réseau : la mise à jour démarre dès que la connexion Internet est rétablie.'
+    if (-not $state.netBlocked) {
+      $state | Add-Member -NotePropertyName netBlocked -NotePropertyValue $true -Force
+      Save-Inplace $state
+      Send-Progress 'reseau' 'error' "Services Microsoft injoignables en HTTPS depuis ce poste : $($blocked -join ', '). Bascule en attente, poste inchangé (nouveau contrôle à chaque passage) - vérifier le réseau de l'agence (filtrage, inspection TLS)"
+    }
+    return
+  }
+  if ($state.netBlocked) {
+    $state.netBlocked = $false
+    Save-Inplace $state
+    Send-Progress 'reseau' 'ok' 'Services Microsoft de nouveau joignables : la bascule démarre'
+  }
   if (-not (Test-PhaseAttempt $state $SwitchAttempts)) {
     Clear-MigrationNotice
     $inOnela = $dsreg -and $dsreg.azureAdJoined
@@ -2527,12 +2658,76 @@ function Invoke-InplaceJoin($State) {
     Set-MigrationNotice $SwitchNoticeCaption $SwitchNoticeText
     Send-Progress 'reseau' 'info' "Poste sans accès à Internet de $from à $((Get-Date).ToString('HH:mm')) : jonction reprise"
   }
-  # Jonction retenue seulement avec l'inscription Intune Ouihelp, et toujours là une minute
-  # après : sans inscription, Windows annule la jonction (vu le 02/11/2026, poste déclaré basculé
-  # entre une jonction et son annulation).
+  if ($State.gaveUpAt) {
+    Invoke-InplaceJoinRetry $State
+    return
+  }
+  $w = Wait-OuihelpJoin $State 5
+  $joined = $w.joined
+  $sawJoinOnly = $w.sawJoinOnly
+  if (-not $joined -and $sawJoinOnly) {
+    Write-Log 'Joint à Entra Ouihelp mais sans inscription Intune : jonction non retenue'
+  }
+  if (-not $joined) {
+    if (-not (Test-PhaseAttempt $State $JoinAttempts)) {
+      $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 3)
+      Clear-MigrationNotice
+      if ($sawJoinOnly) {
+        # PPKG laissé sur le poste : la reprise se fait sur place, une fois l'inscription réparée
+        Send-Progress 'jonction' 'error' "Poste joint à Entra Ouihelp mais jamais inscrit dans Intune : inscription refusée par Intune, à reprendre à la main (PPKG laissé dans $MigDir). Journaux : $diag" @{ fatal = $true }
+        # État effacé (sinon l'agent retenterait à chaque passage) : « Reprendre la bascule »
+        # le reconstruit depuis l'ordre
+        Remove-Item $InplacePath -Force -ErrorAction SilentlyContinue
+      } elseif (Test-Path $InplacePpkg) {
+        # Échec rendu à la DSI, mais l'agent ne lâche pas le poste : PPKG et état gardés, le
+        # paquet est réinstallé à intervalle régulier (Invoke-InplaceJoinRetry).
+        Send-Progress 'jonction' 'error' "Poste sorti d'ONELA mais toujours pas joint à Ouihelp. L'agent réinstalle le PPKG toutes les $JoinRetryMinutes min pendant $JoinRetryHours h ; sans jonction d'ici là, à reprendre sur place (compte de secours). Journaux : $diag" @{ fatal = $true }
+        $State | Add-Member -NotePropertyName gaveUpAt -NotePropertyValue (Get-Date).ToString('o') -Force
+        $State | Add-Member -NotePropertyName lastRetryAt -NotePropertyValue (Get-Date).ToString('o') -Force
+        Save-Inplace $State
+      } else {
+        Send-Progress 'jonction' 'error' "Poste sorti d'ONELA mais toujours pas joint à Ouihelp, et PPKG absent du poste : « Reprendre la bascule » le remet, sinon à installer sur place. Journaux : $diag" @{ fatal = $true }
+        Remove-InplacePayload
+      }
+      return
+    }
+    # Jonction restée bloquée sans erreur après le redémarrage : la réinstallation du même PPKG
+    # la débloque (constaté le 28/10/2026). Une seule fois par bascule, sans redémarrage :
+    # installé poste ouvert, le PPKG joint le poste aussitôt.
+    if ([int]$State.attempts -ge $JoinRepairAfter -and -not $State.ppkgReinstalled -and (Test-Path $InplacePpkg)) {
+      $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 2)
+      try {
+        $info = Repair-OuihelpPackage $State
+        if ($null -ne $info) {
+          $State | Add-Member -NotePropertyName ppkgReinstalled -NotePropertyValue $true -Force
+          Save-Inplace $State
+          Send-Progress 'jonction' 'info' "Jonction Ouihelp bloquée : PPKG réinstallé ($info). Journaux : $diag"
+          return
+        }
+      } catch {
+        $State | Add-Member -NotePropertyName ppkgReinstalled -NotePropertyValue $true -Force
+        Save-Inplace $State
+        Send-Progress 'jonction' 'error' "Réinstallation du PPKG en échec : $($_.Exception.Message). Journaux : $diag"
+        return
+      }
+    }
+    if ($sawJoinOnly) {
+      Send-Progress 'jonction' 'info' 'Joint à Entra Ouihelp mais pas encore inscrit dans Intune (Windows annule la jonction sans inscription) : nouvelle tentative au prochain passage'
+    } else {
+      Send-Progress 'jonction' 'info' 'Jonction Ouihelp pas encore constatée : nouvelle tentative au prochain passage'
+    }
+    return
+  }
+  Complete-InplaceJoin $State
+}
+
+# Jonction retenue seulement avec l'inscription Intune Ouihelp, et toujours là une minute
+# après : sans inscription, Windows annule la jonction (vu le 02/11/2026, poste déclaré basculé
+# entre une jonction et son annulation).
+function Wait-OuihelpJoin($State, [int]$Minutes) {
   $joined = $false
   $sawJoinOnly = $false
-  $deadline = (Get-Date).AddMinutes(5)
+  $deadline = (Get-Date).AddMinutes($Minutes)
   while ($true) {
     $s = Safe 'dsregJonction' { Get-DsregStatus }
     $inTenant = $s -and $s.azureAdJoined -and (-not $State.ouihelpTenantId -or $s.tenantId -eq $State.ouihelpTenantId)
@@ -2549,54 +2744,45 @@ function Invoke-InplaceJoin($State) {
     if ((Get-Date) -ge $deadline) { break }
     Start-Sleep -Seconds 20
   }
-  if (-not $joined -and $sawJoinOnly) {
-    Write-Log 'Joint à Entra Ouihelp mais sans inscription Intune : jonction non retenue'
-  }
-  if (-not $joined) {
-    if (-not (Test-PhaseAttempt $State $JoinAttempts)) {
-      $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 3)
-      Clear-MigrationNotice
-      if ($sawJoinOnly) {
-        # PPKG laissé sur le poste : la reprise se fait sur place, une fois l'inscription réparée
-        Send-Progress 'jonction' 'error' "Poste joint à Entra Ouihelp mais jamais inscrit dans Intune : inscription refusée par Intune, à reprendre à la main (PPKG laissé dans $MigDir). Journaux : $diag" @{ fatal = $true }
-        # État effacé (sinon l'agent retenterait à chaque passage) : « Reprendre la bascule »
-        # le reconstruit depuis l'ordre
-        Remove-Item $InplacePath -Force -ErrorAction SilentlyContinue
-      } else {
-        Send-Progress 'jonction' 'error' "Poste sorti d'ONELA mais toujours pas joint à Ouihelp : PPKG à reprendre à la main (jeton en bloc expiré ?). Journaux : $diag" @{ fatal = $true }
-        Remove-InplacePayload
-      }
-      return
-    }
-    # Jonction restée bloquée sans erreur après le redémarrage : la réinstallation du même PPKG
-    # la débloque (constaté le 28/10/2026). Une seule fois par bascule, sans redémarrage :
-    # installé poste ouvert, le PPKG joint le poste aussitôt.
-    if ([int]$State.attempts -ge $JoinRepairAfter -and -not $State.ppkgReinstalled -and (Test-Path $InplacePpkg)) {
-      $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 2)
-      $State | Add-Member -NotePropertyName ppkgReinstalled -NotePropertyValue $true -Force
-      Save-Inplace $State
-      try {
-        $ids = @(Safe 'ppkgId' { Get-ProvisioningPackage -PackagePath $InplacePpkg | ForEach-Object { $_.PackageId } } @())
-        foreach ($id in $ids) {
-          Safe 'ppkgRetrait' { Uninstall-ProvisioningPackage -PackageId $id } | Out-Null
-        }
-        $info = Install-OuihelpPackage $InplacePpkg
-        $State | Add-Member -NotePropertyName ppkgInstalledAt -NotePropertyValue (Get-Date).ToString('o') -Force
-        Save-Inplace $State
-        Send-Progress 'jonction' 'info' "Jonction Ouihelp bloquée : PPKG réinstallé ($info). Journaux : $diag"
-      } catch {
-        Send-Progress 'jonction' 'error' "Réinstallation du PPKG en échec : $($_.Exception.Message). Journaux : $diag"
-      }
-      return
-    }
-    if ($sawJoinOnly) {
-      Send-Progress 'jonction' 'info' 'Joint à Entra Ouihelp mais pas encore inscrit dans Intune (Windows annule la jonction sans inscription) : nouvelle tentative au prochain passage'
-    } else {
-      Send-Progress 'jonction' 'info' 'Jonction Ouihelp pas encore constatée : nouvelle tentative au prochain passage'
-    }
+  return @{ joined = $joined; sawJoinOnly = $sawJoinOnly }
+}
+
+# Après l'échec rendu à la DSI : le poste est entre les deux tenants, l'agent réinstalle le PPKG
+# à intervalle régulier et rend compte dès que la jonction a lieu (le serveur accepte ce compte
+# rendu sur une bascule en échec). Passé le délai, le PPKG est retiré : reprise sur place, ou
+# « Reprendre la bascule » qui le remet.
+function Invoke-InplaceJoinRetry($State) {
+  $w = Wait-OuihelpJoin $State 1
+  if ($w.joined) {
+    Complete-InplaceJoin $State
     return
   }
+  $since = Get-Date
+  try { $since = [datetime]::Parse($State.gaveUpAt) } catch { }
+  if (((Get-Date) - $since).TotalHours -ge $JoinRetryHours) {
+    $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 3)
+    Send-Progress 'jonction' 'error' "Toujours pas de jonction Ouihelp après $JoinRetryHours h de nouvelles tentatives : PPKG retiré du poste, à reprendre sur place ou par « Reprendre la bascule ». Journaux : $diag"
+    Remove-InplacePayload
+    Restore-Sleep
+    return
+  }
+  $last = [datetime]::MinValue
+  try { $last = [datetime]::Parse($State.lastRetryAt) } catch { }
+  if (((Get-Date) - $last).TotalMinutes -lt $JoinRetryMinutes -or -not (Test-Path $InplacePpkg)) { return }
+  $State | Add-Member -NotePropertyName lastRetryAt -NotePropertyValue (Get-Date).ToString('o') -Force
+  Save-Inplace $State
+  try {
+    $info = Repair-OuihelpPackage $State
+    if ($null -eq $info) { return }
+    Start-Sleep -Seconds 90
+    $diag = Get-JoinDiagnostic (Get-DiagnosticSince $State 1)
+    Send-Progress 'jonction' 'info' "Nouvelle tentative de jonction : PPKG réinstallé ($info). Journaux : $diag"
+  } catch {
+    Send-Progress 'jonction' 'error' "Nouvelle tentative de jonction : réinstallation du PPKG en échec ($($_.Exception.Message))"
+  }
+}
 
+function Complete-InplaceJoin($State) {
   Safe 'bitlocker' {
     $v = Get-BitLockerVolume -MountPoint $env:SystemDrive
     foreach ($kp in @($v.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })) {
@@ -2669,6 +2855,7 @@ function Restore-InplaceFromOrder($Order) {
       })
   }
   Save-Inplace $state
+  if (-not $joinedOuihelp) { $null = Restore-OuihelpPackage $Order }
   Send-Progress 'reprise' 'ok' "Bascule reprise sur le poste à l'étape « $phase »"
   return $state
 }
@@ -2745,6 +2932,16 @@ function Invoke-InplaceMigration($Order) {
       if (-not $state) { $state = Restore-InplaceFromOrder $Order }
       if (-not $state) { return }
       Disable-Sleep
+      if ($state.gaveUpAt) {
+        # Ordre de nouveau actif après un échec : la DSI a repris la bascule. Les tentatives
+        # repartent de zéro, avec le PPKG (remis par le serveur s'il n'est plus sur le poste).
+        $state.gaveUpAt = $null
+        $state.attempts = 0
+        $state | Add-Member -NotePropertyName ppkgReinstalled -NotePropertyValue $false -Force
+        Save-Inplace $state
+        $null = Restore-OuihelpPackage $Order
+        Send-Progress 'reprise' 'ok' 'Bascule reprise sur le poste : nouvelles tentatives de jonction'
+      }
       if ($state.phase -eq 'prepared') { Start-InplaceSwitch $Order }
       else { Resume-InplaceMigration }
     }
